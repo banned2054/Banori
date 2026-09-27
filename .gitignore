@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+.vs/
+MediaManager/App_Data/
+TestResults/
+*.user
+debug.log
+.zcode/
+.code-review-graph/
+.zcodeignore
