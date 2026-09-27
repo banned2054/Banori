@@ -1,0 +1,80 @@
+namespace MediaManager.Features.Downloads;
+
+/// <summary>只记录恢复下一步所需的状态；不建通用状态机。</summary>
+public enum DownloadTaskStatus
+{
+    /// <summary>已登记意图，等待提交到下载器。</summary>
+    PendingSubmit,
+
+    /// <summary>已发起提交但结果未确认（响应丢失或下载器暂时错误），等待按 Hash 对账。</summary>
+    Submitting,
+
+    Downloading,
+
+    /// <summary>人工暂停（页面或下载器内暂停），对账绝不自动恢复。</summary>
+    Paused,
+
+    Completed,
+
+    Failed,
+
+    /// <summary>下载器中已找不到该任务（可能在下载器内被手动删除）。</summary>
+    Lost,
+
+    /// <summary>被更新的资源版本取代，旧任务与文件默认保留。</summary>
+    Replaced
+}
+
+public static class DownloadTaskStatusExtensions
+{
+    public static bool IsActive(this DownloadTaskStatus status)
+    {
+        return status is DownloadTaskStatus.PendingSubmit
+                      or DownloadTaskStatus.Submitting or DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused;
+    }
+
+    public static bool IsFinal(this DownloadTaskStatus status)
+    {
+        return status is DownloadTaskStatus.Completed
+                      or DownloadTaskStatus.Failed or DownloadTaskStatus.Lost or DownloadTaskStatus.Replaced;
+    }
+}
+
+/// <summary>下载任务列表投影。</summary>
+public sealed record DownloadTaskView
+{
+    public required Guid               Id               { get; init; }
+    public required Guid               FeedItemId       { get; init; }
+    public          string?            TorrentName      { get; init; }
+    public          int?               SubjectId        { get; init; }
+    public          string?            SubjectName      { get; init; }
+    public          decimal?           Episode          { get; init; }
+    public          int                Version          { get; init; }
+    public required DownloadTaskStatus Status           { get; init; }
+    public          bool               IsUserPaused     { get; init; }
+    public          double?            Progress         { get; init; }
+    public          long?              TotalSize        { get; init; }
+    public          string?            NamingSnapshot   { get; init; }
+    public          string?            FailedStep       { get; init; }
+    public          string?            Error            { get; init; }
+    public required DateTimeOffset     CreatedAtUtc     { get; init; }
+    public          DateTimeOffset?    SubmittedAtUtc   { get; init; }
+    public          DateTimeOffset?    CompletedAtUtc   { get; init; }
+    public          Guid?              ReplacesTaskId   { get; init; }
+    public          string?            ReplacesNaming   { get; init; }
+    public          Guid?              ReplacedByTaskId { get; init; }
+    public          string?            ReplacedByNaming { get; init; }
+}
+
+/// <summary>条目详情页附带的下载任务摘要。</summary>
+public sealed record DownloadTaskBrief
+{
+    public required Guid               Id             { get; init; }
+    public required DownloadTaskStatus Status         { get; init; }
+    public          bool               IsUserPaused   { get; init; }
+    public          double?            Progress       { get; init; }
+    public          string?            NamingSnapshot { get; init; }
+    public          string?            FailedStep     { get; init; }
+    public          string?            Error          { get; init; }
+    public          DateTimeOffset     CreatedAtUtc   { get; init; }
+}

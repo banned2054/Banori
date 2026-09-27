@@ -1,0 +1,229 @@
+@page "/downloads"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using MediaManager.Features.Downloads
+@implements IDisposable
+
+@inject DownloadService                     DownloadService
+@inject ILogger<DownloadTasksPageViewModel> Logger
+
+<PageTitle>下载任务 - MediaManager</PageTitle>
+
+<div class="d-flex justify-content-between align-items-start mb-3">
+	<div>
+		<h1 class="mb-1">下载任务</h1>
+		<div class="text-body-secondary">提交、对账与完成状态每 15 秒自动刷新；替换只记录关系，旧任务与文件保留。</div>
+	</div>
+</div>
+
+@if (!_vm.Loaded)
+{
+	<p>正在加载…</p>
+}
+else if (_vm.Tasks.Count == 0)
+{
+	<p class="text-body-secondary">还没有下载任务。在条目详情页对已选择的条目创建下载任务。</p>
+}
+else
+{
+	<div class="table-responsive">
+		<table class="table align-middle">
+			<thead>
+			<tr>
+				<th>任务</th>
+				<th>状态</th>
+				<th style="min-width: 140px;">进度</th>
+				<th>时间</th>
+				<th>错误与替换</th>
+				<th class="text-end">操作</th>
+			</tr>
+			</thead>
+			<tbody>
+			@foreach (var task in _vm.Tasks)
+			{
+				<tr>
+					<td>
+						<div class="fw-semibold">@DownloadStatusTitle(task)</div>
+						<code class="small">@task.NamingSnapshot</code>
+					</td>
+					<td>
+						<span class="badge @StatusClass(task.Status)">@StatusText(task)</span>
+					</td>
+					<td>
+						@if (task.Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused && task.Progress is not null)
+						{
+							<div class="progress" style="height: 8px;">
+								<div class="progress-bar" style="width: @(Math.Clamp(task.Progress.Value * 100, 0, 100).ToString("0.#"))%;"></div>
+							</div>
+							<span class="small text-body-secondary">@(task.Progress.Value.ToString("0.0%"))</span>
+						}
+						else
+						{
+							<span class="text-body-secondary">—</span>
+						}
+					</td>
+					<td class="small text-body-secondary">
+						<div>创建：@task.CreatedAtUtc.ToLocalTime().ToString("MM-dd HH:mm")</div>
+						@if (task.CompletedAtUtc is { } completed)
+						{
+							<div>完成：@completed.ToLocalTime().ToString("MM-dd HH:mm")</div>
+						}
+					</td>
+					<td class="small">
+						@if (!string.IsNullOrEmpty(task.Error))
+						{
+							<div class="text-danger">@task.FailedStep：@task.Error</div>
+						}
+						@if (task.ReplacesNaming is not null)
+						{
+							<div class="text-body-secondary">完成后将替换：@task.ReplacesNaming</div>
+						}
+						@if (task.ReplacedByNaming is not null)
+						{
+							<div class="text-body-secondary">已被 @task.ReplacedByNaming 替换</div>
+						}
+					</td>
+					<td class="text-end">
+						@if (task.Status == DownloadTaskStatus.Downloading)
+						{
+							<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => PauseAsync(task.Id)">暂停</button>
+						}
+						else if (task.Status == DownloadTaskStatus.Paused && task.IsUserPaused)
+						{
+							<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => ResumeAsync(task.Id)">恢复</button>
+						}
+						else if (task.Status is DownloadTaskStatus.Failed or DownloadTaskStatus.Lost)
+						{
+							<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RetryAsync(task.Id)">重试</button>
+						}
+					</td>
+				</tr>
+			}
+			</tbody>
+		</table>
+	</div>
+}
+
+@if (!string.IsNullOrEmpty(_vm.Message))
+{
+	<div class="alert @(_vm.Succeeded ? "alert-success" : "alert-danger") mt-3" role="status">
+		@_vm.Message
+	</div>
+}
+
+@code {
+	private readonly CancellationTokenSource    _cts = new();
+	private          DownloadTasksPageViewModel _vm  = null!;
+	private          PeriodicTimer?             _timer;
+	private          Task?                      _refreshLoop;
+
+	protected override void OnInitialized()
+	{
+		_vm = new DownloadTasksPageViewModel(DownloadService, Logger);
+	}
+
+	protected override async Task OnInitializedAsync()
+	{
+		await _vm.LoadAsync(_cts.Token);
+		_refreshLoop = RefreshLoop();
+	}
+
+	/// <summary>页面打开期间限频重新查询持久化状态；页面关闭即停止，不影响后台任务。</summary>
+	private async Task RefreshLoop()
+	{
+		_timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
+		try
+		{
+			while (await _timer.WaitForNextTickAsync(_cts.Token))
+			{
+				if (_vm.Busy)
+				{
+					continue;
+				}
+
+				await _vm.LoadAsync(_cts.Token);
+				StateHasChanged();
+			}
+		}
+		catch (OperationCanceledException)
+		{
+		}
+		catch (ObjectDisposedException)
+		{
+		}
+	}
+
+	private Task PauseAsync(Guid taskId)
+	{
+		return RunOperationAsync(() => _vm.PauseAsync(taskId, _cts.Token));
+	}
+
+	private Task ResumeAsync(Guid taskId)
+	{
+		return RunOperationAsync(() => _vm.ResumeAsync(taskId, _cts.Token));
+	}
+
+	private Task RetryAsync(Guid taskId)
+	{
+		return RunOperationAsync(() => _vm.RetryAsync(taskId, _cts.Token));
+	}
+
+	private async Task RunOperationAsync(Func<Task> operation)
+	{
+		try
+		{
+			await operation();
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+	}
+
+	private static string DownloadStatusTitle(DownloadTaskView task)
+	{
+		var subject = string.IsNullOrWhiteSpace(task.SubjectName) ? "未知条目" : task.SubjectName;
+		var episode = task.Episode is null ? string.Empty : $" 第{task.Episode:0.##}集";
+		var version = task.Version > 1 ? $" v{task.Version}" : string.Empty;
+		return $"{subject}{episode}{version}";
+	}
+
+	private static string StatusText(DownloadTaskView task)
+	{
+		return task.Status switch
+		{
+			DownloadTaskStatus.PendingSubmit => "等待提交",
+			DownloadTaskStatus.Submitting    => "提交结果待确认",
+			DownloadTaskStatus.Downloading   => "下载中",
+			DownloadTaskStatus.Paused        => task.IsUserPaused ? "已暂停（人工）" : "已暂停",
+			DownloadTaskStatus.Completed     => "已完成",
+			DownloadTaskStatus.Failed        => "失败",
+			DownloadTaskStatus.Lost          => "任务丢失",
+			DownloadTaskStatus.Replaced      => "已被替换",
+			_                                => task.Status.ToString()
+		};
+	}
+
+	private static string StatusClass(DownloadTaskStatus status)
+	{
+		return status switch
+		{
+			DownloadTaskStatus.PendingSubmit => "text-bg-secondary",
+			DownloadTaskStatus.Submitting    => "text-bg-warning",
+			DownloadTaskStatus.Downloading   => "text-bg-primary",
+			DownloadTaskStatus.Paused        => "text-bg-secondary",
+			DownloadTaskStatus.Completed     => "text-bg-success",
+			DownloadTaskStatus.Failed        => "text-bg-danger",
+			DownloadTaskStatus.Lost          => "text-bg-danger",
+			DownloadTaskStatus.Replaced      => "text-bg-dark",
+			_                                => "text-bg-light"
+		};
+	}
+
+	public void Dispose()
+	{
+		_cts.Cancel();
+		_cts.Dispose();
+		_timer?.Dispose();
+	}
+
+}

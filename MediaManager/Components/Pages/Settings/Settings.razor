@@ -1,0 +1,147 @@
+@page "/settings"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using MediaManager.Features.Settings
+@implements IDisposable
+
+@inject ManageGeneralSettings          SettingsService
+@inject ManageQbittorrentSettings      DownloaderSettings
+@inject ILogger<SettingsPageViewModel> Logger
+
+<PageTitle>设置 - MediaManager</PageTitle>
+
+<h1>设置</h1>
+
+<p class="text-body-secondary">这里保存应用自身的基础设置与 qBittorrent 下载器配置。通知和媒体库配置将在对应阶段加入。</p>
+
+@if (!_vm.Loaded)
+{
+	<p>正在加载…</p>
+}
+else
+{
+	<EditForm Model="_vm.Draft" OnValidSubmit="SaveAsync" FormName="general-settings">
+		<DataAnnotationsValidator/>
+
+		<div class="card settings-card">
+			<div class="card-body">
+				<h2 class="h5 card-title">常规</h2>
+
+				<div class="mb-3">
+					<label for="instance-name" class="form-label">实例名称</label>
+					<InputText id="instance-name" class="form-control" @bind-Value="_vm.Draft.InstanceName"/>
+					<ValidationMessage For="() => _vm.Draft.InstanceName"/>
+					<div class="form-text">用于区分不同的 MediaManager 部署。</div>
+				</div>
+
+				<button type="submit" class="btn btn-primary" disabled="@_vm.Saving">
+					@(_vm.Saving ? "正在保存…" : "保存")
+				</button>
+			</div>
+		</div>
+	</EditForm>
+
+	<EditForm Model="_vm.Downloader" OnValidSubmit="SaveAsync" FormName="downloader-settings">
+		<DataAnnotationsValidator/>
+		<div class="card settings-card mt-3">
+			<div class="card-body">
+				<h2 class="h5 card-title">qBittorrent 下载器</h2>
+				<p class="text-body-secondary small">下载器路径与应用本地路径分开，按下载器所在机器的实际路径填写。种子按隔离子目录提交，完成后按命名快照改名。</p>
+
+				<div class="form-check form-switch mb-3">
+					<InputCheckbox class="form-check-input" id="downloader-enabled" @bind-Value="_vm.Downloader.Enabled"/>
+					<label class="form-check-label" for="downloader-enabled">启用下载器</label>
+				</div>
+
+				<div class="mb-3">
+					<label for="downloader-url" class="form-label">下载器地址</label>
+					<InputText id="downloader-url" class="form-control" placeholder="http://nas:8080" @bind-Value="_vm.Downloader.BaseUrl"/>
+					<ValidationMessage For="() => _vm.Downloader.BaseUrl"/>
+				</div>
+
+				<div class="row">
+					<div class="col-md-6 mb-3">
+						<label for="downloader-username" class="form-label">用户名</label>
+						<InputText id="downloader-username" class="form-control" @bind-Value="_vm.Downloader.Username"/>
+					</div>
+					<div class="col-md-6 mb-3">
+						<label for="downloader-password" class="form-label">密码</label>
+						<InputText type="password" id="downloader-password" class="form-control" placeholder="留空表示不修改" @bind-Value="_vm.Downloader.Password"/>
+					</div>
+				</div>
+
+				<div class="mb-3">
+					<label for="downloader-savepath" class="form-label">下载器保存路径</label>
+					<InputText id="downloader-savepath" class="form-control" placeholder="/downloads 或 D:\Downloads" @bind-Value="_vm.Downloader.SavePath"/>
+					<ValidationMessage For="() => _vm.Downloader.SavePath"/>
+				</div>
+
+				<button type="submit" class="btn btn-primary" disabled="@_vm.Saving">
+					@(_vm.Saving ? "正在保存…" : "保存")
+				</button>
+				<button type="button" class="btn btn-outline-secondary ms-2" disabled="@_vm.Testing" @onclick="TestDownloaderAsync">
+					@(_vm.Testing ? "正在测试…" : "测试连接")
+				</button>
+			</div>
+		</div>
+	</EditForm>
+}
+
+@if (!string.IsNullOrEmpty(_vm.StatusMessage))
+{
+	<div class="alert @(_vm.SaveSucceeded ? "alert-success" : "alert-danger") mt-3" role="status">
+		@_vm.StatusMessage
+	</div>
+}
+
+@if (!string.IsNullOrEmpty(_vm.TestMessage))
+{
+	<div class="alert @(_vm.TestSucceeded ? "alert-success" : "alert-danger") mt-3" role="status">
+		@_vm.TestMessage
+	</div>
+}
+
+@code {
+
+	private Task TestDownloaderAsync()
+	{
+		return RunAsync(_vm.TestDownloaderAsync);
+	}
+
+	private readonly CancellationTokenSource _cts = new();
+	private          SettingsPageViewModel   _vm  = null!;
+
+	protected override void OnInitialized()
+	{
+		_vm = new SettingsPageViewModel(SettingsService, DownloaderSettings, Logger);
+	}
+
+	protected override Task OnInitializedAsync()
+	{
+		return RunAsync(_vm.LoadAsync);
+	}
+
+	private Task SaveAsync()
+	{
+		return RunAsync(_vm.SaveAsync);
+	}
+
+	/// <summary>页面离开后取消进行中的查询属于预期，不向线路报错。</summary>
+	private async Task RunAsync(Func<CancellationToken, Task> operation)
+	{
+		try
+		{
+			await operation(_cts.Token);
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+	}
+
+	public void Dispose()
+	{
+		_cts.Cancel();
+		_cts.Dispose();
+	}
+
+}
