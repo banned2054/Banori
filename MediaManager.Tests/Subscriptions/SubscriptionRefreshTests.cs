@@ -11,6 +11,7 @@ using MediaManager.Features.Subscriptions;
 using MediaManager.Integrations;
 using MediaManager.Integrations.Qbittorrent;
 using MediaManager.Tests.Downloads;
+using MediaManager.Tests.Notifications;
 using MediaManager.Workers;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
@@ -97,9 +98,10 @@ public sealed class SubscriptionRefreshTests
             await using var db       = await factory.CreateDbContextAsync();
             await db.Database.MigrateAsync();
 
-            var tableNames = await db.Database.SqlQueryRaw<string>(
-                                                                   "SELECT name AS Value FROM sqlite_master WHERE type='table'")
-                                     .ToListAsync();
+            var tableNames = await db
+                                  .Database
+                                  .SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table'")
+                                  .ToListAsync();
             Assert.Contains("MediaSubscriptions", tableNames);
             Assert.Contains("FeedItems", tableNames);
             Assert.Contains("MediaSubjects", tableNames);
@@ -146,8 +148,7 @@ public sealed class SubscriptionRefreshTests
                     await db.SaveChangesAsync();
                 }
 
-                await subscriptionService.RequestRefreshAsync(
-                                                              (await subscriptionService.ListAsync()).Single().Id);
+                await subscriptionService.RequestRefreshAsync((await subscriptionService.ListAsync()).Single().Id);
                 var result = await scope.ServiceProvider.GetRequiredService<MikanRefreshService>()
                                         .ProcessNextAsync();
 
@@ -505,8 +506,7 @@ public sealed class SubscriptionRefreshTests
                 await using (var verification = await factory.CreateDbContextAsync())
                 {
                     episode13ItemId = (await verification.FeedItems.AsNoTracking()
-                                                         .SingleAsync(value => value.StableId == "guid:mapping-13"))
-                       .Id;
+                                                         .SingleAsync(value => value.StableId == "guid:mapping-13")).Id;
                 }
 
                 var evaluator = scope.ServiceProvider.GetRequiredService<FeedItemEvaluator>();
@@ -687,15 +687,15 @@ public sealed class SubscriptionRefreshTests
         var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P4.OneShotHttp.Tests.");
         try
         {
-            var services = CreateServices(testDirectory, DateTimeOffset.UtcNow, () => []);
-            await using var provider = services.BuildServiceProvider();
-            await using var scope    = provider.CreateAsyncScope();
-            var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
+            var             services            = CreateServices(testDirectory, DateTimeOffset.UtcNow, () => []);
+            await using var provider            = services.BuildServiceProvider();
+            await using var scope               = provider.CreateAsyncScope();
+            var             subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
 
             await Assert.ThrowsAsync<ArgumentException>(() => subscriptionService.SaveAsync(
-                                                            new SaveSubscriptionRequest(null, "临时",
-                                                                                "http://example.com/rss.xml",
-                                                                                true, 30, null, true)));
+                                                         new SaveSubscriptionRequest(null, "临时",
+                                                             "http://example.com/rss.xml",
+                                                             true, 30, null, true)));
         }
         finally
         {
@@ -725,8 +725,8 @@ public sealed class SubscriptionRefreshTests
 
                 var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
                 await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "临时抓取",
-                                                                     "https://example.com/rss.xml",
-                                                                     true, 30, null, true));
+                                                                                    "https://example.com/rss.xml",
+                                                                                    true, 30, null, true));
                 var refreshService = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
                 var result         = await refreshService.ProcessNextAsync();
 
@@ -779,20 +779,20 @@ public sealed class SubscriptionRefreshTests
 
                 // 先以 Mikan 订阅建立标题映射；随后同标题的一次性 RSS 条目应直接命中映射关联 Subject。
                 await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "Mikan 源",
-                                                                     "https://mikanani.me/RSS/Bangumi?token=secret",
-                                                                     true, 30, 42));
+                                                                                    "https://mikanani.me/RSS/Bangumi?token=secret",
+                                                                                    true, 30, 42));
                 Assert.NotNull(await refreshService.ProcessNextAsync());
 
                 feedReader.SetItems([oneShotItem]);
                 var oneShotId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "",
-                                                                                     "https://example.com/rss.xml",
-                                                                                     true, 30, null, true));
+                                                                        "https://example.com/rss.xml",
+                                                                        true, 30, null, true));
                 var result = await refreshService.ProcessNextAsync();
                 Assert.NotNull(result);
                 Assert.Null(result.Error);
                 Assert.Equal(1, result.AddedItems);
 
-                var items = await scope.ServiceProvider.GetRequiredService<FeedItemQueries>().ListAsync();
+                var items        = await scope.ServiceProvider.GetRequiredService<FeedItemQueries>().ListAsync();
                 var oneShotEntry = items.Single(item => item.SubscriptionId == oneShotId);
                 Assert.Equal(FeedItemStatus.Accepted, oneShotEntry.Status);
                 Assert.Equal(42, oneShotEntry.SubjectId);
@@ -853,8 +853,10 @@ public sealed class SubscriptionRefreshTests
         // 择优后登记下载意图需要下载服务；未配置下载器时只落库选择，不会触达这些替身。
         services.AddScoped<IApplicationSettingStore, EfApplicationSettingStore>();
         services.AddScoped<ManageQbittorrentSettings>();
-        services.AddSingleton<ITorrentFileSource>(
-            new FakeTorrentFileSource(_ => throw new InvalidOperationException("刷新测试不应下载种子。")));
+        services.AddNotificationTestFakes();
+        services.AddSingleton<ITorrentFileSource>(new FakeTorrentFileSource(_ =>
+                                                                                throw new
+                                                                                    InvalidOperationException("刷新测试不应下载种子。")));
         services.AddSingleton<IQbittorrentSessionFactory>(new FakeQbittorrentSessionFactory(new FakeTorrentStore()));
         services.AddScoped<DownloadService>();
         services.AddSingleton<SelectionGroupGate>();

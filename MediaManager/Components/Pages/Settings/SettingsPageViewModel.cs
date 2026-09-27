@@ -1,16 +1,21 @@
+using MediaManager.Features.Notifications;
 using MediaManager.Features.Settings;
 using System.ComponentModel.DataAnnotations;
 
 namespace MediaManager.Components.Pages.Settings;
 
-/// <summary>设置页状态：常规与下载器设置草稿及保存操作。随页面组件创建和释放。</summary>
+/// <summary>设置页状态：常规、下载器与通知渠道设置草稿及保存操作。随页面组件创建和释放。</summary>
 public sealed class SettingsPageViewModel(
     ManageGeneralSettings          settingsService,
     ManageQbittorrentSettings      qbittorrentSettings,
+    ManageTelegramSettings         telegramSettings,
+    ManageGotifySettings           gotifySettings,
     ILogger<SettingsPageViewModel> logger)
 {
     public GeneralSettingsDraft     Draft      { get; } = new();
     public QbittorrentSettingsDraft Downloader { get; } = new();
+    public TelegramSettingsDraft    Telegram   { get; } = new();
+    public GotifySettingsDraft      Gotify     { get; } = new();
 
     public bool    Loaded        { get; private set; }
     public bool    Saving        { get; private set; }
@@ -30,7 +35,21 @@ public sealed class SettingsPageViewModel(
         Downloader.Username = downloader.Username;
         Downloader.SavePath = downloader.SavePath;
         Downloader.Enabled  = downloader.Enabled;
-        Loaded              = true;
+
+        var telegram = await telegramSettings.GetAsync(cancellationToken);
+        Telegram.ChatId   = telegram.ChatId;
+        Telegram.ProxyUrl = telegram.ProxyUrl;
+        Telegram.Enabled  = telegram.Enabled;
+        Telegram.NotifyDownloadStarted = telegram.Events.Contains(NotificationEventType.DownloadStarted);
+        Telegram.NotifyDownloadFailed  = telegram.Events.Contains(NotificationEventType.DownloadFailed);
+
+        var gotify = await gotifySettings.GetAsync(cancellationToken);
+        Gotify.BaseUrl = gotify.BaseUrl;
+        Gotify.Enabled = gotify.Enabled;
+        Gotify.NotifyDownloadStarted = gotify.Events.Contains(NotificationEventType.DownloadStarted);
+        Gotify.NotifyDownloadFailed  = gotify.Events.Contains(NotificationEventType.DownloadFailed);
+
+        Loaded = true;
     }
 
     public async Task SaveAsync(CancellationToken cancellationToken = default)
@@ -48,9 +67,21 @@ public sealed class SettingsPageViewModel(
                                                     ? null
                                                     : Downloader.Password,
                                                 cancellationToken);
+            await telegramSettings.SaveAsync(Telegram.ToSettings(),
+                                             string.IsNullOrWhiteSpace(Telegram.BotToken)
+                                                 ? null
+                                                 : Telegram.BotToken,
+                                             cancellationToken);
+            await gotifySettings.SaveAsync(Gotify.ToSettings(),
+                                           string.IsNullOrWhiteSpace(Gotify.AppToken)
+                                               ? null
+                                               : Gotify.AppToken,
+                                           cancellationToken);
             SaveSucceeded       = true;
             StatusMessage       = "设置已保存。";
             Downloader.Password = null;
+            Telegram.BotToken   = null;
+            Gotify.AppToken     = null;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -94,6 +125,54 @@ public sealed class SettingsPageViewModel(
             Testing = false;
         }
     }
+
+    /// <summary>用当前草稿发送 Telegram 测试消息；Token 留空时使用已保存值。</summary>
+    public async Task TestTelegramAsync(CancellationToken cancellationToken = default)
+    {
+        Testing     = true;
+        TestMessage = null;
+        try
+        {
+            var (succeeded, message) = await telegramSettings.TestSendAsync(
+                Telegram.ToSettings(),
+                string.IsNullOrWhiteSpace(Telegram.BotToken) ? null : Telegram.BotToken,
+                cancellationToken);
+            TestSucceeded = succeeded;
+            TestMessage   = message;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        finally
+        {
+            Testing = false;
+        }
+    }
+
+    /// <summary>用当前草稿发送 Gotify 测试消息；Token 留空时使用已保存值。</summary>
+    public async Task TestGotifyAsync(CancellationToken cancellationToken = default)
+    {
+        Testing     = true;
+        TestMessage = null;
+        try
+        {
+            var (succeeded, message) = await gotifySettings.TestSendAsync(
+                Gotify.ToSettings(),
+                string.IsNullOrWhiteSpace(Gotify.AppToken) ? null : Gotify.AppToken,
+                cancellationToken);
+            TestSucceeded = succeeded;
+            TestMessage   = message;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        finally
+        {
+            Testing = false;
+        }
+    }
 }
 
 /// <summary>常规设置的编辑模型。</summary>
@@ -120,4 +199,51 @@ public sealed class QbittorrentSettingsDraft
     public string? SavePath { get; set; }
 
     public bool Enabled { get; set; }
+}
+
+/// <summary>Telegram 通知渠道的编辑模型。Bot Token 留空表示沿用已保存值。</summary>
+public sealed class TelegramSettingsDraft
+{
+    [StringLength(200, ErrorMessage = "Chat ID 不能超过 200 个字符。")]
+    public string? ChatId { get; set; }
+
+    [DataType(DataType.Password)]
+    public string? BotToken { get; set; }
+
+    [StringLength(500, ErrorMessage = "代理地址不能超过 500 个字符。")]
+    public string? ProxyUrl { get; set; }
+
+    public bool Enabled { get; set; }
+
+    public bool NotifyDownloadStarted { get; set; } = true;
+
+    public bool NotifyDownloadFailed { get; set; } = true;
+
+    internal TelegramSettings ToSettings()
+    {
+        return new TelegramSettings(ChatId ?? string.Empty, ProxyUrl ?? string.Empty, Enabled,
+                                    NotificationEvents.FromFlags(NotifyDownloadStarted, NotifyDownloadFailed));
+    }
+}
+
+/// <summary>Gotify 通知渠道的编辑模型。应用 Token 留空表示沿用已保存值。</summary>
+public sealed class GotifySettingsDraft
+{
+    [StringLength(500, ErrorMessage = "Gotify 地址不能超过 500 个字符。")]
+    public string? BaseUrl { get; set; }
+
+    [DataType(DataType.Password)]
+    public string? AppToken { get; set; }
+
+    public bool Enabled { get; set; }
+
+    public bool NotifyDownloadStarted { get; set; } = true;
+
+    public bool NotifyDownloadFailed { get; set; } = true;
+
+    internal GotifySettings ToSettings()
+    {
+        return new GotifySettings(BaseUrl ?? string.Empty, Enabled,
+                                  NotificationEvents.FromFlags(NotifyDownloadStarted, NotifyDownloadFailed));
+    }
 }

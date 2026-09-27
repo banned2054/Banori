@@ -1,5 +1,3 @@
-using MediaManager.Features.Subscriptions;
-
 namespace MediaManager.Data;
 
 /// <summary>

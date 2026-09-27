@@ -12,8 +12,17 @@ public sealed class MemoryApplicationSettingStore : IApplicationSettingStore
 {
     public Dictionary<string, (string Value, bool IsProtected)> Values { get; } = new();
 
+    /// <summary>设置后每次读取抛出该异常，模拟设置存储故障。</summary>
+    public Exception? ThrowOnGet { get; set; }
+
+    /// <summary>设置后读取以该前缀开头的键时抛出异常，模拟仅部分功能（如通知）的设置故障。</summary>
+    public string? ThrowOnGetKeyPrefix { get; set; }
+
     public Task<string?> GetAsync(string key, CancellationToken cancellationToken = default)
     {
+        if (ThrowOnGet is not null) throw ThrowOnGet;
+        if (ThrowOnGetKeyPrefix is not null && key.StartsWith(ThrowOnGetKeyPrefix, StringComparison.Ordinal))
+            throw new InvalidOperationException("模拟设置存储故障。");
         return Task.FromResult(Values.TryGetValue(key, out var value) ? value.Value : null);
     }
 
@@ -82,8 +91,8 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
 
     public string ServerVersion => "v5.0.0-fake";
 
-    public async Task<string> AddTorrentAsync(byte[]            torrentBytes, string savePath, string category,
-                                              CancellationToken cancellationToken = default)
+    public async Task<string> AddTorrentAsync(
+        byte[] torrentBytes, string savePath, string category, CancellationToken cancellationToken = default)
     {
         if (BeforeAddTorrentAsync is not null) await BeforeAddTorrentAsync();
 
@@ -113,31 +122,25 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         return "Ok.";
     }
 
-    public Task<IReadOnlyList<TorrentSnapshot>> FindTorrentsAsync(IReadOnlyCollection<string> infoHashes,
-                                                                  CancellationToken cancellationToken = default)
-    {
-        return Task.FromResult<IReadOnlyList<TorrentSnapshot>>(
-                                                               infoHashes
-                                                                  .Where(hash => store.Torrents.ContainsKey(hash))
-                                                                  .Select(hash => SnapshotFor(hash))
-                                                                  .ToList());
-    }
+    public Task<IReadOnlyList<TorrentSnapshot>> FindTorrentsAsync(
+        IReadOnlyCollection<string> infoHashes, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<TorrentSnapshot>>(infoHashes
+                                                       .Where(hash => store.Torrents.ContainsKey(hash))
+                                                       .Select(SnapshotFor)
+                                                       .ToList());
 
-    public Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(string            category,
-                                                                  CancellationToken cancellationToken = default)
-    {
-        return Task.FromResult<IReadOnlyList<TorrentSnapshot>>(
-                                                               store.Torrents.Values
-                                                                    .Select(snapshot => SnapshotFor(snapshot.Hash))
-                                                                    .ToList());
-    }
 
-    public Task<IReadOnlyList<string>> ListFileNamesAsync(string            infoHash,
-                                                          CancellationToken cancellationToken = default)
-    {
-        return Task.FromResult<IReadOnlyList<string>>(
-                                                      store.Files.TryGetValue(infoHash, out var names) ? names : []);
-    }
+    public Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(
+        string category, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<TorrentSnapshot>>(store.Torrents.Values
+                                                             .Select(snapshot => SnapshotFor(snapshot.Hash))
+                                                             .ToList());
+
+
+    public Task<IReadOnlyList<string>> ListFileNamesAsync(
+        string infoHash, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<string>>(store.Files.TryGetValue(infoHash, out var names) ? names : []);
+
 
     public Task PauseAsync(string infoHash, CancellationToken cancellationToken = default)
     {
@@ -153,8 +156,7 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         return Task.CompletedTask;
     }
 
-    public Task RenameTorrentAsync(string            infoHash, string newName,
-                                   CancellationToken cancellationToken = default)
+    public Task RenameTorrentAsync(string infoHash, string newName, CancellationToken cancellationToken = default)
     {
         store.RenameCalls.Add((infoHash, newName));
         if (store.Torrents.TryGetValue(infoHash, out var snapshot))
@@ -173,8 +175,8 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         return Task.CompletedTask;
     }
 
-    public Task RenameTorrentFolderAsync(string            infoHash, string oldPath, string newPath,
-                                         CancellationToken cancellationToken = default)
+    public Task RenameTorrentFolderAsync(
+        string infoHash, string oldPath, string newPath, CancellationToken cancellationToken = default)
     {
         store.RenameFolderCalls.Add((infoHash, oldPath, newPath));
         if (store.Files.TryGetValue(infoHash, out var folderFiles))

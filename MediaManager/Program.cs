@@ -9,12 +9,14 @@ using MediaManager.Data;
 using MediaManager.Features.Dashboard;
 using MediaManager.Features.Downloads;
 using MediaManager.Features.FeedItems;
+using MediaManager.Features.Notifications;
 using MediaManager.Features.Settings;
 using MediaManager.Features.Subscriptions;
 using MediaManager.Initialization;
 using MediaManager.Integrations;
 using MediaManager.Integrations.Bangumi;
 using MediaManager.Integrations.Mikan;
+using MediaManager.Integrations.Notifications;
 using MediaManager.Integrations.Qbittorrent;
 using MediaManager.Workers;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -96,6 +98,12 @@ internal class Program
         builder.Services.AddScoped<ManageGeneralSettings>();
         builder.Services.AddScoped<ManageQbittorrentSettings>();
         builder.Services.AddScoped<ManageSelectionRuleSettings>();
+        builder.Services.AddScoped<ManageTelegramSettings>();
+        builder.Services.AddScoped<ManageGotifySettings>();
+        builder.Services.AddSingleton<ITelegramSender>(new TelegramSender());
+        builder.Services.AddSingleton<IGotifySender, GotifySender>();
+        builder.Services.AddScoped<NotificationEnqueuer>();
+        builder.Services.AddScoped<NotificationDeliveryService>();
         builder.Services.AddSingleton<AniParser>();
         builder.Services.AddSingleton<CandidateEligibilityPolicy>();
         builder.Services.AddSingleton<CandidateRankingPolicy>();
@@ -129,6 +137,7 @@ internal class Program
         });
         builder.Services.AddHostedService<SubscriptionRefreshWorker>();
         builder.Services.AddHostedService<DownloadReconcileWorker>();
+        builder.Services.AddHostedService<NotificationDeliveryWorker>();
     }
 
     private static void InitApplication(WebApplication app)

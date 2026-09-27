@@ -9,6 +9,7 @@ using MediaManager.Features.Subscriptions;
 using MediaManager.Integrations;
 using MediaManager.Integrations.Qbittorrent;
 using MediaManager.Tests.Downloads;
+using MediaManager.Tests.Notifications;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -23,25 +24,28 @@ namespace MediaManager.Tests.Settings;
 /// </summary>
 public sealed class SelectionRulesPageViewModelTests
 {
-    private const int    SubjectId = 42;
-    private const string MediaType = "SingleEpisode";
-    private const decimal Episode  = 12m;
+    private const int     SubjectId = 42;
+    private const string  MediaType = "SingleEpisode";
+    private const decimal Episode   = 12m;
 
     [Fact]
     public async Task Load_WithSavedConfig_FillsDraftAndVersion()
     {
-        using var harness = await CreateHarnessAsync();
-        await using var scope = harness.CreateScope();
-        var ruleSettings = scope.ServiceProvider.GetRequiredService<ManageSelectionRuleSettings>();
+        using var       harness      = await CreateHarnessAsync();
+        await using var scope        = harness.CreateScope();
+        var             ruleSettings = scope.ServiceProvider.GetRequiredService<ManageSelectionRuleSettings>();
 
         var saved = await ruleSettings.SaveAsync(new SelectionRuleConfig
         {
-            Mode               = SelectionMode.Combined,
-            GroupOrder         = ["ANi"],
-            LanguageOrder      = [EnumLanguage.Sc],
-            DimensionOrder     = SelectionDimensionOrder.LanguageFirst,
-            CombinedEntries    = [new CombinedRuleEntry("LoliHouse", EnumLanguage.JpSc),
-                                  new CombinedRuleEntry(null, null)],
+            Mode           = SelectionMode.Combined,
+            GroupOrder     = ["ANi"],
+            LanguageOrder  = [EnumLanguage.Sc],
+            DimensionOrder = SelectionDimensionOrder.LanguageFirst,
+            CombinedEntries =
+            [
+                new CombinedRuleEntry("LoliHouse", EnumLanguage.JpSc),
+                new CombinedRuleEntry(null, null)
+            ],
             LanguageMatch      = LanguageMatchMode.Contains,
             Unmatched          = UnmatchedPolicy.NeedsReview,
             AllowedResolutions = []
@@ -71,9 +75,9 @@ public sealed class SelectionRulesPageViewModelTests
     [Fact]
     public async Task Save_WhenRuleChanged_TriggersReselectionAndUpdatesWinner()
     {
-        using var harness = await CreateHarnessAsync();
-        await using var scope = harness.CreateScope();
-        var selectionService = scope.ServiceProvider.GetRequiredService<CandidateSelectionService>();
+        using var       harness          = await CreateHarnessAsync();
+        await using var scope            = harness.CreateScope();
+        var             selectionService = scope.ServiceProvider.GetRequiredService<CandidateSelectionService>();
         var (aniItemId, loliHouseItemId) = await harness.AddEpisodeCandidatesAsync();
 
         // 默认规则（LoliHouse 优先）先落库一次选择：当前优胜是 LoliHouse，版本 1。
@@ -94,8 +98,8 @@ public sealed class SelectionRulesPageViewModelTests
         Assert.Contains("版本 2", vm.StatusMessage, StringComparison.Ordinal);
         Assert.Equal(2, vm.CurrentVersion);
 
-        await using var db = await harness.CreateDbContextAsync();
-        var selection = await db.CandidateSelections.AsNoTracking().SingleAsync();
+        await using var db        = await harness.CreateDbContextAsync();
+        var             selection = await db.CandidateSelections.AsNoTracking().SingleAsync();
         Assert.Equal(aniItemId, selection.WinnerFeedItemId);
         Assert.Equal(2, selection.RuleVersion);
         Assert.Equal(SelectionOutcome.Winner,
@@ -107,9 +111,9 @@ public sealed class SelectionRulesPageViewModelTests
     [Fact]
     public async Task Save_WhenRuleUnchanged_KeepsRuleVersionWithoutReselection()
     {
-        using var harness = await CreateHarnessAsync();
-        await using var scope = harness.CreateScope();
-        var selectionService = scope.ServiceProvider.GetRequiredService<CandidateSelectionService>();
+        using var       harness          = await CreateHarnessAsync();
+        await using var scope            = harness.CreateScope();
+        var             selectionService = scope.ServiceProvider.GetRequiredService<CandidateSelectionService>();
         await harness.AddEpisodeCandidatesAsync();
 
         await selectionService.SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
@@ -121,8 +125,8 @@ public sealed class SelectionRulesPageViewModelTests
         Assert.False(vm.HasError);
         Assert.Contains("未变化", vm.StatusMessage, StringComparison.Ordinal);
 
-        await using var db = await harness.CreateDbContextAsync();
-        var selection = await db.CandidateSelections.AsNoTracking().SingleAsync();
+        await using var db        = await harness.CreateDbContextAsync();
+        var             selection = await db.CandidateSelections.AsNoTracking().SingleAsync();
         Assert.Equal(1, selection.RuleVersion);
         Assert.Equal(1, vm.CurrentVersion);
     }
@@ -130,9 +134,9 @@ public sealed class SelectionRulesPageViewModelTests
     [Fact]
     public async Task Preview_WithChangedDraft_FillsResultWithExpectedWinner()
     {
-        using var harness = await CreateHarnessAsync();
-        await using var scope = harness.CreateScope();
-        var selectionService = scope.ServiceProvider.GetRequiredService<CandidateSelectionService>();
+        using var       harness          = await CreateHarnessAsync();
+        await using var scope            = harness.CreateScope();
+        var             selectionService = scope.ServiceProvider.GetRequiredService<CandidateSelectionService>();
         var (aniItemId, loliHouseItemId) = await harness.AddEpisodeCandidatesAsync();
 
         await selectionService.SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
@@ -161,10 +165,10 @@ public sealed class SelectionRulesPageViewModelTests
     [Fact]
     public async Task Save_WithBlankGroupName_IsRejectedWithoutPersisting()
     {
-        using var harness = await CreateHarnessAsync();
-        await using var scope = harness.CreateScope();
+        using var       harness = await CreateHarnessAsync();
+        await using var scope   = harness.CreateScope();
         var store = (MemoryApplicationSettingStore)scope.ServiceProvider
-                                                     .GetRequiredService<IApplicationSettingStore>();
+                                                        .GetRequiredService<IApplicationSettingStore>();
 
         var vm = harness.CreateViewModel(scope);
         await vm.LoadAsync();
@@ -182,10 +186,10 @@ public sealed class SelectionRulesPageViewModelTests
     public async Task Save_CombinedModeWithoutEntries_IsRejectedWithoutPersisting()
     {
         // 回归：组合模式删光条件后保存必须被拦截，否则择优计算抛异常、批量规划静默变 0 组。
-        using var harness = await CreateHarnessAsync();
-        await using var scope = harness.CreateScope();
+        using var       harness = await CreateHarnessAsync();
+        await using var scope   = harness.CreateScope();
         var store = (MemoryApplicationSettingStore)scope.ServiceProvider
-                                                     .GetRequiredService<IApplicationSettingStore>();
+                                                        .GetRequiredService<IApplicationSettingStore>();
 
         var vm = harness.CreateViewModel(scope);
         await vm.LoadAsync();
@@ -202,9 +206,9 @@ public sealed class SelectionRulesPageViewModelTests
     public async Task Save_ReselectInterruptedByAppShutdown_ReportsPartialCompletion()
     {
         // 回归：规则已落库后重选挂应用停机令牌；停机打断时如实报告，不当作保存失败。
-        using var harness = await CreateHarnessAsync();
-        await using var scope = harness.CreateScope();
-        var selectionService = scope.ServiceProvider.GetRequiredService<CandidateSelectionService>();
+        using var       harness          = await CreateHarnessAsync();
+        await using var scope            = harness.CreateScope();
+        var             selectionService = scope.ServiceProvider.GetRequiredService<CandidateSelectionService>();
         await harness.AddEpisodeCandidatesAsync();
         await selectionService.SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
 
@@ -241,6 +245,7 @@ public sealed class SelectionRulesPageViewModelTests
                                                                  .GetRequiredService<FakeQbittorrentSessionFactory>());
         services.AddSingleton<ITorrentFileSource>(_ => new FakeTorrentFileSource(_ => TestTorrentBytes.Create()));
         services.AddScoped<ManageQbittorrentSettings>();
+        services.AddNotificationTestFakes();
         services.AddScoped<DownloadService>();
         services.AddSingleton<CandidateEligibilityPolicy>();
         services.AddSingleton<CandidateRankingPolicy>();
@@ -295,9 +300,9 @@ public sealed class SelectionRulesPageViewModelTests
     {
         private readonly CancellationTokenSource _stoppingCts = new();
 
-        public CancellationToken ApplicationStarted => CancellationToken.None;
+        public CancellationToken ApplicationStarted  => CancellationToken.None;
         public CancellationToken ApplicationStopping => _stoppingCts.Token;
-        public CancellationToken ApplicationStopped => CancellationToken.None;
+        public CancellationToken ApplicationStopped  => CancellationToken.None;
 
         public void StopApplication()
         {
@@ -329,25 +334,24 @@ public sealed class SelectionRulesPageViewModelTests
 
         public SelectionRulesPageViewModel CreateViewModel(IServiceScope scope)
         {
-            return new SelectionRulesPageViewModel(
-                scope.ServiceProvider.GetRequiredService<ManageSelectionRuleSettings>(),
-                scope.ServiceProvider.GetRequiredService<CandidateSelectionService>(),
-                Lifetime,
-                NullLogger<SelectionRulesPageViewModel>.Instance);
+            return new
+                SelectionRulesPageViewModel(scope.ServiceProvider.GetRequiredService<ManageSelectionRuleSettings>(),
+                                            scope.ServiceProvider.GetRequiredService<CandidateSelectionService>(),
+                                            Lifetime, NullLogger<SelectionRulesPageViewModel>.Instance);
         }
 
         /// <summary>插入同一同集组的两个合格候选：ANi 与 LoliHouse（默认规则优胜 LoliHouse）。</summary>
         public async Task<(Guid AniItemId, Guid LoliHouseItemId)> AddEpisodeCandidatesAsync()
         {
-            var aniItemId      = await AddItemAsync("guid:ani", "ANi");
+            var aniItemId       = await AddItemAsync("guid:ani", "ANi");
             var loliHouseItemId = await AddItemAsync("guid:loli", "LoliHouse");
             return (aniItemId, loliHouseItemId);
         }
 
         private async Task<Guid> AddItemAsync(string stableId, string group)
         {
-            await using var db = await CreateDbContextAsync();
-            var itemId = Guid.NewGuid();
+            await using var db     = await CreateDbContextAsync();
+            var             itemId = Guid.NewGuid();
             db.FeedItems.Add(new FeedItem
             {
                 Id             = itemId,
@@ -387,7 +391,7 @@ public sealed class SelectionRulesPageViewModelTests
 
             var subscription = new MediaSubscription
             {
-                Id = Guid.NewGuid(), Name = "测试订阅", FeedUrlProtected = "unused",
+                Id                     = Guid.NewGuid(), Name = "测试订阅", FeedUrlProtected = "unused",
                 RefreshIntervalMinutes = 30
             };
             db.MediaSubscriptions.Add(subscription);

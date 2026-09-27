@@ -6,13 +6,15 @@
 
 @inject ManageGeneralSettings          SettingsService
 @inject ManageQbittorrentSettings      DownloaderSettings
+@inject ManageTelegramSettings         TelegramSettings
+@inject ManageGotifySettings           GotifySettings
 @inject ILogger<SettingsPageViewModel> Logger
 
 <PageTitle>设置 - MediaManager</PageTitle>
 
 <h1>设置</h1>
 
-<p class="text-body-secondary">这里保存应用自身的基础设置与 qBittorrent 下载器配置。通知和媒体库配置将在对应阶段加入。</p>
+<p class="text-body-secondary">这里保存应用自身的基础设置、qBittorrent 下载器与通知渠道配置。媒体库（Jellyfin）配置将在对应阶段加入。</p>
 
 @if (!_vm.Loaded)
 {
@@ -85,6 +87,104 @@ else
 			</div>
 		</div>
 	</EditForm>
+
+	<EditForm Model="_vm.Telegram" OnValidSubmit="SaveAsync" FormName="telegram-settings">
+		<DataAnnotationsValidator/>
+		<div class="card settings-card mt-3">
+			<div class="card-body">
+				<h2 class="h5 card-title">Telegram 通知</h2>
+				<p class="text-body-secondary small">通过 Telegram Bot 发送通知。代理支持 http/https/socks5（可携带账号密码），留空时沿用系统代理设置。发送目标为私聊或群组的数字 Chat ID，也可以是公开频道的 @@频道用户名。</p>
+
+				<div class="form-check form-switch mb-3">
+					<InputCheckbox class="form-check-input" id="telegram-enabled" @bind-Value="_vm.Telegram.Enabled"/>
+					<label class="form-check-label" for="telegram-enabled">启用 Telegram 通知</label>
+				</div>
+
+				<div class="row">
+					<div class="col-md-6 mb-3">
+						<label for="telegram-token" class="form-label">Bot Token</label>
+						<InputText type="password" id="telegram-token" class="form-control" placeholder="留空表示不修改" @bind-Value="_vm.Telegram.BotToken"/>
+					</div>
+					<div class="col-md-6 mb-3">
+						<label for="telegram-chatid" class="form-label">发送目标 Chat ID</label>
+						<InputText id="telegram-chatid" class="form-control" placeholder="数字 Chat ID 或公开频道用户名" @bind-Value="_vm.Telegram.ChatId"/>
+						<ValidationMessage For="() => _vm.Telegram.ChatId"/>
+					</div>
+				</div>
+
+				<div class="mb-3">
+					<label for="telegram-proxy" class="form-label">代理地址（可选）</label>
+					<InputText id="telegram-proxy" class="form-control" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" @bind-Value="_vm.Telegram.ProxyUrl"/>
+					<ValidationMessage For="() => _vm.Telegram.ProxyUrl"/>
+				</div>
+
+				<div class="mb-3">
+					<span class="form-label d-block">通知事件</span>
+					<div class="form-check form-check-inline">
+						<InputCheckbox class="form-check-input" id="telegram-ev-started" @bind-Value="_vm.Telegram.NotifyDownloadStarted"/>
+						<label class="form-check-label" for="telegram-ev-started">下载开始</label>
+					</div>
+					<div class="form-check form-check-inline">
+						<InputCheckbox class="form-check-input" id="telegram-ev-failed" @bind-Value="_vm.Telegram.NotifyDownloadFailed"/>
+						<label class="form-check-label" for="telegram-ev-failed">下载失败</label>
+					</div>
+				</div>
+
+				<button type="submit" class="btn btn-primary" disabled="@_vm.Saving">
+					@(_vm.Saving ? "正在保存…" : "保存")
+				</button>
+				<button type="button" class="btn btn-outline-secondary ms-2" disabled="@_vm.Testing" @onclick="TestTelegramAsync">
+					@(_vm.Testing ? "正在发送…" : "发送测试消息")
+				</button>
+			</div>
+		</div>
+	</EditForm>
+
+	<EditForm Model="_vm.Gotify" OnValidSubmit="SaveAsync" FormName="gotify-settings">
+		<DataAnnotationsValidator/>
+		<div class="card settings-card mt-3">
+			<div class="card-body">
+				<h2 class="h5 card-title">Gotify 通知</h2>
+				<p class="text-body-secondary small">推送到自托管 Gotify 服务。每个应用 Token 在客户端里显示为独立的应用分组，按需创建即可。</p>
+
+				<div class="form-check form-switch mb-3">
+					<InputCheckbox class="form-check-input" id="gotify-enabled" @bind-Value="_vm.Gotify.Enabled"/>
+					<label class="form-check-label" for="gotify-enabled">启用 Gotify 通知</label>
+				</div>
+
+				<div class="row">
+					<div class="col-md-6 mb-3">
+						<label for="gotify-url" class="form-label">Gotify 地址</label>
+						<InputText id="gotify-url" class="form-control" placeholder="http://nas:8090" @bind-Value="_vm.Gotify.BaseUrl"/>
+						<ValidationMessage For="() => _vm.Gotify.BaseUrl"/>
+					</div>
+					<div class="col-md-6 mb-3">
+						<label for="gotify-token" class="form-label">应用 Token</label>
+						<InputText type="password" id="gotify-token" class="form-control" placeholder="留空表示不修改" @bind-Value="_vm.Gotify.AppToken"/>
+					</div>
+				</div>
+
+				<div class="mb-3">
+					<span class="form-label d-block">通知事件</span>
+					<div class="form-check form-check-inline">
+						<InputCheckbox class="form-check-input" id="gotify-ev-started" @bind-Value="_vm.Gotify.NotifyDownloadStarted"/>
+						<label class="form-check-label" for="gotify-ev-started">下载开始</label>
+					</div>
+					<div class="form-check form-check-inline">
+						<InputCheckbox class="form-check-input" id="gotify-ev-failed" @bind-Value="_vm.Gotify.NotifyDownloadFailed"/>
+						<label class="form-check-label" for="gotify-ev-failed">下载失败</label>
+					</div>
+				</div>
+
+				<button type="submit" class="btn btn-primary" disabled="@_vm.Saving">
+					@(_vm.Saving ? "正在保存…" : "保存")
+				</button>
+				<button type="button" class="btn btn-outline-secondary ms-2" disabled="@_vm.Testing" @onclick="TestGotifyAsync">
+					@(_vm.Testing ? "正在发送…" : "发送测试消息")
+				</button>
+			</div>
+		</div>
+	</EditForm>
 }
 
 @if (!string.IsNullOrEmpty(_vm.StatusMessage))
@@ -108,12 +208,23 @@ else
 		return RunAsync(_vm.TestDownloaderAsync);
 	}
 
+	private Task TestTelegramAsync()
+	{
+		return RunAsync(_vm.TestTelegramAsync);
+	}
+
+	private Task TestGotifyAsync()
+	{
+		return RunAsync(_vm.TestGotifyAsync);
+	}
+
 	private readonly CancellationTokenSource _cts = new();
 	private          SettingsPageViewModel   _vm  = null!;
 
 	protected override void OnInitialized()
 	{
-		_vm = new SettingsPageViewModel(SettingsService, DownloaderSettings, Logger);
+		_vm = new SettingsPageViewModel(SettingsService, DownloaderSettings, TelegramSettings, GotifySettings,
+		                                Logger);
 	}
 
 	protected override Task OnInitializedAsync()

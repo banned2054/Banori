@@ -1,5 +1,3 @@
-using Banned.AniParser.Models.Enums;
-
 namespace MediaManager.Core.Rules.Selection;
 
 public enum EligibilityStatus

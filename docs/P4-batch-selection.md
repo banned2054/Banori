@@ -120,9 +120,31 @@ P4"来源与投递"第一项：临时 RSS 以一次性订阅形态接入，复�
 - `SubscriptionsPageViewModelTests`（3 个）：一次性草稿转请求、名称留空派生、非法地址错误回显不落库。
 - 全量 155/155 通过（2026-09-27）。浏览器冒烟：订阅页渲染、一次性卡片与徽标正常；表单输入的端到端提交受 IAB 测试环境事件投递限制未能自动化验证（非应用缺陷，既有登录页同样受影响），该链路由 VM 与服务集成测试覆盖。
 
+## 通知投递：Telegram Bot 与 Gotify（2026-09-27 实施）
+
+P4"来源与投递"第二项：新增通知渠道 Telegram Bot 与 Gotify，遵循 plan.md"按渠道独立保存结果与重试"的设计约束。
+
+### 语义与实现
+
+- **事件范围**：本期实现两个事件——下载开始（`SubmitAsync` 中 `Submitting → Downloading` 确认点，含作品名、集数、版本与命名快照）与下载失败（`MarkFailedAsync` 汇聚点，含失败步骤与错误）。事件枚举可扩展（下载完成、新集登记等后续按需增加钩子）。恢复路径（响应丢失后按 hash 对账进入下载中）不补发开始通知。
+- **同事务入队**：`NotificationEnqueuer.TryEnqueueAsync` 读取两个渠道设置，为每个"启用且订阅该事件"的渠道向调用方上下文追加 `NotificationDelivery` 行，与任务状态变更在同一次 `SaveChangesAsync` 落库（plan.md"投递意图与状态同事务写入"）；入队自身异常只记日志，绝不影响下载主流程（测试锁定：通知设置存储故障时任务照常提交）。
+- **渠道独立投递**：`NotificationDeliveryService` 每 30 秒（`NotificationDeliveryWorker`，PeriodicTimer 模式）投递到期 Pending：成功 → Delivered + 送达时间；失败 → 尝试计数 +1、指数退避（1/2/4/…分钟封顶 30）；累计 10 次失败置 Failed 终态，投递记录页可人工重试（清零重新入队）。渠道未启用/未配置时跳过并保留 Pending，重新启用后自动续投；启用但 Token 缺失按失败如实记录（Last Error 提示配置项）。
+- **Telegram Bot**：`TelegramSender` POST `https://api.telegram.org/bot{token}/sendMessage`（chat_id + text，UTF-8 原样编码）；`ok:false` 或非 2xx 均为失败并以 description 报错。代理支持 http/https/socks5（URL 可携带 user:pass），留空沿用系统代理、填写即覆盖；因代理按次可能不同，发送器按次创建 `SocketsHttpHandler`（通知低频，开销可忽略）——有意偏离命名 HttpClient 模式。Bot Token 加密存储（Data Protection），空白表示沿用原值。
+- **Gotify**：`GotifySender` POST `{baseUrl}/message?token={appToken}`（title + message）；无优先级字段，客户端按应用 Token 分组显示（经确认不需要"频道"语义）；自托管直连不走代理。
+- **设置与 UI**：设置页新增 Telegram / Gotify 两张卡片（启用开关、Token 密码框空白沿用、Chat ID / 地址、代理地址、事件复选框），各带"发送测试消息"按钮（用草稿设置真实发送，Token 留空回落已存值）。新页面 `/notifications`（导航"通知"）列出最近投递（渠道、事件、内容、状态、尝试次数、最后错误），Failed 记录提供"重试"。
+- **重复通知边界**（plan.md 如实记录）：远端已接收而响应丢失时会重复投递，at-least-once 是设计边界而非缺陷。
+
+### 测试
+
+- 发送器桩测（`TelegramSenderTests` / `GotifySenderTests`，TCP 桩 `StubHttpServer` 与 qBittorrent 桩同一思路）：sendMessage 路径与正文、ok=false 与非 2xx 失败语义、代理经桩转发的绝对 URI 请求行、代理 scheme 校验与凭据剥离、Gotify token 端点与空 title 省略字段。
+- 投递服务（`NotificationDeliveryServiceTests`）：双渠道独立成功/失败互不影响、退避到期前跳过到期后续投、重试用尽置 Failed、人工重试清零重投、渠道禁用保留 Pending 零消耗、Token 缺失失败提示、`NotificationEvents` 解析/格式化回归。
+- 入队与钩子（`NotificationEnqueuerTests` / `NotificationHookTests`）：事件订阅过滤、超长内容截断、设置存储异常吞掉；提交成功/提交被拒/未配置/未订阅四种场景下的投递行断言，入队内容含作品名与命名快照。
+- 设置（`ManageNotificationSettingsTests`）：Token 加密标记、空白沿用、启用前置校验（Token/Chat ID/地址/代理 scheme）、测试发送草稿优先与回落。
+- 全量 219/219 通过（2026-09-27）。真实 Telegram / Gotify 端到端投递未验证（需真实凭据，按仓库惯例待用户授权单独执行）。
+
 ## 待完成
 
 1. 真实 qBittorrent 端到端验证（P3 起遗留，含择优产生的升级任务、规则变更重选与一次性订阅产生的任务）。
 2. P3 历史数据兼容验证：历史 Accepted 条目经人工重评触发重选；迁移副本与离线回放按 P4 验收标准执行。
 3. 跨订阅批次仅保证共用候选与重复保护，不承诺跨源同步等待窗口（按计划设计边界）。
-4. P4 下一增量：Bangumi.moe 来源接入、通知与 Jellyfin 投递（见 plan.md"P4 来源与投递"）。
+4. P4 下一增量：Bangumi.moe 来源接入与 Jellyfin 投递（通知投递已于 2026-09-27 实施，见上文）。

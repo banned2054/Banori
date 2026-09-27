@@ -2,7 +2,6 @@ using Banned.AniParser.Models.Enums;
 using MediaManager.Core.Rules.Selection;
 using MediaManager.Features.Settings;
 using MediaManager.Features.Subscriptions;
-using Microsoft.Extensions.Hosting;
 
 namespace MediaManager.Components.Pages.Settings;
 

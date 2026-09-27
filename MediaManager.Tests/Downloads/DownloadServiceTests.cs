@@ -6,6 +6,7 @@ using MediaManager.Features.Settings;
 using MediaManager.Features.Subscriptions;
 using MediaManager.Integrations;
 using MediaManager.Integrations.Qbittorrent;
+using MediaManager.Tests.Notifications;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -703,13 +704,13 @@ public sealed class DownloadServiceTests
         // P4 批量择优：条目必须是其所在同集组的当前优胜候选才能创建下载任务。
         // 组键 (SubjectId, MediaType, Episode) 有唯一索引；同一测试内同组再播种条目时
         // 以 stableId 区分 MediaType，保证每个条目都能作为优胜通过创建前置核验。
-        var groupKey = $"42|SingleEpisode|{episode}";
+        var groupKey  = $"42|SingleEpisode|{episode}";
         var mediaType = harness.UsedWinnerGroups.Add(groupKey) ? "SingleEpisode" : $"SingleEpisode#{stableId}";
         db.CandidateSelections.Add(new CandidateSelection
         {
-            Id              = Guid.NewGuid(), SubjectId      = 42, MediaType = mediaType, Episode = episode,
-            WinnerFeedItemId = itemId, RuleVersion     = 1, RankingBasis   = "测试优胜",
-            NamingSnapshot   = naming, IntentTaskId    = null, SelectedAtUtc = harness.Timestamp
+            Id               = Guid.NewGuid(), SubjectId = 42, MediaType       = mediaType, Episode = episode,
+            WinnerFeedItemId = itemId, RuleVersion       = 1, RankingBasis     = "测试优胜",
+            NamingSnapshot   = naming, IntentTaskId      = null, SelectedAtUtc = harness.Timestamp
         });
         await db.SaveChangesAsync();
         return itemId;
@@ -740,9 +741,10 @@ public sealed class DownloadServiceTests
                                                           var stableId =
                                                               Path.GetFileNameWithoutExtension(uri.Segments[^1]);
                                                           return TestTorrentBytes.Create(harnessTorrentNames
-                                                             .GetValueOrDefault(stableId, stableId));
+                                                                      .GetValueOrDefault(stableId, stableId));
                                                       }));
         services.AddScoped<ManageQbittorrentSettings>();
+        services.AddNotificationTestFakes();
         services.AddScoped<DownloadService>();
         // 与应用及订阅/设置测试保持一致的 Identity 模型配置：Identity 服务注册影响
         // ApplicationDbContext 模型缓存的行为，缺注册会与先构建模型的测试产生顺序依赖。
@@ -786,12 +788,12 @@ public sealed class DownloadServiceTests
         DownloadService               service,
         Dictionary<string, string>    torrentNames) : IDisposable
     {
-        public DirectoryInfo                 Directory    { get; } = directory;
-        public DateTimeOffset                Timestamp    { get; } = timestamp;
-        public FakeTorrentStore              Store        { get; } = store;
-        public FakeQbittorrentSessionFactory Factory      { get; } = factory;
-        public DownloadService               Service      { get; } = service;
-        public Dictionary<string, string>    TorrentNames { get; } = torrentNames;
+        public DirectoryInfo                 Directory        { get; } = directory;
+        public DateTimeOffset                Timestamp        { get; } = timestamp;
+        public FakeTorrentStore              Store            { get; } = store;
+        public FakeQbittorrentSessionFactory Factory          { get; } = factory;
+        public DownloadService               Service          { get; } = service;
+        public Dictionary<string, string>    TorrentNames     { get; } = torrentNames;
         public HashSet<string>               UsedWinnerGroups { get; } = new(StringComparer.Ordinal);
 
         public void Dispose()
@@ -824,8 +826,10 @@ public sealed class DownloadServiceTests
 
         public Task SaveDownloaderSettingsAsync()
         {
-            var settingsService = new ManageQbittorrentSettings(provider.GetRequiredService<IApplicationSettingStore>(), Factory);
-            return settingsService.SaveAsync(new QbittorrentSettings("http://qb.test:8080", "admin", "/downloads", true), "secret");
+            var settingsService =
+                new ManageQbittorrentSettings(provider.GetRequiredService<IApplicationSettingStore>(), Factory);
+            return settingsService.SaveAsync(new QbittorrentSettings("http://qb.test:8080", "admin", "/downloads",
+                                                                     true), "secret");
         }
 
         public Task<ApplicationDbContext> CreateDbContextAsync()

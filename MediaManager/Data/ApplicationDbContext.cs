@@ -7,14 +7,15 @@ namespace MediaManager.Data;
 public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
     : IdentityDbContext<ApplicationUser>(options)
 {
-    public DbSet<ApplicationSetting>  ApplicationSettings  => Set<ApplicationSetting>();
-    public DbSet<MediaSubscription>   MediaSubscriptions   => Set<MediaSubscription>();
-    public DbSet<RefreshWorkItem>     RefreshWorkItems     => Set<RefreshWorkItem>();
-    public DbSet<FeedItem>            FeedItems            => Set<FeedItem>();
-    public DbSet<MediaSubject>        MediaSubjects        => Set<MediaSubject>();
-    public DbSet<SubjectTitleMapping> SubjectTitleMappings => Set<SubjectTitleMapping>();
-    public DbSet<DownloadTask>        DownloadTasks        => Set<DownloadTask>();
-    public DbSet<CandidateSelection>  CandidateSelections  => Set<CandidateSelection>();
+    public DbSet<ApplicationSetting>   ApplicationSettings    => Set<ApplicationSetting>();
+    public DbSet<MediaSubscription>    MediaSubscriptions     => Set<MediaSubscription>();
+    public DbSet<RefreshWorkItem>      RefreshWorkItems       => Set<RefreshWorkItem>();
+    public DbSet<FeedItem>             FeedItems              => Set<FeedItem>();
+    public DbSet<MediaSubject>         MediaSubjects          => Set<MediaSubject>();
+    public DbSet<SubjectTitleMapping>  SubjectTitleMappings   => Set<SubjectTitleMapping>();
+    public DbSet<DownloadTask>         DownloadTasks          => Set<DownloadTask>();
+    public DbSet<CandidateSelection>   CandidateSelections    => Set<CandidateSelection>();
+    public DbSet<NotificationDelivery> NotificationDeliveries => Set<NotificationDelivery>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -144,6 +145,19 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
                   .HasForeignKey(item => item.SubjectId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(item => item.WinnerFeedItem).WithMany()
                   .HasForeignKey(item => item.WinnerFeedItemId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<NotificationDelivery>(entity =>
+        {
+            entity.ToTable("NotificationDeliveries");
+            entity.HasKey(item => item.Id);
+            entity.Property(item => item.Channel).HasConversion<string>().HasMaxLength(32);
+            entity.Property(item => item.EventType).HasConversion<string>().HasMaxLength(32);
+            entity.Property(item => item.Title).HasMaxLength(200).IsRequired();
+            entity.Property(item => item.Message).HasMaxLength(2000).IsRequired();
+            entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(32);
+            entity.Property(item => item.LastError).HasMaxLength(1000);
+            entity.HasIndex(item => new { item.Status, item.NextAttemptAtUtc });
         });
     }
 }

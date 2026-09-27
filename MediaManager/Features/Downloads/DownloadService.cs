@@ -2,6 +2,7 @@ using Banned.Qbittorrent.Exceptions;
 using MediaManager.Core.Rules;
 using MediaManager.Core.Torrents;
 using MediaManager.Data;
+using MediaManager.Features.Notifications;
 using MediaManager.Features.Settings;
 using MediaManager.Features.Subscriptions;
 using MediaManager.Integrations;
@@ -20,6 +21,7 @@ public sealed class DownloadService(
     ITorrentFileSource                      torrentFileSource,
     IQbittorrentSessionFactory              sessionFactory,
     ManageQbittorrentSettings               qbittorrentSettings,
+    NotificationEnqueuer                    notificationEnqueuer,
     TimeProvider                            timeProvider,
     ILogger<DownloadService>                logger)
 {
@@ -45,8 +47,7 @@ public sealed class DownloadService(
             var isWinner = await db.CandidateSelections.AsNoTracking()
                                    .AnyAsync(selection => selection.WinnerFeedItemId == itemId, cancellationToken);
             if (!isWinner)
-                throw new InvalidOperationException(
-                    "该条目不是所在集的当前优胜候选，请先重新评估或调整选择规则。");
+                throw new InvalidOperationException("该条目不是所在集的当前优胜候选，请先重新评估或调整选择规则。");
         }
 
         AssertDownloadable(item);
@@ -74,9 +75,9 @@ public sealed class DownloadService(
     ///     在给定上下文内核验重复、决定替换对象并落库任务，由调用方控制事务提交。
     ///     自动登记与手动创建共用该核心，保证查重与替换判定一致。
     /// </summary>
-    public async Task<Guid> CreateTaskWithinContextAsync(ApplicationDbContext db, FeedItem item,
-                                                         byte[] torrentBytes, string infoHash,
-                                                         CancellationToken cancellationToken)
+    public async Task<Guid> CreateTaskWithinContextAsync(
+        ApplicationDbContext db, FeedItem item, byte[] torrentBytes, string infoHash,
+        CancellationToken    cancellationToken)
     {
         var activeDuplicate = await db.DownloadTasks.AsNoTracking()
                                       .Where(task => task.FeedItemId == item.Id || task.InfoHash == infoHash)
@@ -91,15 +92,16 @@ public sealed class DownloadService(
         // 有效完成的同资源不自动重新下载；完成记录不因不属于活动唯一索引而被重复登记绕过。
         var completedDuplicate = await db.DownloadTasks.AsNoTracking()
                                          .Where(task => task.InfoHash == infoHash &&
-                                                        task.Status == DownloadTaskStatus.Completed)
+                                                        task.Status   == DownloadTaskStatus.Completed)
                                          .Select(task => (Guid?)task.Id)
                                          .FirstOrDefaultAsync(cancellationToken);
         if (completedDuplicate is not null)
             throw new InvalidOperationException("同一资源已有已完成的下载任务。");
 
         // 替换对象在创建与完成两处共用同一规则，见 FindReplacementTargetAsync。
-        var replacesTaskId = await FindReplacementTargetAsync(db, item.SubjectId, item.Episode, infoHash,
-                                                              item.Version, cancellationToken);
+        var replacesTaskId =
+            await FindReplacementTargetAsync(db, item.SubjectId, item.Episode, infoHash, item.Version,
+                                             cancellationToken);
 
         var task = new DownloadTask
         {
@@ -159,14 +161,13 @@ public sealed class DownloadService(
 
         await using var session = await sessionFactory.CreateAsync(cancellationToken);
 
-        var reconcileHashes = tasks.Where(task => task.Status is DownloadTaskStatus.Downloading
-                                                              or DownloadTaskStatus.Paused)
-                                   .Select(task => task.InfoHash)
-                                   .ToList();
+        var reconcileHashes = tasks
+                             .Where(task => task.Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused)
+                             .Select(task => task.InfoHash)
+                             .ToList();
         var foundByHash = (await session.FindTorrentsAsync(reconcileHashes, cancellationToken))
                          .GroupBy(snapshot => snapshot.Hash)
-                         .ToDictionary(group => group.Key, group => group.First(),
-                                       StringComparer.OrdinalIgnoreCase);
+                         .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
         foreach (var task in tasks.Where(task => task.Status is DownloadTaskStatus.Downloading
                                                              or DownloadTaskStatus.Paused))
@@ -245,8 +246,8 @@ public sealed class DownloadService(
         }, cancellationToken);
     }
 
-    public async Task<IReadOnlyList<DownloadTaskView>> ListAsync(int               take              = 100,
-                                                                 CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<DownloadTaskView>> ListAsync(
+        int take = 100, CancellationToken cancellationToken = default)
     {
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var tasks = await db.DownloadTasks.AsNoTracking()
@@ -271,8 +272,7 @@ public sealed class DownloadService(
         return tasks.Select(task => ToView(task, relatedNames)).ToList();
     }
 
-    private async Task SubmitAsync(IQbittorrentSession session, DownloadTask task,
-                                   CancellationToken   cancellationToken)
+    private async Task SubmitAsync(IQbittorrentSession session, DownloadTask task, CancellationToken cancellationToken)
     {
         if (task.Status == DownloadTaskStatus.Submitting)
         {
@@ -316,16 +316,15 @@ public sealed class DownloadService(
             response = await session.AddTorrentAsync(task.TorrentFile, task.SavePath,
                                                      QbittorrentSettings.DefaultCategory, cancellationToken);
         }
-        catch (Exception exception) when (exception is QbittorrentLoginFailedException or
-                                                       QbittorrentUnauthorizedException
+        catch (Exception exception) when (exception is QbittorrentLoginFailedException
+                                                    or QbittorrentUnauthorizedException
                                                     or QbittorrentForbiddenException)
         {
             await MarkFailedAsync(task.Id, DownloadTaskStatus.Submitting, "认证",
                                   $"下载器认证失败，请检查设置页的地址与账号：{exception.Message}", cancellationToken);
             return;
         }
-        catch (Exception exception) when (exception is QbittorrentBadRequestException or
-                                                       QbittorrentNotFoundException)
+        catch (Exception exception) when (exception is QbittorrentBadRequestException or QbittorrentNotFoundException)
         {
             await MarkFailedAsync(task.Id, DownloadTaskStatus.Submitting, "提交", $"下载器拒绝了提交：{exception.Message}",
                                   cancellationToken);
@@ -347,11 +346,15 @@ public sealed class DownloadService(
         }
 
         await UpdateTaskAsync(task.Id, DownloadTaskStatus.Submitting,
-                              update => { update.Status = DownloadTaskStatus.Downloading; }, cancellationToken);
+                              update => { update.Status = DownloadTaskStatus.Downloading; }, cancellationToken,
+                              (db, updated) =>
+                                  notificationEnqueuer.TryEnqueueAsync(db, NotificationEventType.DownloadStarted,
+                                                                       "下载开始",
+                                                                       $"{DescribeTask(updated)}：已提交到下载器开始下载。命名：{updated.NamingSnapshot}",
+                                                                       cancellationToken));
     }
 
-    private async Task ReconcileTrackedAsync(IQbittorrentSession session, DownloadTask task,
-                                             TorrentSnapshot?    snapshot,
+    private async Task ReconcileTrackedAsync(IQbittorrentSession session, DownloadTask task, TorrentSnapshot? snapshot,
                                              CancellationToken   cancellationToken)
     {
         if (snapshot is null)
@@ -378,9 +381,8 @@ public sealed class DownloadService(
     }
 
     /// <summary>按下载器快照推进本地状态：完成改名、识别人工暂停、记录进度。</summary>
-    private async Task ApplySnapshotAsync(Guid              taskId,   DownloadTaskStatus  currentStatus,
-                                          TorrentSnapshot   snapshot, IQbittorrentSession session,
-                                          CancellationToken cancellationToken)
+    private async Task ApplySnapshotAsync(Guid taskId, DownloadTaskStatus currentStatus, TorrentSnapshot snapshot,
+                                          IQbittorrentSession session, CancellationToken cancellationToken)
     {
         switch (snapshot.Category)
         {
@@ -429,12 +431,14 @@ public sealed class DownloadService(
     }
 
     /// <summary>完成收尾：按命名快照改名实际文件（单文件改文件名、多文件改根目录名，无法唯一确定目标的布局如实失败），并按当前状态重新选择替换对象。旧任务与文件保留。</summary>
-    private async Task CompleteAsync(IQbittorrentSession session,       Guid taskId, TorrentSnapshot snapshot,
-                                     DownloadTaskStatus  currentStatus, CancellationToken cancellationToken)
+    private async Task CompleteAsync(
+        IQbittorrentSession session, Guid taskId, TorrentSnapshot snapshot, DownloadTaskStatus currentStatus,
+        CancellationToken   cancellationToken)
     {
-        string                targetName;
-        string                namingSnapshot;
-        string                savePath;
+        string targetName;
+        string namingSnapshot;
+        string savePath;
+
         IReadOnlyList<string> fileNames;
         await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
@@ -451,8 +455,7 @@ public sealed class DownloadService(
 
         if (fileNames.Count == 0)
         {
-            await MarkFailedAsync(taskId, currentStatus, "改名",
-                                  "无法读取种子内文件列表，无法按命名快照改名，请人工处理。", cancellationToken);
+            await MarkFailedAsync(taskId, currentStatus, "改名", "无法读取种子内文件列表，无法按命名快照改名，请人工处理。", cancellationToken);
             return;
         }
 
@@ -629,16 +632,23 @@ public sealed class DownloadService(
             ?? throw new KeyNotFoundException("找不到指定下载任务。");
     }
 
-    /// <summary>带状态保护的字段更新：只更新仍处于预期状态的任务，避免与人工操作交错。</summary>
-    private async Task UpdateTaskAsync(Guid                 taskId, DownloadTaskStatus expectedStatus,
-                                       Action<DownloadTask> update, CancellationToken  cancellationToken)
+    /// <summary>
+    ///     带状态保护的字段更新：只更新仍处于预期状态的任务，避免与人工操作交错。
+    ///     onApplied 在状态变更生效后、与同一次 SaveChangesAsync 落库前执行，用于把通知投递意图写入同一本地事务。
+    /// </summary>
+    private async Task<bool> UpdateTaskAsync(Guid taskId, DownloadTaskStatus expectedStatus,
+                                             Action<DownloadTask> update, CancellationToken cancellationToken,
+                                             Func<ApplicationDbContext, DownloadTask, Task>? onApplied = null)
     {
-        await using var db   = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var             task = await db.DownloadTasks.SingleAsync(value => value.Id == taskId, cancellationToken);
-        if (task.Status != expectedStatus) return;
+        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var task = await db.DownloadTasks.Include(value => value.Subject)
+                           .SingleAsync(value => value.Id == taskId, cancellationToken);
+        if (task.Status != expectedStatus) return false;
 
         update(task);
+        if (onApplied is not null) await onApplied(db, task);
         await db.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     private async Task MarkFailedAsync(Guid taskId, DownloadTaskStatus expectedStatus, string step, string error,
@@ -646,11 +656,27 @@ public sealed class DownloadService(
     {
         logger.LogWarning("下载任务 {TaskId} 在步骤 {Step} 失败：{Error}", taskId, step, error);
         await UpdateTaskAsync(taskId, expectedStatus, update =>
-        {
-            update.Status     = DownloadTaskStatus.Failed;
-            update.FailedStep = step;
-            update.Error      = error.Length > 1000 ? error[..1000] : error;
-        }, cancellationToken);
+                              {
+                                  update.Status     = DownloadTaskStatus.Failed;
+                                  update.FailedStep = step;
+                                  update.Error      = error.Length > 1000 ? error[..1000] : error;
+                              }, cancellationToken,
+                              (db, task) => notificationEnqueuer.TryEnqueueAsync(
+                               db, NotificationEventType.DownloadFailed, "下载失败",
+                               $"{DescribeTask(task)}：在「{step}」步骤失败。{error}", cancellationToken));
+    }
+
+    /// <summary>通知内容里对任务的描述：优先作品名（中文名优先），缺失时退回命名快照。</summary>
+    private static string DescribeTask(DownloadTask task)
+    {
+        var subjectName = task.Subject is null
+            ? null
+            : string.IsNullOrWhiteSpace(task.Subject.NameCn)
+                ? task.Subject.Name
+                : task.Subject.NameCn;
+        var episode = task.Episode is null ? string.Empty : $" 第{task.Episode.Value:0.###}集";
+        var version = task.Version > 1 ? $"（v{task.Version}）" : string.Empty;
+        return $"{subjectName ?? task.NamingSnapshot}{episode}{version}";
     }
 
     private static DownloadTaskView ToView(DownloadTask task, IReadOnlyDictionary<Guid, string> relatedNames)
