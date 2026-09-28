@@ -92,6 +92,19 @@ public sealed class ManageTelegramSettingsTests
     }
 
     [Fact]
+    public async Task SaveWithEmptyEvents_StoresNoneSentinelAndReadsBackEmpty()
+    {
+        var store    = new MemoryApplicationSettingStore();
+        var settings = CreateService(store);
+
+        await settings.SaveAsync(new TelegramSettings("42", null, true, []), "bot-token");
+
+        // 显式空订阅存哨兵值而非空字符串：读回保持空集，不被当作未配置翻转成全订阅。
+        Assert.Equal("None", store.Values[ManageTelegramSettings.EventsKey].Value);
+        Assert.Empty((await settings.GetAsync()).Events);
+    }
+
+    [Fact]
     public async Task TestSend_UsesDraftThenFallsBackToSavedToken()
     {
         var store = new MemoryApplicationSettingStore();
@@ -198,6 +211,19 @@ public sealed class ManageGotifySettingsTests
                                                         settings.SaveAsync(new GotifySettings(baseUrl, null, true,
                                                                                     NotificationEvents.All),
                                                                            "app-token"));
+    }
+
+    [Fact]
+    public async Task SaveWithEmptyEvents_StoresNoneSentinelAndReadsBackEmpty()
+    {
+        var store    = new MemoryApplicationSettingStore();
+        var settings = CreateService(store);
+
+        await settings.SaveAsync(new GotifySettings("http://gotify.test", null, true, []), "app-token");
+
+        // 显式空订阅存哨兵值而非空字符串：读回保持空集，不被当作未配置翻转成全订阅。
+        Assert.Equal("None", store.Values[ManageGotifySettings.EventsKey].Value);
+        Assert.Empty((await settings.GetAsync()).Events);
     }
 
     [Fact]

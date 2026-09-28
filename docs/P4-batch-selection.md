@@ -126,7 +126,7 @@ P4"来源与投递"第二项：新增通知渠道 Telegram Bot 与 Gotify，遵�
 
 ### 语义与实现
 
-- **事件范围**：本期实现两个事件——下载开始（`SubmitAsync` 中 `Submitting → Downloading` 确认点，含作品名、集数、版本与命名快照）与下载失败（`MarkFailedAsync` 汇聚点，含失败步骤与错误）。事件枚举可扩展（下载完成、新集登记等后续按需增加钩子）。恢复路径（响应丢失后按 hash 对账进入下载中）不补发开始通知。
+- **事件范围**：本期实现两个事件——下载开始（`SubmitAsync` 中 `Submitting → Downloading` 确认点，含作品名、集数、版本与命名快照）与下载失败（`MarkFailedAsync` 汇聚点，含失败步骤与错误）。事件枚举可扩展（下载完成、新集登记等后续按需增加钩子）。恢复路径（响应丢失后按 hash 对账进入下载中）不补发开始通知。渠道事件开关显式全部取消时存储哨兵值 `None`（读回保持空订阅）；设置键缺失或空白仍视为未配置、默认全订阅。
 - **同事务入队**：`NotificationEnqueuer.TryEnqueueAsync` 读取两个渠道设置，为每个"启用且订阅该事件"的渠道向调用方上下文追加 `NotificationDelivery` 行，与任务状态变更在同一次 `SaveChangesAsync` 落库（plan.md"投递意图与状态同事务写入"）；入队自身异常只记日志，绝不影响下载主流程（测试锁定：通知设置存储故障时任务照常提交）。
 - **渠道独立投递**：`NotificationDeliveryService` 每 30 秒（`NotificationDeliveryWorker`，PeriodicTimer 模式）投递到期 Pending：成功 → Delivered + 送达时间；失败 → 尝试计数 +1、指数退避（1/2/4/…分钟封顶 30）；累计 10 次失败置 Failed 终态，投递记录页可人工重试（清零重新入队）。渠道未启用/未配置时跳过并保留 Pending，重新启用后自动续投；启用但 Token 缺失按失败如实记录（Last Error 提示配置项）。
 - **Telegram Bot**：`TelegramSender` POST `https://api.telegram.org/bot{token}/sendMessage`（chat_id + text，UTF-8 原样编码）；`ok:false` 或非 2xx 均为失败并以 description 报错。代理支持 http/https/socks5（URL 可携带 user:pass），留空沿用系统代理、填写即覆盖；因代理按次可能不同，发送器按次创建 `SocketsHttpHandler`（通知低频，开销可忽略）——有意偏离命名 HttpClient 模式。Bot Token 加密存储（Data Protection），空白表示沿用原值。

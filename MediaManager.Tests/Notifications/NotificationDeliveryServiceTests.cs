@@ -354,4 +354,25 @@ public sealed class NotificationEventsTests
         Assert.Equal([NotificationEventType.DownloadStarted, NotificationEventType.DownloadFailed],
                      NotificationEvents.FromFlags(true, true));
     }
+
+    [Fact]
+    public void Format_EmptySet_StoresNoneSentinel()
+    {
+        Assert.Equal("None", NotificationEvents.Format([]));
+    }
+
+    [Fact]
+    public void Parse_NoneSentinel_ReturnsEmptySet()
+    {
+        Assert.Empty(NotificationEvents.Parse("None"));
+        Assert.Empty(NotificationEvents.Parse(" none "));
+    }
+
+    [Fact]
+    public void EmptySet_FormatParseRoundtrip_StaysEmptyInsteadOfFlippingToAll()
+    {
+        var roundtripped = NotificationEvents.Parse(NotificationEvents.Format([]));
+
+        Assert.Empty(roundtripped);
+    }
 }

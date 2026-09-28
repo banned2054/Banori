@@ -71,6 +71,21 @@ public sealed class NotificationEnqueuerTests
     }
 
     [Fact]
+    public async Task TryEnqueue_EnabledChannelWithExplicitEmptyEvents_WritesNothing()
+    {
+        using var harness = await CreateHarnessAsync();
+        // 渠道启用且已配置，但事件订阅显式为空（哨兵 None）：不得追加任何投递行。
+        await harness.EnableTelegramAsync([]);
+
+        await using var db = await harness.CreateDbContextAsync();
+        await harness.Enqueuer.TryEnqueueAsync(db, NotificationEventType.DownloadStarted, "下载开始", "正文");
+        await db.SaveChangesAsync();
+
+        await using var verifyDb = await harness.CreateDbContextAsync();
+        Assert.Empty(await verifyDb.NotificationDeliveries.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
     public async Task TryEnqueue_TruncatesOversizedContent()
     {
         using var harness = await CreateHarnessAsync();
