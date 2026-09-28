@@ -39,6 +39,7 @@ public sealed class DownloadService(
         {
             item = await db.FeedItems.AsNoTracking()
                            .Include(value => value.Subject)
+                           .Include(value => value.Subscription)
                            .SingleOrDefaultAsync(value => value.Id == itemId, cancellationToken)
                 ?? throw new KeyNotFoundException("找不到指定条目。");
 
@@ -52,7 +53,9 @@ public sealed class DownloadService(
 
         AssertDownloadable(item);
 
-        var (torrentBytes, infoHash) = await DownloadTorrentAsync(item.TorrentUrl!, cancellationToken);
+        // 种子下载跟随所属订阅的代理配置，与 RSS 抓取保持同一出口。
+        var (torrentBytes, infoHash) =
+            await DownloadTorrentAsync(item.TorrentUrl!, item.Subscription.ProxyId, cancellationToken);
 
         await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
@@ -62,9 +65,9 @@ public sealed class DownloadService(
 
     /// <summary>下载种子文件并提取 info-hash；网络请求不置于数据库事务内。</summary>
     public async Task<(byte[] TorrentBytes, string InfoHash)> DownloadTorrentAsync(
-        string torrentUrl, CancellationToken cancellationToken)
+        string torrentUrl, Guid? proxyId, CancellationToken cancellationToken)
     {
-        var torrentBytes = await torrentFileSource.DownloadAsync(new Uri(torrentUrl), cancellationToken);
+        var torrentBytes = await torrentFileSource.DownloadAsync(new Uri(torrentUrl), proxyId, cancellationToken);
         if (!TorrentInfoHashExtractor.TryExtractInfoHash(torrentBytes, out var infoHash))
             throw new InvalidOperationException("无法从种子文件中提取 info-hash，文件可能无效或已损坏。");
 

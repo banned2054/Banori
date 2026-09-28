@@ -167,13 +167,13 @@ public sealed class NotificationEnqueuerTests
         public Task EnableTelegramAsync(IReadOnlyList<NotificationEventType> events)
         {
             var manage = new ManageTelegramSettings(Store, Telegram);
-            return manage.SaveAsync(new TelegramSettings("42", string.Empty, true, events), "bot-token");
+            return manage.SaveAsync(new TelegramSettings("42", null, true, events), "bot-token");
         }
 
         public Task EnableGotifyAsync(IReadOnlyList<NotificationEventType> events)
         {
             var manage = new ManageGotifySettings(Store, Gotify);
-            return manage.SaveAsync(new GotifySettings("http://gotify.test", true, events), "app-token");
+            return manage.SaveAsync(new GotifySettings("http://gotify.test", null, true, events), "app-token");
         }
 
         public Task<ApplicationDbContext> CreateDbContextAsync()

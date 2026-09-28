@@ -14,14 +14,15 @@ public sealed class ManageTelegramSettingsTests
     {
         var store    = new MemoryApplicationSettingStore();
         var settings = CreateService(store);
+        var proxyId  = Guid.NewGuid();
 
-        await settings.SaveAsync(new TelegramSettings("  42  ", "socks5://127.0.0.1:1080", true,
+        await settings.SaveAsync(new TelegramSettings("  42  ", proxyId, true,
                                                       NotificationEvents.All), "bot-token");
 
         var loaded = await settings.GetAsync();
         Assert.True(loaded.Enabled);
         Assert.Equal("42", loaded.ChatId);
-        Assert.Equal("socks5://127.0.0.1:1080", loaded.ProxyUrl);
+        Assert.Equal(proxyId, loaded.ProxyId);
         Assert.True(loaded.IsConfigured);
         Assert.True(store.Values[ManageTelegramSettings.BotTokenKey].IsProtected);
         Assert.Equal("DownloadStarted,DownloadFailed",
@@ -33,10 +34,10 @@ public sealed class ManageTelegramSettingsTests
     {
         var store    = new MemoryApplicationSettingStore();
         var settings = CreateService(store);
-        await settings.SaveAsync(new TelegramSettings("42", string.Empty, true, NotificationEvents.All),
+        await settings.SaveAsync(new TelegramSettings("42", null, true, NotificationEvents.All),
                                  "old-token");
 
-        await settings.SaveAsync(new TelegramSettings("100", string.Empty, true, NotificationEvents.All));
+        await settings.SaveAsync(new TelegramSettings("100", null, true, NotificationEvents.All));
 
         Assert.Equal("old-token", store.Values[ManageTelegramSettings.BotTokenKey].Value);
         Assert.Equal("100", (await settings.GetAsync()).ChatId);
@@ -48,7 +49,7 @@ public sealed class ManageTelegramSettingsTests
         var settings = CreateService(new MemoryApplicationSettingStore());
         await Assert.ThrowsAsync<ArgumentException>(() =>
                                                         settings.SaveAsync(new TelegramSettings("42",
-                                                                                    string.Empty, true,
+                                                                                    null, true,
                                                                                     NotificationEvents.All)));
     }
 
@@ -59,7 +60,7 @@ public sealed class ManageTelegramSettingsTests
         var settings = CreateService(store);
         await Assert.ThrowsAsync<ArgumentException>(() =>
                                                         settings.SaveAsync(new TelegramSettings(string.Empty,
-                                                                                    string.Empty, true,
+                                                                                    null, true,
                                                                                     NotificationEvents.All),
                                                                            "bot-token"));
     }
@@ -69,23 +70,25 @@ public sealed class ManageTelegramSettingsTests
     {
         var settings = CreateService(new MemoryApplicationSettingStore());
 
-        await settings.SaveAsync(new TelegramSettings(string.Empty, string.Empty, false,
+        await settings.SaveAsync(new TelegramSettings(string.Empty, null, false,
                                                       NotificationEvents.All));
 
         Assert.False((await settings.GetAsync()).Enabled);
     }
 
-    [Theory]
-    [InlineData("ftp://127.0.0.1:21")]
-    [InlineData("not-a-url")]
-    public async Task Save_WithInvalidProxyUrl_Throws(string proxyUrl)
+    [Fact]
+    public async Task Save_ProxyIdRoundTripsAndBlankClearsProxy()
     {
-        var settings = CreateService(new MemoryApplicationSettingStore());
-        await Assert.ThrowsAsync<ArgumentException>(() =>
-                                                        settings.SaveAsync(new TelegramSettings("42", proxyUrl,
-                                                                                    true,
-                                                                                    NotificationEvents.All),
-                                                                           "bot-token"));
+        var store    = new MemoryApplicationSettingStore();
+        var settings = CreateService(store);
+        var proxyId  = Guid.NewGuid();
+
+        await settings.SaveAsync(new TelegramSettings("42", proxyId, true, NotificationEvents.All), "bot-token");
+        Assert.Equal(proxyId, (await settings.GetAsync()).ProxyId);
+
+        await settings.SaveAsync(new TelegramSettings("42", null, true, NotificationEvents.All));
+        Assert.Null((await settings.GetAsync()).ProxyId);
+        Assert.Equal(string.Empty, store.Values[ManageTelegramSettings.ProxyIdKey].Value);
     }
 
     [Fact]
@@ -98,13 +101,13 @@ public sealed class ManageTelegramSettingsTests
 
         // 草稿留空 Token：回落到已保存值。
         var (succeeded, _) =
-            await settings.TestSendAsync(new TelegramSettings("42", string.Empty, true, NotificationEvents.All));
+            await settings.TestSendAsync(new TelegramSettings("42", null, true, NotificationEvents.All));
         Assert.True(succeeded);
         Assert.Equal("saved-token", Assert.Single(telegram.Calls).BotToken);
 
         // 草稿填写 Token：优先使用草稿值。
         var (draftSucceeded, _) =
-            await settings.TestSendAsync(new TelegramSettings("42", string.Empty, true, NotificationEvents.All),
+            await settings.TestSendAsync(new TelegramSettings("42", null, true, NotificationEvents.All),
                                          "draft-token");
         Assert.True(draftSucceeded);
         Assert.Equal("draft-token", telegram.Calls.Last().BotToken);
@@ -116,12 +119,12 @@ public sealed class ManageTelegramSettingsTests
         var settings = CreateService(new MemoryApplicationSettingStore());
 
         var (succeeded, message) =
-            await settings.TestSendAsync(new TelegramSettings("42", string.Empty, true, NotificationEvents.All));
+            await settings.TestSendAsync(new TelegramSettings("42", null, true, NotificationEvents.All));
 
         Assert.False(succeeded);
         Assert.Contains("Bot Token", message);
         var (_, noChatIdMessage) =
-            await settings.TestSendAsync(new TelegramSettings(string.Empty, string.Empty, true, NotificationEvents.All),
+            await settings.TestSendAsync(new TelegramSettings(string.Empty, null, true, NotificationEvents.All),
                                          "bot-token");
         Assert.Contains("Chat ID", noChatIdMessage);
     }
@@ -133,7 +136,7 @@ public sealed class ManageTelegramSettingsTests
         var settings = new ManageTelegramSettings(new MemoryApplicationSettingStore(), telegram);
 
         var (succeeded, message) =
-            await settings.TestSendAsync(new TelegramSettings("42", string.Empty, true, NotificationEvents.All),
+            await settings.TestSendAsync(new TelegramSettings("42", null, true, NotificationEvents.All),
                                          "bot-token");
 
         Assert.False(succeeded);
@@ -155,7 +158,7 @@ public sealed class ManageGotifySettingsTests
         var store    = new MemoryApplicationSettingStore();
         var settings = CreateService(store);
 
-        await settings.SaveAsync(new GotifySettings("http://gotify.test:8080/", true, NotificationEvents.All),
+        await settings.SaveAsync(new GotifySettings("http://gotify.test:8080/", null, true, NotificationEvents.All),
                                  "app-token");
 
         var loaded = await settings.GetAsync();
@@ -170,10 +173,10 @@ public sealed class ManageGotifySettingsTests
     {
         var store    = new MemoryApplicationSettingStore();
         var settings = CreateService(store);
-        await settings.SaveAsync(new GotifySettings("http://gotify.test", true, NotificationEvents.All),
+        await settings.SaveAsync(new GotifySettings("http://gotify.test", null, true, NotificationEvents.All),
                                  "old-token");
 
-        await settings.SaveAsync(new GotifySettings("http://gotify.test", true, NotificationEvents.All));
+        await settings.SaveAsync(new GotifySettings("http://gotify.test", null, true, NotificationEvents.All));
 
         Assert.Equal("old-token", store.Values[ManageGotifySettings.AppTokenKey].Value);
     }
@@ -182,8 +185,7 @@ public sealed class ManageGotifySettingsTests
     public async Task Save_EnabledWithoutAnyToken_Throws()
     {
         var settings = CreateService(new MemoryApplicationSettingStore());
-        await Assert.ThrowsAsync<ArgumentException>(() => settings.SaveAsync(new GotifySettings("http://gotify.test",
-                                                                                      true, NotificationEvents.All)));
+        await Assert.ThrowsAsync<ArgumentException>(() => settings.SaveAsync(new GotifySettings("http://gotify.test", null, true, NotificationEvents.All)));
     }
 
     [Theory]
@@ -193,9 +195,31 @@ public sealed class ManageGotifySettingsTests
     {
         var settings = CreateService(new MemoryApplicationSettingStore());
         await Assert.ThrowsAsync<ArgumentException>(() =>
-                                                        settings.SaveAsync(new GotifySettings(baseUrl, true,
+                                                        settings.SaveAsync(new GotifySettings(baseUrl, null, true,
                                                                                     NotificationEvents.All),
                                                                            "app-token"));
+    }
+
+    [Fact]
+    public async Task TestSend_UsesDraftThenFallsBackToSavedToken()
+    {
+        var store = new MemoryApplicationSettingStore();
+        await store.SetProtectedAsync(ManageGotifySettings.AppTokenKey, "saved-token");
+        var gotify   = new FakeGotifySender();
+        var settings = new ManageGotifySettings(store, gotify);
+
+        // 草稿留空 Token：回落到已保存值。
+        var (succeeded, _) =
+            await settings.TestSendAsync(new GotifySettings("http://gotify.test", null, true, NotificationEvents.All));
+        Assert.True(succeeded);
+        Assert.Equal("saved-token", Assert.Single(gotify.Calls).AppToken);
+
+        // 草稿填写 Token：优先使用草稿值。
+        var (draftSucceeded, _) =
+            await settings.TestSendAsync(new GotifySettings("http://gotify.test", null, true, NotificationEvents.All),
+                                         "draft-token");
+        Assert.True(draftSucceeded);
+        Assert.Equal("draft-token", gotify.Calls.Last().AppToken);
     }
 
     [Fact]
@@ -205,7 +229,7 @@ public sealed class ManageGotifySettingsTests
         var settings = new ManageGotifySettings(new MemoryApplicationSettingStore(), gotify);
 
         var (succeeded, message) =
-            await settings.TestSendAsync(new GotifySettings("http://gotify.test", true, NotificationEvents.All),
+            await settings.TestSendAsync(new GotifySettings("http://gotify.test", null, true, NotificationEvents.All),
                                          "app-token");
 
         Assert.False(succeeded);

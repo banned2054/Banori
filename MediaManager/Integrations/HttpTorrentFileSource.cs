@@ -1,13 +1,14 @@
 namespace MediaManager.Integrations;
 
-/// <summary>通过命名的 HttpClient 下载 .torrent 文件，只负责传输，不做业务判断。</summary>
-public sealed class HttpTorrentFileSource(IHttpClientFactory httpClientFactory) : ITorrentFileSource
+/// <summary>通过代理感知的 HttpClient 源下载 .torrent 文件，只负责传输，不做业务判断。</summary>
+public sealed class HttpTorrentFileSource(IProxiedHttpClientSource httpClientSource) : ITorrentFileSource
 {
-    public async Task<byte[]> DownloadAsync(Uri torrentUri, CancellationToken cancellationToken = default)
+    public async Task<byte[]> DownloadAsync(Uri torrentUri, Guid? proxyId = null,
+                                            CancellationToken   cancellationToken = default)
     {
         try
         {
-            var       client   = httpClientFactory.CreateClient("TorrentDownload");
+            using var client   = await httpClientSource.CreateClientAsync("TorrentDownload", proxyId, cancellationToken);
             using var response = await client.GetAsync(torrentUri, cancellationToken);
             response.EnsureSuccessStatusCode();
             return await response.Content.ReadAsByteArrayAsync(cancellationToken);

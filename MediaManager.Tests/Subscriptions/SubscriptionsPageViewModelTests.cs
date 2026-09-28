@@ -1,5 +1,6 @@
 using MediaManager.Components.Pages.Subscriptions;
 using MediaManager.Data;
+using MediaManager.Features.Proxies;
 using MediaManager.Features.Subscriptions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
@@ -109,9 +110,34 @@ public sealed class SubscriptionsPageViewModelTests
         }
     }
 
+    [Fact]
+    public async Task Save_WithUnknownProxyId_Throws()
+    {
+        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.ProxyVM.Unknown.Tests.");
+        try
+        {
+            var services = CreateServices(testDirectory);
+            await using var provider = services.BuildServiceProvider();
+            await using var scope    = provider.CreateAsyncScope();
+            await EnsureCreatedAsync(scope);
+
+            var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
+            await Assert.ThrowsAsync<ArgumentException>(() =>
+                subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "坏代理订阅",
+                    "https://mikanani.me/RSS/Bangumi?token=secret", true, 30, null, ProxyId: Guid.NewGuid())));
+
+            Assert.Empty(await subscriptionService.ListAsync());
+        }
+        finally
+        {
+            testDirectory.Delete(true);
+        }
+    }
+
     private static SubscriptionsPageViewModel CreateViewModel(IServiceScope scope)
     {
         return new SubscriptionsPageViewModel(scope.ServiceProvider.GetRequiredService<SubscriptionService>(),
+                                              scope.ServiceProvider.GetRequiredService<ProxyService>(),
                                               NullLogger<SubscriptionsPageViewModel>.Instance);
     }
 
@@ -138,6 +164,7 @@ public sealed class SubscriptionsPageViewModelTests
                 .AddEntityFrameworkStores<ApplicationDbContext>();
         services.AddSingleton<RefreshEnqueueGate>();
         services.AddSingleton<RefreshPulse>();
+        services.AddSingleton<ProxyService>();
         services.AddScoped<SubscriptionService>();
         return services;
     }

@@ -12,7 +12,7 @@ public sealed class MikanFeedSourceReader(IHttpClientFactory httpClientFactory) 
     private const long MaximumFeedCharacters = 5 * 1024 * 1024;
 
     public async Task<IReadOnlyList<FeedSourceItem>> ReadAsync(
-        Uri feedUri, CancellationToken cancellationToken = default)
+        Uri feedUri, Guid? proxyId = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(feedUri);
         using var request = new HttpRequestMessage(HttpMethod.Get, feedUri);

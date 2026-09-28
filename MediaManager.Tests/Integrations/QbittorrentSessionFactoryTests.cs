@@ -2,6 +2,7 @@ using Banned.Qbittorrent.Exceptions;
 using MediaManager.Features.Settings;
 using MediaManager.Integrations.Qbittorrent;
 using MediaManager.Tests.Downloads;
+using MediaManager.Tests.Proxies;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -21,7 +22,7 @@ public sealed class QbittorrentSessionFactoryTests
         var store = new MemoryApplicationSettingStore();
         await store.SetProtectedAsync(ManageQbittorrentSettings.PasswordKey, "saved-secret");
         await using var stub    = StubQbittorrentServer.Start("saved-secret");
-        var             factory = new QbittorrentSessionFactory(store);
+        var             factory = new QbittorrentSessionFactory(store, ProxyServiceTestFactory.CreateEphemeral());
 
         await using var session = await factory.CreateAsync(
                                                             new QbittorrentSettings(stub.BaseUrl, "admin", "/downloads",
@@ -37,7 +38,7 @@ public sealed class QbittorrentSessionFactoryTests
         var store = new MemoryApplicationSettingStore();
         await store.SetProtectedAsync(ManageQbittorrentSettings.PasswordKey, "saved-secret");
         await using var stub    = StubQbittorrentServer.Start("saved-secret");
-        var             factory = new QbittorrentSessionFactory(store);
+        var             factory = new QbittorrentSessionFactory(store, ProxyServiceTestFactory.CreateEphemeral());
 
         await Assert.ThrowsAsync<QbittorrentLoginFailedException>(() => factory.CreateAsync(
                                                                    new QbittorrentSettings(stub.BaseUrl, "admin",

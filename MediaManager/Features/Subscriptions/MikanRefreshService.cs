@@ -141,7 +141,8 @@ public sealed class MikanRefreshService(
     {
         try
         {
-            var entries = await feedSourceReader.ReadAsync(new Uri(subscription.FeedUrl), cancellationToken);
+            var entries = await feedSourceReader.ReadAsync(new Uri(subscription.FeedUrl), subscription.ProxyId,
+                                                           cancellationToken);
             return ([.. entries], null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -354,10 +355,11 @@ public sealed class MikanRefreshService(
         string Name,
         string FeedUrl,
         int    RefreshIntervalMinutes,
-        int?   FixedSubjectId)
+        int?   FixedSubjectId,
+        Guid?  ProxyId)
     {
         public RefreshSubscription(MediaSubscription entity, string feedUrl) : this(entity.Id, entity.Name, feedUrl,
-            entity.RefreshIntervalMinutes, entity.FixedSubjectId)
+            entity.RefreshIntervalMinutes, entity.FixedSubjectId, entity.ProxyId)
         {
         }
     }

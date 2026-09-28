@@ -1,11 +1,14 @@
 using Banned.Qbittorrent;
 using Banned.Qbittorrent.Models;
+using MediaManager.Features.Proxies;
 using MediaManager.Features.Settings;
 
 namespace MediaManager.Integrations.Qbittorrent;
 
-/// <summary>按设置创建独立登录的会话；未配置时给出可直接展示的错误。</summary>
-public sealed class QbittorrentSessionFactory(IApplicationSettingStore settingStore) : IQbittorrentSessionFactory
+/// <summary>按设置创建独立登录的会话；未配置时给出可直接展示的错误。代理从命名代理配置解析，已删除的代理回退直连。</summary>
+public sealed class QbittorrentSessionFactory(
+    IApplicationSettingStore settingStore,
+    ProxyService             proxyService) : IQbittorrentSessionFactory
 {
     public async Task<IQbittorrentSession> CreateAsync(CancellationToken cancellationToken = default)
     {
@@ -17,8 +20,12 @@ public sealed class QbittorrentSessionFactory(IApplicationSettingStore settingSt
         var username = await settingStore.GetAsync(ManageQbittorrentSettings.UsernameKey, cancellationToken);
         var password = await settingStore.GetAsync(ManageQbittorrentSettings.PasswordKey, cancellationToken);
         var savePath = await settingStore.GetAsync(ManageQbittorrentSettings.SavePathKey, cancellationToken);
+        var proxyId  = Guid.TryParse(await settingStore.GetAsync(ManageQbittorrentSettings.ProxyIdKey, cancellationToken),
+                                     out var parsed)
+            ? (Guid?)parsed
+            : null;
         return await CreateAsync(new QbittorrentSettings(baseUrl  ?? string.Empty, username ?? string.Empty,
-                                                         savePath ?? string.Empty, true), password,
+                                                         savePath ?? string.Empty, true, proxyId), password,
                                  cancellationToken);
     }
 
@@ -33,12 +40,26 @@ public sealed class QbittorrentSessionFactory(IApplicationSettingStore settingSt
             ? await settingStore.GetAsync(ManageQbittorrentSettings.PasswordKey, cancellationToken) ?? string.Empty
             : password;
 
+        var proxy = await proxyService.ResolveWebProxyAsync(settings.ProxyId, cancellationToken);
+        var options = proxy is null
+            ? new QBittorrentClientOptions
+              {
+                  MaxRetries = 2,
+                  Timeout    = TimeSpan.FromSeconds(20)
+              }
+            : new QBittorrentClientOptions
+              {
+                  MaxRetries = 2,
+                  Timeout    = TimeSpan.FromSeconds(20),
+                  // 注入的 HttpClient 由包内部使用；会话释放时 QbittorrentSession 会连带释放 client。
+                  HttpClient = new HttpClient(new SocketsHttpHandler { Proxy = proxy })
+                               {
+                                   Timeout = TimeSpan.FromSeconds(20)
+                               }
+              };
+
         var client = await QBittorrentClient.Create(settings.BaseUrl, settings.Username, effectivePassword,
-                                                    new QBittorrentClientOptions
-                                                    {
-                                                        MaxRetries = 2,
-                                                        Timeout    = TimeSpan.FromSeconds(20)
-                                                    }, cancellationToken);
+                                                    options, cancellationToken);
         return new QbittorrentSession(client);
     }
 }

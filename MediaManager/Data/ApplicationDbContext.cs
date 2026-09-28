@@ -16,6 +16,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
     public DbSet<DownloadTask>         DownloadTasks          => Set<DownloadTask>();
     public DbSet<CandidateSelection>   CandidateSelections    => Set<CandidateSelection>();
     public DbSet<NotificationDelivery> NotificationDeliveries => Set<NotificationDelivery>();
+    public DbSet<ProxyServer>          ProxyServers           => Set<ProxyServer>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -37,6 +38,20 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.Property(item => item.Name).HasMaxLength(100).IsRequired();
             entity.Property(item => item.FeedUrlProtected).IsRequired();
             entity.Property(item => item.LastError).HasMaxLength(1000);
+            entity.HasOne(item => item.Proxy).WithMany()
+                  .HasForeignKey(item => item.ProxyId).OnDelete(DeleteBehavior.SetNull);
+        });
+
+        builder.Entity<ProxyServer>(entity =>
+        {
+            entity.ToTable("ProxyServers");
+            entity.HasKey(item => item.Id);
+            entity.Property(item => item.Name).HasMaxLength(50).IsRequired();
+            entity.Property(item => item.Protocol).HasConversion<string>().HasMaxLength(16);
+            entity.Property(item => item.Host).HasMaxLength(255).IsRequired();
+            entity.Property(item => item.Username).HasMaxLength(100);
+            entity.Property(item => item.PasswordProtected).HasMaxLength(1000);
+            entity.HasIndex(item => item.Name).IsUnique();
         });
 
         builder.Entity<RefreshWorkItem>(entity =>

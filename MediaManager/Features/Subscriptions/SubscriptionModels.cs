@@ -45,7 +45,8 @@ public sealed record SubscriptionView(
     DateTimeOffset?    LastRefreshCompletedAtUtc,
     DateTimeOffset?    NextRefreshAtUtc,
     string?            LastError,
-    RefreshWorkStatus? LatestWorkStatus);
+    RefreshWorkStatus? LatestWorkStatus,
+    Guid?              ProxyId = null);
 
 public sealed record SaveSubscriptionRequest(
     Guid?   Id,
@@ -54,7 +55,8 @@ public sealed record SaveSubscriptionRequest(
     bool    IsEnabled,
     int     RefreshIntervalMinutes,
     int?    FixedSubjectId,
-    bool    IsOneShot = false);
+    bool    IsOneShot = false,
+    Guid?   ProxyId   = null);
 
 public sealed record RefreshWork(Guid Id, Guid SubscriptionId, int AttemptCount);
 

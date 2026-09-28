@@ -71,26 +71,17 @@ public sealed class TelegramSender : ITelegramSender
         }
     }
 
-    /// <summary>解析代理配置；空白返回 null（沿用系统代理）。支持在 URL 中携带 user:pass 凭据。</summary>
+    /// <summary>解析代理配置；空白返回 null（沿用系统代理）。解析规则见 ProxyUrlParser，无效时转换为发送异常。</summary>
     public static WebProxy? ParseProxy(string? proxyUrl)
     {
-        if (string.IsNullOrWhiteSpace(proxyUrl)) return null;
-
-        if (!Uri.TryCreate(proxyUrl.Trim(), UriKind.Absolute, out var uri) ||
-            uri.Scheme is not ("http" or "https" or "socks5"))
-            throw new NotificationSendException($"代理地址无效：{proxyUrl}（支持 http/https/socks5）。");
-
-        var proxy = new WebProxy(new UriBuilder(uri.Scheme, uri.Host, uri.Port).Uri);
-        if (!string.IsNullOrEmpty(uri.UserInfo))
+        try
         {
-            var userInfo = uri.UserInfo.Split(':', 2);
-            proxy.Credentials = new NetworkCredential(Uri.UnescapeDataString(userInfo[0]),
-                                                      userInfo.Length > 1
-                                                          ? Uri.UnescapeDataString(userInfo[1])
-                                                          : string.Empty);
+            return ProxyUrlParser.Parse(proxyUrl);
         }
-
-        return proxy;
+        catch (FormatException exception)
+        {
+            throw new NotificationSendException(exception.Message);
+        }
     }
 
     private static string Truncate(string text)

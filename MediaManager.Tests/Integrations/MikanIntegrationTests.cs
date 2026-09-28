@@ -1,3 +1,4 @@
+using MediaManager.Integrations;
 using MediaManager.Integrations.Mikan;
 using System.Net;
 
@@ -33,7 +34,7 @@ public sealed class MikanIntegrationTests
     [Fact]
     public async Task SubjectResolver_FollowsMikanPagesAndExtractsBangumiId()
     {
-        var factory = new FakeHttpClientFactory(request =>
+        var factory = new FakeHttpClientSource(request =>
         {
             var html = request.RequestUri!.AbsolutePath.Contains("Episode", StringComparison.Ordinal)
                 ? "<p class='bangumi-title'><a href='/Home/Bangumi/abcd'>Example</a></p>"
@@ -53,6 +54,16 @@ public sealed class MikanIntegrationTests
         public HttpClient CreateClient(string name)
         {
             return new HttpClient(new StubHandler(responseFactory));
+        }
+    }
+
+    private sealed class FakeHttpClientSource(Func<HttpRequestMessage, HttpResponseMessage> responseFactory)
+        : IProxiedHttpClientSource
+    {
+        public Task<HttpClient> CreateClientAsync(string clientName, Guid? proxyId,
+                                                  CancellationToken   cancellationToken = default)
+        {
+            return Task.FromResult(new HttpClient(new StubHandler(responseFactory)));
         }
     }
 

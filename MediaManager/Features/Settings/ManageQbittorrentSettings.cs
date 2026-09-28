@@ -15,6 +15,7 @@ public sealed class ManageQbittorrentSettings(
     public const string UsernameKey = "Qbittorrent.Username";
     public const string PasswordKey = "Qbittorrent.Password";
     public const string SavePathKey = "Qbittorrent.SavePath";
+    public const string ProxyIdKey  = "Qbittorrent.ProxyId";
 
     public async Task<QbittorrentSettings> GetAsync(CancellationToken cancellationToken = default)
     {
@@ -22,8 +23,12 @@ public sealed class ManageQbittorrentSettings(
         var baseUrl     = await settingStore.GetAsync(BaseUrlKey, cancellationToken)  ?? string.Empty;
         var username    = await settingStore.GetAsync(UsernameKey, cancellationToken) ?? string.Empty;
         var savePath    = await settingStore.GetAsync(SavePathKey, cancellationToken) ?? string.Empty;
+        var proxyId     = Guid.TryParse(await settingStore.GetAsync(ProxyIdKey, cancellationToken), out var parsed)
+            ? (Guid?)parsed
+            : null;
         return new QbittorrentSettings(baseUrl.Trim(), username, savePath.Trim(),
-                                       string.Equals(enabledText, "true", StringComparison.OrdinalIgnoreCase));
+                                       string.Equals(enabledText, "true", StringComparison.OrdinalIgnoreCase),
+                                       proxyId);
     }
 
     /// <summary>保存设置；password 为 null 或空白表示不修改已保存密码。</summary>
@@ -54,6 +59,7 @@ public sealed class ManageQbittorrentSettings(
         await settingStore.SetAsync(BaseUrlKey, baseUrl, cancellationToken);
         await settingStore.SetAsync(UsernameKey, username, cancellationToken);
         await settingStore.SetAsync(SavePathKey, savePath, cancellationToken);
+        await settingStore.SetAsync(ProxyIdKey, settings.ProxyId?.ToString() ?? string.Empty, cancellationToken);
         if (!string.IsNullOrWhiteSpace(password))
             await settingStore.SetProtectedAsync(PasswordKey, password, cancellationToken);
     }

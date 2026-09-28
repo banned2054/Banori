@@ -11,9 +11,9 @@ public interface ITelegramSender
                    CancellationToken cancellationToken = default);
 }
 
-/// <summary>Gotify 发送边界；测试可用 TCP 桩或替身。</summary>
+/// <summary>Gotify 发送边界；测试可用 TCP 桩或替身。proxyUrl 为 null 时直连（自托管默认语义）。</summary>
 public interface IGotifySender
 {
-    Task SendAsync(string baseUrl, string appToken, string title, string message,
+    Task SendAsync(string baseUrl, string appToken, string? proxyUrl, string title, string message,
                    CancellationToken cancellationToken = default);
 }

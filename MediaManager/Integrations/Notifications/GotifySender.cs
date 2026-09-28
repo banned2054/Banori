@@ -6,7 +6,8 @@ namespace MediaManager.Integrations.Notifications;
 
 /// <summary>
 ///     Gotify 消息发送器：POST {baseUrl}/message?token={appToken}，正文为 title/message。
-///     Gotify 通常自托管在局域网，直连不走代理；响应非 2xx 视为失败。
+///     Gotify 通常自托管在局域网：proxyUrl 为空时直连不走代理，配置了代理才走（http/https/socks）。
+///     响应非 2xx 视为失败。
 /// </summary>
 public sealed class GotifySender : IGotifySender
 {
@@ -16,7 +17,7 @@ public sealed class GotifySender : IGotifySender
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
-    public async Task SendAsync(string baseUrl, string appToken, string title, string message,
+    public async Task SendAsync(string baseUrl, string appToken, string? proxyUrl, string title, string message,
                                 CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(baseUrl);
@@ -24,10 +25,11 @@ public sealed class GotifySender : IGotifySender
         ArgumentException.ThrowIfNullOrWhiteSpace(message);
 
         var normalized = baseUrl.Trim().TrimEnd('/');
-        using var client = new HttpClient(new SocketsHttpHandler { Proxy = null })
-        {
-            Timeout = TimeSpan.FromSeconds(20)
-        };
+        // Proxy = null 仍会回落系统默认代理（UseProxy 默认 true），必须显式关闭才是自托管直连。
+        var handler = string.IsNullOrWhiteSpace(proxyUrl)
+            ? new SocketsHttpHandler { UseProxy = false }
+            : new SocketsHttpHandler { Proxy = ProxyUrlParser.Parse(proxyUrl) };
+        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
 
         var payload = new Dictionary<string, string> { ["message"] = message };
         if (!string.IsNullOrWhiteSpace(title)) payload["title"] = title;

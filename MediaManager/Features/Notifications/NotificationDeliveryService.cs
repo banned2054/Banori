@@ -1,4 +1,5 @@
 using MediaManager.Data;
+using MediaManager.Features.Proxies;
 using MediaManager.Features.Settings;
 using MediaManager.Integrations.Notifications;
 using Microsoft.EntityFrameworkCore;
@@ -16,6 +17,7 @@ public sealed class NotificationDeliveryService(
     ManageGotifySettings                    gotifySettings,
     ITelegramSender                         telegramSender,
     IGotifySender                           gotifySender,
+    ProxyService                            proxyService,
     TimeProvider                            timeProvider,
     ILogger<NotificationDeliveryService>    logger)
 {
@@ -48,6 +50,9 @@ public sealed class NotificationDeliveryService(
 
         var telegram = await telegramSettings.GetAsync(cancellationToken);
         var gotify   = await gotifySettings.GetAsync(cancellationToken);
+        // 渠道代理按批解析一次：代理被删除时回退 null（直连），不让失效引用阻塞投递。
+        var telegramProxyUrl = await proxyService.ResolveProxyUrlAsync(telegram.ProxyId, cancellationToken);
+        var gotifyProxyUrl   = await proxyService.ResolveProxyUrlAsync(gotify.ProxyId, cancellationToken);
 
         foreach (var delivery in deliveries)
         {
@@ -55,7 +60,8 @@ public sealed class NotificationDeliveryService(
 
             try
             {
-                await DeliverOneAsync(delivery, telegram, gotify, cancellationToken);
+                await DeliverOneAsync(delivery, telegram, gotify, telegramProxyUrl, gotifyProxyUrl,
+                                      cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -100,7 +106,8 @@ public sealed class NotificationDeliveryService(
     }
 
     private async Task DeliverOneAsync(NotificationDelivery delivery, TelegramSettings telegram,
-                                       GotifySettings   gotify,    CancellationToken cancellationToken)
+                                       GotifySettings   gotify,    string?           telegramProxyUrl,
+                                       string?          gotifyProxyUrl, CancellationToken cancellationToken)
     {
         switch (delivery.Channel)
         {
@@ -114,7 +121,7 @@ public sealed class NotificationDeliveryService(
                     return;
                 }
 
-                await telegramSender.SendAsync(botToken, telegram.ChatId, telegram.ProxyUrl,
+                await telegramSender.SendAsync(botToken, telegram.ChatId, telegramProxyUrl,
                                                FormatText(delivery), cancellationToken);
                 break;
 
@@ -127,8 +134,8 @@ public sealed class NotificationDeliveryService(
                     return;
                 }
 
-                await gotifySender.SendAsync(gotify.BaseUrl, appToken, delivery.Title, delivery.Message,
-                                             cancellationToken);
+                await gotifySender.SendAsync(gotify.BaseUrl, appToken, gotifyProxyUrl, delivery.Title,
+                                             delivery.Message, cancellationToken);
                 break;
 
             default:

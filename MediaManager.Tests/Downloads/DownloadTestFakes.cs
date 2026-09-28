@@ -237,9 +237,14 @@ public sealed class FakeTorrentFileSource(Func<Uri, byte[]> resolver) : ITorrent
 {
     public int CallCount { get; private set; }
 
-    public Task<byte[]> DownloadAsync(Uri torrentUri, CancellationToken cancellationToken = default)
+    /// <summary>最近一次下载请求携带的代理 Id，供传递断言使用。</summary>
+    public Guid? LastProxyId { get; private set; }
+
+    public Task<byte[]> DownloadAsync(Uri torrentUri, Guid? proxyId = default,
+                                      CancellationToken   cancellationToken = default)
     {
         CallCount++;
+        LastProxyId = proxyId;
         return Task.FromResult(resolver(torrentUri));
     }
 }

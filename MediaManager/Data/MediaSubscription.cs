@@ -11,6 +11,10 @@ public sealed class MediaSubscription
     public bool            IsOneShot                 { get; set; }
     public int             RefreshIntervalMinutes    { get; set; }
     public int?            FixedSubjectId            { get; set; }
+
+    /// <summary>可选代理（ProxyServers.Id）；null 表示直连。删除代理时由外键 SetNull 自动置空。</summary>
+    public Guid?           ProxyId                   { get; set; }
+    public ProxyServer?    Proxy                     { get; set; }
     public DateTimeOffset  CreatedAtUtc              { get; set; }
     public DateTimeOffset  UpdatedAtUtc              { get; set; }
     public DateTimeOffset? LastRefreshStartedAtUtc   { get; set; }

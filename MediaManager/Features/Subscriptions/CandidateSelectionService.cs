@@ -461,6 +461,7 @@ public sealed class CandidateSelectionService(
             {
                 winnerItem = await db.FeedItems
                                      .Include(item => item.Subject)
+                                     .Include(item => item.Subscription)
                                      .SingleOrDefaultAsync(item => item.Id == winner.FeedItemId, cancellationToken);
                 if (winnerItem is null)
                     logger.LogWarning("同集组 {Key} 的优胜条目 {ItemId} 已不存在，按无优胜处理。", plan.Key,
@@ -469,8 +470,11 @@ public sealed class CandidateSelectionService(
                 {
                     try
                     {
+                        // 种子下载跟随所属订阅的代理配置，与 RSS 抓取保持同一出口。
                         (torrentBytes, infoHash) =
-                            await downloadService.DownloadTorrentAsync(winnerItem.TorrentUrl!, cancellationToken);
+                            await downloadService.DownloadTorrentAsync(winnerItem.TorrentUrl!,
+                                                                       winnerItem.Subscription.ProxyId,
+                                                                       cancellationToken);
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {

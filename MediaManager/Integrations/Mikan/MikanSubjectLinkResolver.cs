@@ -3,15 +3,16 @@ using System.Text.RegularExpressions;
 
 namespace MediaManager.Integrations.Mikan;
 
-public sealed partial class MikanSubjectLinkResolver(IHttpClientFactory httpClientFactory) : ISubjectLinkResolver
+public sealed partial class MikanSubjectLinkResolver(IProxiedHttpClientSource httpClientSource) : ISubjectLinkResolver
 {
     private const int MaximumHtmlLength = 2 * 1024 * 1024;
 
-    public async Task<int?> ResolveSubjectIdAsync(Uri episodeUri, CancellationToken cancellationToken = default)
+    public async Task<int?> ResolveSubjectIdAsync(Uri episodeUri, Guid? proxyId = null,
+                                                  CancellationToken   cancellationToken = default)
     {
         if (!IsMikanUri(episodeUri)) return null;
 
-        var episodeHtml      = await GetHtmlAsync(episodeUri, cancellationToken);
+        var episodeHtml      = await GetHtmlAsync(episodeUri, proxyId, cancellationToken);
         var bangumiPageMatch = BangumiTitleParagraphRegex().Match(episodeHtml);
         if (!bangumiPageMatch.Success) return null;
         var hrefMatch = HrefRegex().Match(bangumiPageMatch.Value);
@@ -19,7 +20,7 @@ public sealed partial class MikanSubjectLinkResolver(IHttpClientFactory httpClie
         var href = WebUtility.HtmlDecode(hrefMatch.Groups[1].Value);
         if (!Uri.TryCreate(episodeUri, href, out var bangumiPageUri) || !IsMikanUri(bangumiPageUri)) return null;
 
-        var bangumiHtml = await GetHtmlAsync(bangumiPageUri, cancellationToken);
+        var bangumiHtml = await GetHtmlAsync(bangumiPageUri, proxyId, cancellationToken);
         var infoMatch   = BangumiInfoParagraphRegex().Match(bangumiHtml);
         if (!infoMatch.Success) return null;
         var subjectMatch = BangumiSubjectRegex().Match(infoMatch.Value);
@@ -28,9 +29,9 @@ public sealed partial class MikanSubjectLinkResolver(IHttpClientFactory httpClie
             : null;
     }
 
-    private async Task<string> GetHtmlAsync(Uri uri, CancellationToken cancellationToken)
+    private async Task<string> GetHtmlAsync(Uri uri, Guid? proxyId, CancellationToken cancellationToken)
     {
-        using var client   = httpClientFactory.CreateClient("Mikan");
+        using var client   = await httpClientSource.CreateClientAsync("FeedSource", proxyId, cancellationToken);
         using var response = await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if (!response.IsSuccessStatusCode) return string.Empty;
         var contentLength = response.Content.Headers.ContentLength;

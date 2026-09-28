@@ -56,7 +56,8 @@ public sealed class FeedItemEvaluator(
             subjectId = await FindSubjectIdByTitleAsync(normalizedTitle, cancellationToken);
 
         if (subjectId is null && Uri.TryCreate(item.Link, UriKind.Absolute, out var link))
-            subjectId = await subjectLinkResolver.ResolveSubjectIdAsync(link, cancellationToken);
+            subjectId = await subjectLinkResolver.ResolveSubjectIdAsync(link, item.SubscriptionProxyId,
+                                                                        cancellationToken);
 
         if (subjectId is null)
         {
@@ -190,7 +191,7 @@ public sealed class FeedItemEvaluator(
                        .Where(value => value.Id == itemId)
                        .Select(value => new ItemSnapshot(value.Id, value.Title, value.Link, value.SubjectId,
                                                          value.MediaType, value.Episode, value.PublishedAtUtc,
-                                                         value.StableId))
+                                                         value.StableId, value.Subscription.ProxyId))
                        .SingleOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException("找不到指定条目。");
     }
@@ -378,5 +379,6 @@ public sealed class FeedItemEvaluator(
     }
 
     private sealed record ItemSnapshot(Guid Id, string Title, string? Link, int? SubjectId, string? MediaType,
-                                       decimal? Episode, DateTimeOffset? PublishedAtUtc, string StableId);
+                                       decimal? Episode, DateTimeOffset? PublishedAtUtc, string StableId,
+                                       Guid? SubscriptionProxyId);
 }

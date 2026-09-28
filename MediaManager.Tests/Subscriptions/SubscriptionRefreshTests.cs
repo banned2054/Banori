@@ -87,6 +87,64 @@ public sealed class SubscriptionRefreshTests
     }
 
     [Fact]
+    public async Task Refresh_PassesSubscriptionProxyToReaderAndResolver()
+    {
+        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.Proxy.Passthrough.Tests.");
+        try
+        {
+            var timestamp  = new DateTimeOffset(2026, 9, 28, 6, 0, 0, TimeSpan.Zero);
+            var sourceItem = new FeedSourceItem("guid:proxy-1", "proxy-1",
+                                                "[S1百综字幕组] 死灵子的宇宙恐怖秀 / Necronomico no Cosmic Horror Show[12][1080p][WebRip][AVC_AAC][CHS][简体内嵌]",
+                                                new Uri("https://mikanani.me/Home/Episode/proxy-1"),
+                                                new Uri("https://mikanani.me/Download/proxy-1.torrent"),
+                                                timestamp.AddHours(-1));
+            var resolver = new CountingSubjectLinkResolver(42);
+            var services = CreateServices(testDirectory, timestamp, () => [sourceItem], resolver);
+
+            await using var provider = services.BuildServiceProvider();
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
+                await using var db = await factory.CreateDbContextAsync();
+                await db.Database.EnsureCreatedAsync();
+
+                var proxyId = Guid.NewGuid();
+                db.ProxyServers.Add(new ProxyServer
+                {
+                    Id           = proxyId,
+                    Name         = "测试代理",
+                    Protocol     = ProxyProtocol.Http,
+                    Host         = "127.0.0.1",
+                    Port         = 7890,
+                    CreatedAtUtc = timestamp,
+                    UpdatedAtUtc = timestamp
+                });
+                await db.SaveChangesAsync();
+
+                var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
+                await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "代理订阅",
+                                                                    "https://mikanani.me/RSS/Bangumi?token=secret",
+                                                                    true, 30, null, ProxyId: proxyId));
+                var result = await scope.ServiceProvider.GetRequiredService<MikanRefreshService>().ProcessNextAsync();
+
+                Assert.NotNull(result);
+                Assert.Null(result.Error);
+                var feedReader = (FakeFeedReader)scope.ServiceProvider.GetRequiredService<IFeedSourceReader>();
+                Assert.Equal(proxyId, feedReader.LastProxyId);
+                // 无映射无 bgmId：评估走到页面解析档，解析器拿到同一代理并成功关联。
+                Assert.Equal(1, resolver.CallCount);
+                Assert.Equal(proxyId, resolver.LastProxyId);
+                var item = Assert.Single(await scope.ServiceProvider.GetRequiredService<FeedItemQueries>().ListAsync());
+                Assert.Equal(42, item.SubjectId);
+            }
+        }
+        finally
+        {
+            testDirectory.Delete(true);
+        }
+    }
+
+    [Fact]
     public async Task Migrations_CreateP2TablesOnEmptyDatabase()
     {
         var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P2.Migrations.Tests.");
@@ -873,9 +931,13 @@ public sealed class SubscriptionRefreshTests
     {
         private IReadOnlyList<FeedSourceItem>? _items;
 
+        /// <summary>最近一次读取请求携带的订阅代理 Id，供传递断言使用。</summary>
+        public Guid? LastProxyId { get; private set; }
+
         public Task<IReadOnlyList<FeedSourceItem>>
-            ReadAsync(Uri feedUri, CancellationToken cancellationToken = default)
+            ReadAsync(Uri feedUri, Guid? proxyId = default, CancellationToken cancellationToken = default)
         {
+            LastProxyId = proxyId;
             return Task.FromResult(_items ?? itemsFactory());
         }
 
@@ -889,9 +951,14 @@ public sealed class SubscriptionRefreshTests
     {
         public int CallCount { get; private set; }
 
-        public Task<int?> ResolveSubjectIdAsync(Uri episodeUri, CancellationToken cancellationToken = default)
+        /// <summary>最近一次解析请求携带的订阅代理 Id，供传递断言使用。</summary>
+        public Guid? LastProxyId { get; private set; }
+
+        public Task<int?> ResolveSubjectIdAsync(Uri episodeUri, Guid? proxyId = default,
+                                                CancellationToken   cancellationToken = default)
         {
             CallCount++;
+            LastProxyId = proxyId;
             return Task.FromResult(subjectId);
         }
     }

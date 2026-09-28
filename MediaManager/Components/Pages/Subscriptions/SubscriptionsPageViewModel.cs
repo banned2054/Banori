@@ -1,3 +1,4 @@
+using MediaManager.Features.Proxies;
 using MediaManager.Features.Subscriptions;
 using System.ComponentModel.DataAnnotations;
 
@@ -6,11 +7,14 @@ namespace MediaManager.Components.Pages.Subscriptions;
 /// <summary>订阅页状态：列表、编辑草稿、保存与刷新操作。随页面组件创建和释放。</summary>
 public sealed class SubscriptionsPageViewModel(
     SubscriptionService                 subscriptionService,
+    ProxyService                        proxyService,
     ILogger<SubscriptionsPageViewModel> logger)
 {
     private readonly List<SubscriptionView> _subscriptions = [];
+    private readonly List<ProxyView>        _proxies       = [];
 
     public IReadOnlyList<SubscriptionView> Subscriptions => _subscriptions;
+    public IReadOnlyList<ProxyView>        Proxies       => _proxies;
     public SubscriptionDraft               Draft         { get; } = new();
     public OneShotSubscriptionDraft        OneShotDraft  { get; } = new();
 
@@ -25,6 +29,8 @@ public sealed class SubscriptionsPageViewModel(
     {
         _subscriptions.Clear();
         _subscriptions.AddRange(await subscriptionService.ListAsync(cancellationToken));
+        _proxies.Clear();
+        _proxies.AddRange(await proxyService.ListAsync(cancellationToken));
         Loaded = true;
     }
 
@@ -165,7 +171,11 @@ public sealed class SubscriptionDraft
     public int RefreshIntervalMinutes { get; set; } = 30;
 
     public int? FixedSubjectId { get; set; }
-    public bool IsEnabled      { get; set; } = true;
+
+    /// <summary>代理下拉的绑定值（代理 Id 的字符串形式）；空表示直连。</summary>
+    public string? ProxyId { get; set; }
+
+    public bool IsEnabled { get; set; } = true;
 
     public void Reset()
     {
@@ -174,6 +184,7 @@ public sealed class SubscriptionDraft
         FeedUrl                = string.Empty;
         RefreshIntervalMinutes = 30;
         FixedSubjectId         = null;
+        ProxyId                = null;
         IsEnabled              = true;
     }
 
@@ -184,12 +195,14 @@ public sealed class SubscriptionDraft
         FeedUrl                = string.Empty;
         RefreshIntervalMinutes = subscription.RefreshIntervalMinutes;
         FixedSubjectId         = subscription.FixedSubjectId;
+        ProxyId                = subscription.ProxyId?.ToString();
         IsEnabled              = subscription.IsEnabled;
     }
 
     public SaveSubscriptionRequest ToRequest()
     {
-        return new SaveSubscriptionRequest(Id, Name, FeedUrl, IsEnabled, RefreshIntervalMinutes, FixedSubjectId);
+        return new SaveSubscriptionRequest(Id, Name, FeedUrl, IsEnabled, RefreshIntervalMinutes, FixedSubjectId,
+                                           ProxyId: Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null);
     }
 }
 

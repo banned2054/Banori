@@ -57,6 +57,10 @@ public sealed class SubscriptionService(
         var now        = timeProvider.GetUtcNow();
 
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        if (normalized.ProxyId is { } proxyId &&
+            !await db.ProxyServers.AnyAsync(item => item.Id == proxyId, cancellationToken))
+            throw new ArgumentException("指定的代理不存在，请先在代理设置中创建。", nameof(request));
+
         if (normalized.Id is null)
         {
             var entity = new MediaSubscription
@@ -68,6 +72,7 @@ public sealed class SubscriptionService(
                 IsOneShot              = normalized.IsOneShot,
                 RefreshIntervalMinutes = normalized.RefreshIntervalMinutes,
                 FixedSubjectId         = normalized.FixedSubjectId,
+                ProxyId                = normalized.ProxyId,
                 CreatedAtUtc           = now,
                 UpdatedAtUtc           = now,
                 NextRefreshAtUtc       = normalized.IsEnabled && !normalized.IsOneShot ? now : null
@@ -87,6 +92,7 @@ public sealed class SubscriptionService(
         existing.IsEnabled              = normalized.IsEnabled;
         existing.RefreshIntervalMinutes = normalized.RefreshIntervalMinutes;
         existing.FixedSubjectId         = normalized.FixedSubjectId;
+        existing.ProxyId                = normalized.ProxyId;
         existing.UpdatedAtUtc           = now;
         if (normalized.FeedUrl is not null) existing.FeedUrlProtected = _urlProtector.Protect(normalized.FeedUrl);
 
@@ -232,6 +238,6 @@ public sealed class SubscriptionService(
                                     item.RefreshIntervalMinutes,
                                     item.FixedSubjectId,
                                     item.LastRefreshStartedAtUtc, item.LastRefreshCompletedAtUtc, item.NextRefreshAtUtc,
-                                    item.LastError, latestStatus);
+                                    item.LastError, latestStatus, item.ProxyId);
     }
 }

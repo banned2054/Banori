@@ -153,6 +153,29 @@ public sealed class NotificationDeliveryServiceTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Service.RetryAsync(id));
     }
 
+    /// <summary>钉死重试策略常量：常量偏离设计（如有人调整上限）时此测试必须显式更新。</summary>
+    [Fact]
+    public void RetryPolicyConstants_ArePinnedToDesign()
+    {
+        Assert.Equal(10, NotificationDeliveryService.MaxAttempts);
+        Assert.Equal(30, NotificationDeliveryService.BackoffCapMinutes);
+    }
+
+    /// <summary>钉死指数退避曲线：第 n 次失败后等待 2^(n-1) 分钟，封顶 30 分钟。</summary>
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(2, 2)]
+    [InlineData(3, 4)]
+    [InlineData(4, 8)]
+    [InlineData(5, 16)]
+    [InlineData(6, 30)]
+    [InlineData(7, 30)]
+    [InlineData(10, 30)]
+    public void BackoffMinutes_FollowsExponentialCurveCappedAt30(int attemptCount, int expectedMinutes)
+    {
+        Assert.Equal(expectedMinutes, NotificationDeliveryService.BackoffMinutes(attemptCount));
+    }
+
     [Fact]
     public async Task DeliverPending_MissingToken_FailsWithConfigHintInsteadOfSending()
     {
@@ -187,6 +210,7 @@ public sealed class NotificationDeliveryServiceTests
         services.AddSingleton<IApplicationSettingStore>(provider =>
                                                             provider
                                                                .GetRequiredService<MemoryApplicationSettingStore>());
+        services.AddDataProtection();
         services.AddNotificationTestFakes();
         // 与应用及下载/订阅测试保持一致的 Identity 模型配置，避免 ApplicationDbContext 模型缓存顺序依赖。
         services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion =
@@ -249,14 +273,14 @@ public sealed class NotificationDeliveryServiceTests
         public Task EnableTelegramAsync()
         {
             var manage = new ManageTelegramSettings(Store, Telegram);
-            return manage.SaveAsync(new TelegramSettings("42", string.Empty, true, NotificationEvents.All),
+            return manage.SaveAsync(new TelegramSettings("42", null, true, NotificationEvents.All),
                                     "bot-token");
         }
 
         public Task EnableGotifyAsync()
         {
             var manage = new ManageGotifySettings(Store, Gotify);
-            return manage.SaveAsync(new GotifySettings("http://gotify.test", true, NotificationEvents.All),
+            return manage.SaveAsync(new GotifySettings("http://gotify.test", null, true, NotificationEvents.All),
                                     "app-token");
         }
 

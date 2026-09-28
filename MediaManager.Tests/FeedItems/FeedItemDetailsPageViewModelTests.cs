@@ -253,7 +253,8 @@ public sealed class FeedItemDetailsPageViewModelTests
 
     private sealed class CountingSubjectLinkResolver(int? subjectId) : ISubjectLinkResolver
     {
-        public Task<int?> ResolveSubjectIdAsync(Uri episodeUri, CancellationToken cancellationToken = default)
+        public Task<int?> ResolveSubjectIdAsync(Uri episodeUri, Guid? proxyId = default,
+                                                CancellationToken   cancellationToken = default)
         {
             return Task.FromResult(subjectId);
         }

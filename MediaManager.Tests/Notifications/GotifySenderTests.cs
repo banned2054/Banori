@@ -11,7 +11,7 @@ public sealed class GotifySenderTests
         await using var stub   = StubHttpServer.Start();
         var             sender = new GotifySender();
 
-        await sender.SendAsync(stub.BaseUrl, "app-token", "标题", "正文内容");
+        await sender.SendAsync(stub.BaseUrl, "app-token", null, "标题", "正文内容");
 
         var request = Assert.Single(stub.Requests);
         Assert.Equal("POST", request.Method);
@@ -26,7 +26,7 @@ public sealed class GotifySenderTests
         await using var stub   = StubHttpServer.Start();
         var             sender = new GotifySender();
 
-        await sender.SendAsync(stub.BaseUrl, "app-token", string.Empty, "只有正文");
+        await sender.SendAsync(stub.BaseUrl, "app-token", null, string.Empty, "只有正文");
 
         var request = Assert.Single(stub.Requests);
         Assert.Contains("只有正文", request.Body);
@@ -39,7 +39,7 @@ public sealed class GotifySenderTests
         await using var stub   = StubHttpServer.Start();
         var             sender = new GotifySender();
 
-        await sender.SendAsync(stub.BaseUrl + "/", "app-token", "标题", "正文");
+        await sender.SendAsync(stub.BaseUrl + "/", "app-token", null, "标题", "正文");
 
         var request = Assert.Single(stub.Requests);
         Assert.StartsWith("/message", request.Path);
@@ -53,9 +53,24 @@ public sealed class GotifySenderTests
         var sender = new GotifySender();
 
         var exception =
-            await Assert.ThrowsAsync<NotificationSendException>(() => sender.SendAsync(stub.BaseUrl, "bad-token", "标题",
-                                                                         "正文"));
+            await Assert.ThrowsAsync<NotificationSendException>(() => sender.SendAsync(stub.BaseUrl, "bad-token",
+                                                                         null, "标题", "正文"));
         Assert.Contains("403", exception.Message);
         Assert.Contains("token invalid", exception.Message);
+    }
+
+    [Fact]
+    public async Task Send_WithProxy_RoutesRequestThroughProxy()
+    {
+        await using var stub   = StubHttpServer.Start();
+        var             sender = new GotifySender();
+
+        // 目标是纯 http 的假域名，代理收到的是绝对 URI 形式的请求行。
+        await sender.SendAsync("http://gotify.invalid", "app-token", stub.BaseUrl, "标题", "正文内容");
+
+        var request = Assert.Single(stub.Requests);
+        Assert.StartsWith("POST http://gotify.invalid/message?token=app-token",
+                          $"{request.Method} {request.Path}");
+        Assert.Contains("正文内容", request.Body);
     }
 }

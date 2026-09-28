@@ -10,6 +10,7 @@ using MediaManager.Features.Dashboard;
 using MediaManager.Features.Downloads;
 using MediaManager.Features.FeedItems;
 using MediaManager.Features.Notifications;
+using MediaManager.Features.Proxies;
 using MediaManager.Features.Settings;
 using MediaManager.Features.Subscriptions;
 using MediaManager.Initialization;
@@ -120,11 +121,13 @@ internal class Program
         builder.Services.AddScoped<DashboardQueries>();
         builder.Services.AddScoped<DownloadService>();
         builder.Services.AddScoped<IQbittorrentSessionFactory, QbittorrentSessionFactory>();
+        builder.Services.AddSingleton<ProxyService>();
+        builder.Services.AddSingleton<IProxiedHttpClientSource, ProxiedHttpClientSource>();
         builder.Services.AddSingleton<ITorrentFileSource, HttpTorrentFileSource>();
         builder.Services.AddSingleton<IFeedSourceReader, MikanFeedSourceReader>();
         builder.Services.AddSingleton<ISubjectLinkResolver, MikanSubjectLinkResolver>();
         builder.Services.AddSingleton<ISubjectMetadataProvider, BangumiSubjectMetadataProvider>();
-        builder.Services.AddHttpClient("Mikan", client =>
+        builder.Services.AddHttpClient("FeedSource", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(30);
             client.DefaultRequestHeaders.UserAgent.ParseAdd("MediaManager/0.2");

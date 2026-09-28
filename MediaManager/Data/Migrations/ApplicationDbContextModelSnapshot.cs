@@ -474,6 +474,9 @@ namespace MediaManager.Data.Migrations
                     b.Property<DateTimeOffset?>("NextRefreshAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<Guid?>("ProxyId")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("RefreshIntervalMinutes")
                         .HasColumnType("INTEGER");
 
@@ -481,6 +484,8 @@ namespace MediaManager.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ProxyId");
 
                     b.ToTable("MediaSubscriptions", (string)null);
                 });
@@ -537,6 +542,52 @@ namespace MediaManager.Data.Migrations
                     b.HasIndex("Status", "NextAttemptAtUtc");
 
                     b.ToTable("NotificationDeliveries", (string)null);
+                });
+
+            modelBuilder.Entity("MediaManager.Data.ProxyServer", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Host")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PasswordProtected")
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Port")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Protocol")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Username")
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.ToTable("ProxyServers", (string)null);
                 });
 
             modelBuilder.Entity("MediaManager.Data.RefreshWorkItem", b =>
@@ -805,6 +856,16 @@ namespace MediaManager.Data.Migrations
                     b.Navigation("Subject");
 
                     b.Navigation("Subscription");
+                });
+
+            modelBuilder.Entity("MediaManager.Data.MediaSubscription", b =>
+                {
+                    b.HasOne("MediaManager.Data.ProxyServer", "Proxy")
+                        .WithMany()
+                        .HasForeignKey("ProxyId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Proxy");
                 });
 
             modelBuilder.Entity("MediaManager.Data.RefreshWorkItem", b =>

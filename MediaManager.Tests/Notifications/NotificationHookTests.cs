@@ -148,6 +148,7 @@ public sealed class NotificationHookTests
                                                                   .Create(Path.GetFileNameWithoutExtension(uri.Segments
                                                                                        [^1]))));
         services.AddScoped<ManageQbittorrentSettings>();
+        services.AddDataProtection();
         services.AddNotificationTestFakes();
         services.AddScoped<DownloadService>();
         // 与应用及下载/订阅测试保持一致的 Identity 模型配置，避免 ApplicationDbContext 模型缓存顺序依赖。
@@ -219,13 +220,13 @@ public sealed class NotificationHookTests
         public Task EnableTelegramAsync(IReadOnlyList<NotificationEventType> events)
         {
             return new ManageTelegramSettings(SettingsStore, Telegram)
-               .SaveAsync(new TelegramSettings("42", string.Empty, true, events), "bot-token");
+               .SaveAsync(new TelegramSettings("42", null, true, events), "bot-token");
         }
 
         public Task EnableGotifyAsync(IReadOnlyList<NotificationEventType> events)
         {
             return new ManageGotifySettings(SettingsStore, Gotify)
-               .SaveAsync(new GotifySettings("http://gotify.test", true, events), "app-token");
+               .SaveAsync(new GotifySettings("http://gotify.test", null, true, events), "app-token");
         }
 
         /// <summary>播种一条优胜条目并创建下载任务，返回任务 ID。</summary>

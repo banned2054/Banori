@@ -1,4 +1,5 @@
 using MediaManager.Features.Notifications;
+using MediaManager.Features.Proxies;
 using MediaManager.Features.Settings;
 using System.ComponentModel.DataAnnotations;
 
@@ -10,12 +11,18 @@ public sealed class SettingsPageViewModel(
     ManageQbittorrentSettings      qbittorrentSettings,
     ManageTelegramSettings         telegramSettings,
     ManageGotifySettings           gotifySettings,
+    ProxyService                   proxyService,
     ILogger<SettingsPageViewModel> logger)
 {
+    private readonly List<ProxyView> _proxies = [];
+
     public GeneralSettingsDraft     Draft      { get; } = new();
     public QbittorrentSettingsDraft Downloader { get; } = new();
     public TelegramSettingsDraft    Telegram   { get; } = new();
     public GotifySettingsDraft      Gotify     { get; } = new();
+
+    /// <summary>代理设置页维护的命名代理，供三张卡片的代理下拉展示。</summary>
+    public IReadOnlyList<ProxyView> Proxies => _proxies;
 
     public bool    Loaded        { get; private set; }
     public bool    Saving        { get; private set; }
@@ -35,19 +42,24 @@ public sealed class SettingsPageViewModel(
         Downloader.Username = downloader.Username;
         Downloader.SavePath = downloader.SavePath;
         Downloader.Enabled  = downloader.Enabled;
+        Downloader.ProxyId  = downloader.ProxyId?.ToString();
 
         var telegram = await telegramSettings.GetAsync(cancellationToken);
         Telegram.ChatId   = telegram.ChatId;
-        Telegram.ProxyUrl = telegram.ProxyUrl;
+        Telegram.ProxyId  = telegram.ProxyId?.ToString();
         Telegram.Enabled  = telegram.Enabled;
         Telegram.NotifyDownloadStarted = telegram.Events.Contains(NotificationEventType.DownloadStarted);
         Telegram.NotifyDownloadFailed  = telegram.Events.Contains(NotificationEventType.DownloadFailed);
 
         var gotify = await gotifySettings.GetAsync(cancellationToken);
         Gotify.BaseUrl = gotify.BaseUrl;
+        Gotify.ProxyId = gotify.ProxyId?.ToString();
         Gotify.Enabled = gotify.Enabled;
         Gotify.NotifyDownloadStarted = gotify.Events.Contains(NotificationEventType.DownloadStarted);
         Gotify.NotifyDownloadFailed  = gotify.Events.Contains(NotificationEventType.DownloadFailed);
+
+        _proxies.Clear();
+        _proxies.AddRange(await proxyService.ListAsync(cancellationToken));
 
         Loaded = true;
     }
@@ -62,7 +74,8 @@ public sealed class SettingsPageViewModel(
             await qbittorrentSettings.SaveAsync(new QbittorrentSettings(Downloader.BaseUrl  ?? string.Empty,
                                                                         Downloader.Username ?? string.Empty,
                                                                         Downloader.SavePath ?? string.Empty,
-                                                                        Downloader.Enabled),
+                                                                        Downloader.Enabled,
+                                                                        Downloader.ParseProxyId()),
                                                 string.IsNullOrWhiteSpace(Downloader.Password)
                                                     ? null
                                                     : Downloader.Password,
@@ -110,7 +123,8 @@ public sealed class SettingsPageViewModel(
         {
             var (succeeded, message) = await qbittorrentSettings.TestConnectionAsync(
                  new QbittorrentSettings(Downloader.BaseUrl  ?? string.Empty, Downloader.Username ?? string.Empty,
-                                         Downloader.SavePath ?? string.Empty, true),
+                                         Downloader.SavePath ?? string.Empty, true,
+                                         Downloader.ParseProxyId()),
                  string.IsNullOrWhiteSpace(Downloader.Password) ? null : Downloader.Password,
                  cancellationToken);
             TestSucceeded = succeeded;
@@ -133,9 +147,11 @@ public sealed class SettingsPageViewModel(
         TestMessage = null;
         try
         {
+            var proxyUrl = await proxyService.ResolveProxyUrlAsync(Telegram.ParseProxyId(), cancellationToken);
             var (succeeded, message) = await telegramSettings.TestSendAsync(
                 Telegram.ToSettings(),
                 string.IsNullOrWhiteSpace(Telegram.BotToken) ? null : Telegram.BotToken,
+                proxyUrl,
                 cancellationToken);
             TestSucceeded = succeeded;
             TestMessage   = message;
@@ -157,9 +173,11 @@ public sealed class SettingsPageViewModel(
         TestMessage = null;
         try
         {
+            var proxyUrl = await proxyService.ResolveProxyUrlAsync(Gotify.ParseProxyId(), cancellationToken);
             var (succeeded, message) = await gotifySettings.TestSendAsync(
                 Gotify.ToSettings(),
                 string.IsNullOrWhiteSpace(Gotify.AppToken) ? null : Gotify.AppToken,
+                proxyUrl,
                 cancellationToken);
             TestSucceeded = succeeded;
             TestMessage   = message;
@@ -198,7 +216,15 @@ public sealed class QbittorrentSettingsDraft
     [StringLength(500, ErrorMessage = "保存路径不能超过 500 个字符。")]
     public string? SavePath { get; set; }
 
+    /// <summary>代理下拉的绑定值（代理 Id 的字符串形式）；空表示直连。</summary>
+    public string? ProxyId { get; set; }
+
     public bool Enabled { get; set; }
+
+    internal Guid? ParseProxyId()
+    {
+        return Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null;
+    }
 }
 
 /// <summary>Telegram 通知渠道的编辑模型。Bot Token 留空表示沿用已保存值。</summary>
@@ -210,8 +236,8 @@ public sealed class TelegramSettingsDraft
     [DataType(DataType.Password)]
     public string? BotToken { get; set; }
 
-    [StringLength(500, ErrorMessage = "代理地址不能超过 500 个字符。")]
-    public string? ProxyUrl { get; set; }
+    /// <summary>代理下拉的绑定值（代理 Id 的字符串形式）；空表示直连。</summary>
+    public string? ProxyId { get; set; }
 
     public bool Enabled { get; set; }
 
@@ -219,9 +245,14 @@ public sealed class TelegramSettingsDraft
 
     public bool NotifyDownloadFailed { get; set; } = true;
 
+    internal Guid? ParseProxyId()
+    {
+        return Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null;
+    }
+
     internal TelegramSettings ToSettings()
     {
-        return new TelegramSettings(ChatId ?? string.Empty, ProxyUrl ?? string.Empty, Enabled,
+        return new TelegramSettings(ChatId ?? string.Empty, ParseProxyId(), Enabled,
                                     NotificationEvents.FromFlags(NotifyDownloadStarted, NotifyDownloadFailed));
     }
 }
@@ -235,15 +266,23 @@ public sealed class GotifySettingsDraft
     [DataType(DataType.Password)]
     public string? AppToken { get; set; }
 
+    /// <summary>代理下拉的绑定值（代理 Id 的字符串形式）；空表示直连。</summary>
+    public string? ProxyId { get; set; }
+
     public bool Enabled { get; set; }
 
     public bool NotifyDownloadStarted { get; set; } = true;
 
     public bool NotifyDownloadFailed { get; set; } = true;
 
+    internal Guid? ParseProxyId()
+    {
+        return Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null;
+    }
+
     internal GotifySettings ToSettings()
     {
-        return new GotifySettings(BaseUrl ?? string.Empty, Enabled,
+        return new GotifySettings(BaseUrl ?? string.Empty, ParseProxyId(), Enabled,
                                   NotificationEvents.FromFlags(NotifyDownloadStarted, NotifyDownloadFailed));
     }
 }

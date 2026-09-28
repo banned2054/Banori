@@ -2,17 +2,23 @@
 @rendermode InteractiveServer
 @attribute [Authorize]
 @using MediaManager.Features.Settings
+@using MediaManager.Features.Proxies
+@using MediaManager.Data
 @implements IDisposable
 
 @inject ManageGeneralSettings          SettingsService
 @inject ManageQbittorrentSettings      DownloaderSettings
 @inject ManageTelegramSettings         TelegramSettings
 @inject ManageGotifySettings           GotifySettings
+@inject ProxyService                   ProxyService
 @inject ILogger<SettingsPageViewModel> Logger
 
 <PageTitle>设置 - MediaManager</PageTitle>
 
-<h1>设置</h1>
+<div class="d-flex justify-content-between align-items-center mb-2">
+	<h1 class="mb-0">设置</h1>
+	<a class="btn btn-outline-secondary" href="settings/proxies">代理设置</a>
+</div>
 
 <p class="text-body-secondary">这里保存应用自身的基础设置、qBittorrent 下载器与通知渠道配置。媒体库（Jellyfin）配置将在对应阶段加入。</p>
 
@@ -78,6 +84,18 @@ else
 					<ValidationMessage For="() => _vm.Downloader.SavePath"/>
 				</div>
 
+				<div class="mb-3">
+					<label for="downloader-proxy" class="form-label">代理（可选）</label>
+					<select id="downloader-proxy" class="form-select" @bind="_vm.Downloader.ProxyId">
+						<option value="">不使用代理</option>
+						@foreach (var proxy in _vm.Proxies)
+						{
+							<option value="@proxy.Id">@proxy.Name（@(proxy.Host):@(proxy.Port)）</option>
+						}
+					</select>
+					<div class="form-text">应用到本机与下载器之间的 API 请求；代理在<a href="settings/proxies">代理设置</a>中维护。</div>
+				</div>
+
 				<button type="submit" class="btn btn-primary" disabled="@_vm.Saving">
 					@(_vm.Saving ? "正在保存…" : "保存")
 				</button>
@@ -93,7 +111,7 @@ else
 		<div class="card settings-card mt-3">
 			<div class="card-body">
 				<h2 class="h5 card-title">Telegram 通知</h2>
-				<p class="text-body-secondary small">通过 Telegram Bot 发送通知。代理支持 http/https/socks5（可携带账号密码），留空时沿用系统代理设置。发送目标为私聊或群组的数字 Chat ID，也可以是公开频道的 @@频道用户名。</p>
+				<p class="text-body-secondary small">通过 Telegram Bot 发送通知。发送目标为私聊或群组的数字 Chat ID，也可以是公开频道的 @@频道用户名。</p>
 
 				<div class="form-check form-switch mb-3">
 					<InputCheckbox class="form-check-input" id="telegram-enabled" @bind-Value="_vm.Telegram.Enabled"/>
@@ -113,9 +131,15 @@ else
 				</div>
 
 				<div class="mb-3">
-					<label for="telegram-proxy" class="form-label">代理地址（可选）</label>
-					<InputText id="telegram-proxy" class="form-control" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" @bind-Value="_vm.Telegram.ProxyUrl"/>
-					<ValidationMessage For="() => _vm.Telegram.ProxyUrl"/>
+					<label for="telegram-proxy" class="form-label">代理（可选）</label>
+					<select id="telegram-proxy" class="form-select" @bind="_vm.Telegram.ProxyId">
+						<option value="">不使用代理（沿用系统代理）</option>
+						@foreach (var proxy in _vm.Proxies)
+						{
+							<option value="@proxy.Id">@proxy.Name（@ProtocolLabel(proxy.Protocol)）</option>
+						}
+					</select>
+					<div class="form-text">代理在<a href="settings/proxies">代理设置</a>中维护。</div>
 				</div>
 
 				<div class="mb-3">
@@ -165,6 +189,18 @@ else
 				</div>
 
 				<div class="mb-3">
+					<label for="gotify-proxy" class="form-label">代理（可选）</label>
+					<select id="gotify-proxy" class="form-select" @bind="_vm.Gotify.ProxyId">
+						<option value="">不使用代理（直连）</option>
+						@foreach (var proxy in _vm.Proxies)
+						{
+							<option value="@proxy.Id">@proxy.Name（@ProtocolLabel(proxy.Protocol)）</option>
+						}
+					</select>
+					<div class="form-text">Gotify 通常自托管在局域网，默认直连；跨网段访问时才需要代理。代理在<a href="settings/proxies">代理设置</a>中维护。</div>
+				</div>
+
+				<div class="mb-3">
 					<span class="form-label d-block">通知事件</span>
 					<div class="form-check form-check-inline">
 						<InputCheckbox class="form-check-input" id="gotify-ev-started" @bind-Value="_vm.Gotify.NotifyDownloadStarted"/>
@@ -203,6 +239,16 @@ else
 
 @code {
 
+	private static string ProtocolLabel(ProxyProtocol protocol)
+	{
+		return protocol switch
+		{
+			ProxyProtocol.Socks4 => "SOCKS4",
+			ProxyProtocol.Socks5 => "SOCKS5",
+			_                    => "HTTP"
+		};
+	}
+
 	private Task TestDownloaderAsync()
 	{
 		return RunAsync(_vm.TestDownloaderAsync);
@@ -224,7 +270,7 @@ else
 	protected override void OnInitialized()
 	{
 		_vm = new SettingsPageViewModel(SettingsService, DownloaderSettings, TelegramSettings, GotifySettings,
-		                                Logger);
+		                                ProxyService, Logger);
 	}
 
 	protected override Task OnInitializedAsync()

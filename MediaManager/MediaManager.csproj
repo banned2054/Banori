@@ -20,4 +20,8 @@
     <PackageReference Include="Banned.Qbittorrent" Version="1.7.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="MediaManager.Tests" />
+  </ItemGroup>
+
 </Project>
