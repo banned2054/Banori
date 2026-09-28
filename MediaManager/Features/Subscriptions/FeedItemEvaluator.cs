@@ -27,12 +27,14 @@ public sealed class FeedItemEvaluator(
     TimeProvider                            timeProvider)
 {
     /// <summary>
-    ///     评估一个已入库条目。Subject 按指定值优先、其次标题映射缓存、最后 Mikan 页面发现的顺序确定；
-    ///     指定值或缓存命中时不会访问 Mikan 页面。标题映射始终记录修正前的原始 Subject，
+    ///     评估一个已入库条目。Subject 按指定值优先、其次标题映射缓存、再次来源 feed 直接提供的
+    ///     Subject（sourceSubjectId，如 AniBT 的 bgmId）、最后 Mikan 页面发现的顺序确定；
+    ///     前面任一档命中时不会访问来源页面。标题映射始终记录修正前的原始 Subject，
     ///     集数修正得到的 Subject 只用于条目结果、筛选与命名。
     /// </summary>
     public async Task EvaluateAsync(Guid              itemId, int? requestedSubjectId,
-                                    CancellationToken cancellationToken = default)
+                                    CancellationToken cancellationToken = default,
+                                    int?              sourceSubjectId   = null)
     {
         var item = await LoadItemAsync(itemId, cancellationToken);
 
@@ -54,6 +56,9 @@ public sealed class FeedItemEvaluator(
         var subjectId       = requestedSubjectId;
         if (subjectId is null && normalizedTitle.Length > 0)
             subjectId = await FindSubjectIdByTitleAsync(normalizedTitle, cancellationToken);
+
+        if (subjectId is null)
+            subjectId = sourceSubjectId;
 
         if (subjectId is null && Uri.TryCreate(item.Link, UriKind.Absolute, out var link))
             subjectId = await subjectLinkResolver.ResolveSubjectIdAsync(link, item.SubscriptionProxyId,

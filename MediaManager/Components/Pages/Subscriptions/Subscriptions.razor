@@ -15,7 +15,7 @@
 
 <div class="d-flex justify-content-between align-items-center mb-3">
 	<div>
-		<h1 class="mb-1">Mikan 订阅</h1>
+		<h1 class="mb-1">RSS 订阅</h1>
 		<p class="text-body-secondary mb-0">RSS 地址会加密保存；本阶段只抓取、分析和预览，不会自动下载。</p>
 	</div>
 	<button class="btn btn-primary" @onclick="_vm.BeginCreate">新建订阅</button>
@@ -67,7 +67,7 @@
 					<div class="col-md-4">
 						<label class="form-label" for="subject-id">固定 Subject ID（可选）</label>
 						<InputNumber id="subject-id" class="form-control" @bind-Value="_vm.Draft.FixedSubjectId"/>
-						<div class="form-text">填写后，该订阅的条目不再从 Mikan 页面自动推断 Subject。</div>
+						<div class="form-text">填写后，该订阅的条目都固定使用此 Subject，不再自动推断。</div>
 					</div>
 					<div class="col-md-4">
 						<label class="form-label" for="subscription-proxy">代理（可选）</label>
@@ -129,7 +129,7 @@
 }
 else if (_vm.Subscriptions.Count == 0)
 {
-	<div class="empty-state">还没有订阅。新建一个 Mikan RSS 订阅后，后台会立即执行首次只读刷新。</div>
+	<div class="empty-state">还没有订阅。新建一个 RSS 订阅后，后台会立即执行首次刷新。</div>
 }
 else
 {

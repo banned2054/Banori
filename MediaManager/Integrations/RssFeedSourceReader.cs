@@ -5,9 +5,10 @@ using System.Text;
 using System.Xml;
 using System.Xml.Linq;
 
-namespace MediaManager.Integrations.Mikan;
+namespace MediaManager.Integrations;
 
-public sealed class MikanFeedSourceReader(IHttpClientFactory httpClientFactory) : IFeedSourceReader
+/// <summary>通用 RSS/Atom 源读取器：抓取 feed 并解析条目；来源特有的扩展元素（如 AniBT 的 bgmId）按 LocalName 提取。</summary>
+public sealed class RssFeedSourceReader(IProxiedHttpClientSource httpClientSource) : IFeedSourceReader
 {
     private const long MaximumFeedCharacters = 5 * 1024 * 1024;
 
@@ -16,11 +17,11 @@ public sealed class MikanFeedSourceReader(IHttpClientFactory httpClientFactory) 
     {
         ArgumentNullException.ThrowIfNull(feedUri);
         using var request = new HttpRequestMessage(HttpMethod.Get, feedUri);
-        using var client  = httpClientFactory.CreateClient("Mikan");
+        using var client  = await httpClientSource.CreateClientAsync("FeedSource", proxyId, cancellationToken);
         using var response =
             await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Mikan RSS 返回 HTTP {(int)response.StatusCode}。");
+            throw new InvalidOperationException($"RSS 源返回 HTTP {(int)response.StatusCode}。");
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var reader = XmlReader.Create(stream, new XmlReaderSettings
@@ -45,9 +46,11 @@ public sealed class MikanFeedSourceReader(IHttpClientFactory httpClientFactory) 
         if (string.IsNullOrWhiteSpace(title)) return null;
 
         var guid = ChildValue(element, "guid")?.Trim() ?? ChildValue(element, "id")?.Trim();
-        var linkText = element.Elements().FirstOrDefault(value => value.Name.LocalName == "link") is { } linkElement
-            ? linkElement.Attribute("href")?.Value ?? linkElement.Value
-            : null;
+        // 扩展命名空间也可能定义 link 元素（如 AniBT 的 torrent:link），优先取无命名空间的主链接。
+        var linkElement = element.Elements().FirstOrDefault(value => value.Name.LocalName == "link" &&
+                                                                     value.Name.NamespaceName.Length == 0) ??
+                          element.Elements().FirstOrDefault(value => value.Name.LocalName == "link");
+        var linkText = linkElement?.Attribute("href")?.Value ?? linkElement?.Value;
         Uri.TryCreate(linkText?.Trim(), UriKind.Absolute, out var link);
         var enclosure = element.Elements().FirstOrDefault(value => value.Name.LocalName == "enclosure" &&
                                                                    (value.Attribute("type")?.Value
@@ -63,11 +66,16 @@ public sealed class MikanFeedSourceReader(IHttpClientFactory httpClientFactory) 
                                                             DateTimeStyles.AssumeUniversal, out var timestamp)
             ? timestamp.ToUniversalTime()
             : null;
+        var bgmIdText = ChildValue(element, "bgmId")?.Trim();
+        int? sourceSubjectId = int.TryParse(bgmIdText, NumberStyles.Integer, CultureInfo.InvariantCulture,
+                                            out var bgmId) && bgmId > 0
+            ? bgmId
+            : null;
         var stableId = !string.IsNullOrWhiteSpace(guid) ? $"guid:{guid}" :
             link is not null                            ? $"link:{NormalizeUri(link)}" :
                                                           $"sha256:{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{title}\n{publishedText}\n{torrentText}")))}";
 
-        return new FeedSourceItem(stableId, guid, title, link, torrentUri, published);
+        return new FeedSourceItem(stableId, guid, title, link, torrentUri, published, sourceSubjectId);
     }
 
     private static string? ChildValue(XElement element, string localName)

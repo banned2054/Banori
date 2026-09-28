@@ -124,7 +124,7 @@ internal class Program
         builder.Services.AddSingleton<ProxyService>();
         builder.Services.AddSingleton<IProxiedHttpClientSource, ProxiedHttpClientSource>();
         builder.Services.AddSingleton<ITorrentFileSource, HttpTorrentFileSource>();
-        builder.Services.AddSingleton<IFeedSourceReader, MikanFeedSourceReader>();
+        builder.Services.AddSingleton<IFeedSourceReader, RssFeedSourceReader>();
         builder.Services.AddSingleton<ISubjectLinkResolver, MikanSubjectLinkResolver>();
         builder.Services.AddSingleton<ISubjectMetadataProvider, BangumiSubjectMetadataProvider>();
         builder.Services.AddHttpClient("FeedSource", client =>

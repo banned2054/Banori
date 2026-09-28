@@ -66,7 +66,9 @@ public sealed record FeedSourceItem(
     string          Title,
     Uri?            Link,
     Uri?            TorrentUri,
-    DateTimeOffset? PublishedAtUtc);
+    DateTimeOffset? PublishedAtUtc,
+    /// <summary>来源 feed 直接提供的 Bangumi Subject ID（如 AniBT 的 bgmId）；feed 未提供时为 null。</summary>
+    int?            SourceSubjectId = null);
 
 public sealed record SubjectMetadata(
     int            Id,

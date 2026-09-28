@@ -19,9 +19,9 @@ public sealed class MikanIntegrationTests
               <enclosure url="https://mikanani.me/Download/episode-7.torrent" type="application/x-bittorrent" />
             </item></channel></rss>
             """;
-        var reader = new MikanFeedSourceReader(new FakeHttpClientFactory(_ =>
-                                                                             new HttpResponseMessage(HttpStatusCode.OK)
-                                                                                 { Content = new StringContent(xml) }));
+        var reader = new RssFeedSourceReader(new FakeHttpClientSource(_ =>
+                                                                          new HttpResponseMessage(HttpStatusCode.OK)
+                                                                              { Content = new StringContent(xml) }));
 
         var item = Assert.Single(await reader.ReadAsync(new Uri("https://mikanani.me/RSS/test")));
 
@@ -29,6 +29,7 @@ public sealed class MikanIntegrationTests
         Assert.Equal("episode-7", item.SourceItemId);
         Assert.Equal("https://mikanani.me/Download/episode-7.torrent", item.TorrentUri?.AbsoluteUri);
         Assert.Equal(new DateTimeOffset(2026, 9, 12, 3, 0, 0, TimeSpan.Zero), item.PublishedAtUtc);
+        Assert.Null(item.SourceSubjectId);
     }
 
     [Fact]
@@ -46,15 +47,6 @@ public sealed class MikanIntegrationTests
         var subjectId = await resolver.ResolveSubjectIdAsync(new Uri("https://mikanani.me/Home/Episode/episode-7"));
 
         Assert.Equal(123456, subjectId);
-    }
-
-    private sealed class FakeHttpClientFactory(Func<HttpRequestMessage, HttpResponseMessage> responseFactory)
-        : IHttpClientFactory
-    {
-        public HttpClient CreateClient(string name)
-        {
-            return new HttpClient(new StubHandler(responseFactory));
-        }
     }
 
     private sealed class FakeHttpClientSource(Func<HttpRequestMessage, HttpResponseMessage> responseFactory)

@@ -111,6 +111,32 @@ public sealed class SubscriptionsPageViewModelTests
     }
 
     [Fact]
+    public async Task Save_ScheduledAnibtUrl_IsAccepted()
+    {
+        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.AnibtVM.Accepted.Tests.");
+        try
+        {
+            var services = CreateServices(testDirectory);
+            await using var provider = services.BuildServiceProvider();
+            await using var scope    = provider.CreateAsyncScope();
+            await EnsureCreatedAsync(scope);
+
+            var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
+            await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "AniBT 订阅",
+                                                                "https://anibt.net/rss/magnets.xml?limit=100",
+                                                                true, 30, null));
+
+            var view = Assert.Single(await subscriptionService.ListAsync());
+            Assert.False(view.IsOneShot);
+            Assert.Equal("AniBT 订阅", view.Name);
+        }
+        finally
+        {
+            testDirectory.Delete(true);
+        }
+    }
+
+    [Fact]
     public async Task Save_WithUnknownProxyId_Throws()
     {
         var testDirectory = Directory.CreateTempSubdirectory("MediaManager.ProxyVM.Unknown.Tests.");
@@ -124,8 +150,33 @@ public sealed class SubscriptionsPageViewModelTests
             var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
             await Assert.ThrowsAsync<ArgumentException>(() =>
                 subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "坏代理订阅",
-                    "https://mikanani.me/RSS/Bangumi?token=secret", true, 30, null, ProxyId: Guid.NewGuid())));
+                    "https://anibt.net/rss/magnets.xml?limit=100", true, 30, null, ProxyId: Guid.NewGuid())));
 
+            Assert.Empty(await subscriptionService.ListAsync());
+        }
+        finally
+        {
+            testDirectory.Delete(true);
+        }
+    }
+
+    [Fact]
+    public async Task Save_ScheduledUnsupportedHost_ShowsSourceRestriction()
+    {
+        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.AnibtVM.Restricted.Tests.");
+        try
+        {
+            var services = CreateServices(testDirectory);
+            await using var provider = services.BuildServiceProvider();
+            await using var scope    = provider.CreateAsyncScope();
+            await EnsureCreatedAsync(scope);
+
+            var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
+            var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+                subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "未支持源",
+                    "https://nyaa.si/?page=rss", true, 30, null)));
+
+            Assert.Contains("定时订阅目前仅支持 Mikan（mikanani.me）与 AniBT（anibt.net）", exception.Message);
             Assert.Empty(await subscriptionService.ListAsync());
         }
         finally

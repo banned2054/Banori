@@ -43,7 +43,7 @@ else
 			<p class="feed-title">@_vm.Item.Title</p>
 			<dl class="row mb-0">
 				<dt class="col-sm-3">发布时间</dt><dd class="col-sm-9">@(_vm.Item.PublishedAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "未知")</dd>
-				<dt class="col-sm-3">Mikan 页面</dt>
+				<dt class="col-sm-3">来源页面</dt>
 				<dd class="col-sm-9">
 					@if (_vm.Item.Link is not null)
 					{

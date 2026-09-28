@@ -201,12 +201,11 @@ public sealed class SubscriptionService(
                  !(uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback)))
                 throw new ArgumentException("RSS 地址必须是 HTTPS 绝对地址（本机测试可使用 HTTP）。", nameof(request));
 
-            // 一次性订阅可指向任意来源的 RSS；定时订阅仍限定 Mikan（其条目链接解析依赖 Mikan 页面）。
-            if (!request.IsOneShot                                      &&
-                !uri.IsLoopback                                         &&
-                !uri.Host.Equals("mikanani.me", StringComparison.OrdinalIgnoreCase) &&
-                !uri.Host.EndsWith(".mikanani.me", StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException("Mikan 订阅仅支持 mikanani.me 的 RSS 地址。", nameof(request));
+            // 一次性订阅可指向任意来源的 RSS；定时订阅限定已支持的数据源
+            //（Mikan 依赖其条目页面解析，AniBT 依赖 feed 自带的 bgmId）。
+            if (!request.IsOneShot && !uri.IsLoopback && !IsSupportedSubscriptionHost(uri.Host))
+                throw new ArgumentException("定时订阅目前仅支持 Mikan（mikanani.me）与 AniBT（anibt.net）的 RSS 地址。",
+                                            nameof(request));
 
             feedUrl = uri.AbsoluteUri;
             uriHost = uri.Host;
@@ -227,6 +226,17 @@ public sealed class SubscriptionService(
         if (request.FixedSubjectId is < 1) throw new ArgumentException("Subject ID 必须为正整数。", nameof(request));
 
         return request with { Name = name, FeedUrl = feedUrl };
+    }
+
+    private static bool IsSupportedSubscriptionHost(string host)
+    {
+        return MatchesHost(host, "mikanani.me") || MatchesHost(host, "anibt.net");
+
+        static bool MatchesHost(string value, string baseHost)
+        {
+            return value.Equals(baseHost, StringComparison.OrdinalIgnoreCase) ||
+                   value.EndsWith($".{baseHost}", StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private SubscriptionView ToView(MediaSubscription item, RefreshWorkStatus? latestStatus)

@@ -87,6 +87,51 @@ public sealed class SubscriptionRefreshTests
     }
 
     [Fact]
+    public async Task Refresh_UsesFeedProvidedSourceSubjectIdWithoutPageResolution()
+    {
+        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.Anibt.FeedId.Tests.");
+        try
+        {
+            var timestamp  = new DateTimeOffset(2026, 9, 28, 4, 0, 0, TimeSpan.Zero);
+            var sourceItem = new FeedSourceItem("guid:anibt-1", "rel_anibt-1",
+                                                "[S1百综字幕组] 死灵子的宇宙恐怖秀 / Necronomico no Cosmic Horror Show[12][1080p][WebRip][AVC_AAC][CHS][简体内嵌]",
+                                                new Uri("https://anibt.net/release/rel_anibt-1"),
+                                                new Uri("https://anibt.net/api/torrent/rel_anibt-1.torrent"),
+                                                timestamp.AddHours(-1),
+                                                975);
+            var resolver = new CountingSubjectLinkResolver(42);
+            var services = CreateServices(testDirectory, timestamp, () => [sourceItem], resolver);
+
+            await using var provider = services.BuildServiceProvider();
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
+                await using var db = await factory.CreateDbContextAsync();
+                await db.Database.EnsureCreatedAsync();
+
+                var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
+                await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "AniBT 订阅",
+                                                                    "https://anibt.net/rss/magnets.xml?limit=100",
+                                                                    true, 30, null));
+                var refreshService = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
+                var result         = await refreshService.ProcessNextAsync();
+
+                Assert.NotNull(result);
+                Assert.Null(result.Error);
+                // feed 直接给出 bgmId：评估用它关联 Subject，且不触发来源页面解析。
+                var item = Assert.Single(await scope.ServiceProvider.GetRequiredService<FeedItemQueries>().ListAsync());
+                Assert.Equal(FeedItemStatus.Accepted, item.Status);
+                Assert.Equal(975, item.SubjectId);
+                Assert.Equal(0, resolver.CallCount);
+            }
+        }
+        finally
+        {
+            testDirectory.Delete(true);
+        }
+    }
+
+    [Fact]
     public async Task Refresh_PassesSubscriptionProxyToReaderAndResolver()
     {
         var testDirectory = Directory.CreateTempSubdirectory("MediaManager.Proxy.Passthrough.Tests.");
@@ -136,6 +181,67 @@ public sealed class SubscriptionRefreshTests
                 Assert.Equal(proxyId, resolver.LastProxyId);
                 var item = Assert.Single(await scope.ServiceProvider.GetRequiredService<FeedItemQueries>().ListAsync());
                 Assert.Equal(42, item.SubjectId);
+            }
+        }
+        finally
+        {
+            testDirectory.Delete(true);
+        }
+    }
+
+    [Fact]
+    public async Task Refresh_PrefersTitleMappingOverFeedProvidedSourceSubjectId()
+    {
+        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.Anibt.Mapping.Tests.");
+        try
+        {
+            var timestamp = new DateTimeOffset(2026, 9, 28, 5, 0, 0, TimeSpan.Zero);
+            const string title =
+                "[S1百综字幕组] 死灵子的宇宙恐怖秀 / Necronomico no Cosmic Horror Show[12][1080p][WebRip][AVC_AAC][CHS][简体内嵌]";
+            var seededItem = new FeedSourceItem("guid:seed-1", "seed-1", title,
+                                                new Uri("https://mikanani.me/Home/Episode/seed-1"),
+                                                new Uri("https://mikanani.me/Download/seed-1.torrent"),
+                                                timestamp.AddHours(-2));
+            var hintItem = new FeedSourceItem("guid:hint-1", "hint-1", title,
+                                              new Uri("https://anibt.net/release/hint-1"),
+                                              new Uri("https://anibt.net/api/torrent/hint-1.torrent"),
+                                              timestamp.AddHours(-1),
+                                              975);
+            var resolver = new CountingSubjectLinkResolver(42);
+            var services = CreateServices(testDirectory, timestamp, () => [seededItem], resolver);
+
+            await using var provider = services.BuildServiceProvider();
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
+                await using var db = await factory.CreateDbContextAsync();
+                await db.Database.EnsureCreatedAsync();
+
+                var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
+                var refreshService      = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
+
+                // 先以固定 Subject=100 评估该标题并写入映射；随后同标题条目即使带 bgmId 也应命中映射。
+                await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "种子订阅",
+                                                                    "https://mikanani.me/RSS/Bangumi?token=secret",
+                                                                    true, 30, 100));
+                Assert.NotNull(await refreshService.ProcessNextAsync());
+
+                var feedReader =
+                    (FakeFeedReader)scope.ServiceProvider.GetRequiredService<IFeedSourceReader>();
+                feedReader.SetItems([hintItem]);
+                var oneShotId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "",
+                                                                    "https://anibt.net/rss/magnets.xml?limit=100",
+                                                                    true, 30, null, true));
+                var result = await refreshService.ProcessNextAsync();
+
+                Assert.NotNull(result);
+                Assert.Null(result.Error);
+                Assert.Equal(1, result.AddedItems);
+                var items     = await scope.ServiceProvider.GetRequiredService<FeedItemQueries>().ListAsync();
+                var hintEntry = items.Single(item => item.SubscriptionId == oneShotId);
+                Assert.Equal(FeedItemStatus.Accepted, hintEntry.Status);
+                Assert.Equal(100, hintEntry.SubjectId);
+                Assert.Equal(0, resolver.CallCount);
             }
         }
         finally
@@ -627,7 +733,7 @@ public sealed class SubscriptionRefreshTests
                                         .ProcessNextAsync();
 
                 Assert.NotNull(result);
-                Assert.Equal("无法连接 Mikan RSS 源。", result.Error);
+                Assert.Equal("无法连接 RSS 源。", result.Error);
                 var item = Assert.Single(await scope.ServiceProvider.GetRequiredService<FeedItemQueries>()
                                                     .ListAsync());
                 Assert.Equal(FeedItemStatus.Accepted, item.Status);
@@ -636,9 +742,9 @@ public sealed class SubscriptionRefreshTests
                 var work = await verification.RefreshWorkItems.AsNoTracking()
                                              .SingleAsync(item => item.SubscriptionId == subscriptionId);
                 Assert.Equal(RefreshWorkStatus.Failed, work.Status);
-                Assert.Equal("无法连接 Mikan RSS 源。", work.Error);
+                Assert.Equal("无法连接 RSS 源。", work.Error);
                 var subscription = await verification.MediaSubscriptions.AsNoTracking().SingleAsync();
-                Assert.Equal("无法连接 Mikan RSS 源。", subscription.LastError);
+                Assert.Equal("无法连接 RSS 源。", subscription.LastError);
                 Assert.NotNull(subscription.NextRefreshAtUtc);
             }
         }

@@ -8,7 +8,7 @@ using System.Xml;
 namespace MediaManager.Features.Subscriptions;
 
 /// <summary>
-///     Mikan 订阅刷新的单次执行主线：领取工作 → 读取 RSS → 新条目入库 → 评估（含数据库遗留
+///     订阅刷新的单次执行主线：领取工作 → 读取 RSS → 新条目入库 → 评估（含数据库遗留
 ///     待评估条目恢复）→ 保存工作结果与下次刷新时间。限定单实例、单个消费者串行执行。
 /// </summary>
 public sealed class MikanRefreshService(
@@ -78,7 +78,7 @@ public sealed class MikanRefreshService(
         var (entries, fetchError) = await ReadFeedAsync(subscription, cancellationToken);
         var (added, duplicates)   = await AddNewItemsAsync(subscription, entries, cancellationToken);
         var (failedItems, evaluatedIds) =
-            await EvaluatePendingItemsAsync(subscription, cancellationToken);
+            await EvaluatePendingItemsAsync(subscription, CollectSourceSubjectHints(entries), cancellationToken);
 
         // 整批解析完成后按固定批次统一择优：本批全部候选与数据库历史候选一起比较，
         // RSS 顺序不影响结果；随后为需要新增或升级的优胜登记下载意图。
@@ -178,31 +178,33 @@ public sealed class MikanRefreshService(
 
     /// <summary>
     ///     评估数据库中仍处于待处理状态的条目，覆盖本次新增条目和“已入库但评估前中断”的遗留条目，
-    ///     后者不要求仍出现在最新 RSS 中。单条失败不终止整批。返回失败数与评估成功的条目 ID。
+    ///     后者不要求仍出现在最新 RSS 中。sourceSubjectHints 按 StableId 提供来源 feed 直接给出的
+    ///     Subject，本次 feed 仍包含的遗留条目同样受益。单条失败不终止整批。返回失败数与评估成功的条目 ID。
     /// </summary>
     private async Task<(int Failures, List<Guid> EvaluatedIds)> EvaluatePendingItemsAsync(
-        RefreshSubscription subscription, CancellationToken   cancellationToken)
+        RefreshSubscription subscription, IReadOnlyDictionary<string, int?> sourceSubjectHints,
+        CancellationToken   cancellationToken)
     {
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         // SQLite 不支持按 DateTimeOffset 服务端排序，先取回候选再在内存中排序。
-        var pendingIds = (await db.FeedItems.AsNoTracking()
-                                  .Where(item => item.SubscriptionId == subscription.Id &&
-                                                 item.Status         == FeedItemStatus.Pending)
-                                  .Select(item => new { item.Id, item.FirstSeenAtUtc })
-                                  .ToListAsync(cancellationToken))
-                        .OrderBy(item => item.FirstSeenAtUtc)
-                        .Select(item => item.Id)
-                        .ToList();
+        var pendingItems = (await db.FeedItems.AsNoTracking()
+                                    .Where(item => item.SubscriptionId == subscription.Id &&
+                                                   item.Status         == FeedItemStatus.Pending)
+                                    .Select(item => new { item.Id, item.StableId, item.FirstSeenAtUtc })
+                                    .ToListAsync(cancellationToken))
+                          .OrderBy(item => item.FirstSeenAtUtc)
+                          .ToList();
 
         var failures     = 0;
         var evaluatedIds = new List<Guid>();
-        foreach (var itemId in pendingIds)
+        foreach (var item in pendingItems)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                await evaluator.EvaluateAsync(itemId, subscription.FixedSubjectId, cancellationToken);
-                evaluatedIds.Add(itemId);
+                await evaluator.EvaluateAsync(item.Id, subscription.FixedSubjectId, cancellationToken,
+                                              sourceSubjectHints.GetValueOrDefault(item.StableId));
+                evaluatedIds.Add(item.Id);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -211,12 +213,23 @@ public sealed class MikanRefreshService(
             catch (Exception exception)
             {
                 failures++;
-                logger.LogWarning(exception, "条目 {ItemId} 评估失败。", itemId);
-                await MarkItemFailedAsync(itemId, cancellationToken);
+                logger.LogWarning(exception, "条目 {ItemId} 评估失败。", item.Id);
+                await MarkItemFailedAsync(item.Id, cancellationToken);
             }
         }
 
         return (failures, evaluatedIds);
+    }
+
+    /// <summary>按 StableId 汇总来源 feed 直接给出的 Subject（如 AniBT 的 bgmId）；同 StableId 重复时取先出现者。值为可空：未提供的条目不得注入占位值。</summary>
+    private static IReadOnlyDictionary<string, int?> CollectSourceSubjectHints(List<FeedSourceItem> entries)
+    {
+        var hints = new Dictionary<string, int?>(StringComparer.Ordinal);
+        foreach (var entry in entries)
+            if (entry.SourceSubjectId is { } subjectId && !hints.ContainsKey(entry.StableId))
+                hints[entry.StableId] = subjectId;
+
+        return hints;
     }
 
     /// <summary>收集本批评估成功条目所属的同集分组键，供批量择优使用。</summary>
@@ -343,9 +356,9 @@ public sealed class MikanRefreshService(
         return exception switch
         {
             InvalidOperationException => exception.Message,
-            XmlException xmlException => $"Mikan RSS XML 格式错误（第 {xmlException.LineNumber} 行）。",
-            HttpRequestException      => "无法连接 Mikan RSS 源。",
-            _                         => "读取或解析 Mikan RSS 失败。"
+            XmlException xmlException => $"RSS 源 XML 格式错误（第 {xmlException.LineNumber} 行）。",
+            HttpRequestException      => "无法连接 RSS 源。",
+            _                         => "读取或解析 RSS 源失败。"
         };
     }
 
