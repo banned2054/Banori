@@ -123,6 +123,8 @@ internal class Program
         builder.Services.AddScoped<IQbittorrentSessionFactory, QbittorrentSessionFactory>();
         builder.Services.AddSingleton<ProxyService>();
         builder.Services.AddSingleton<IProxiedHttpClientSource, ProxiedHttpClientSource>();
+        builder.Services.AddSingleton<ReconcilePulse>();
+        builder.Services.AddScoped<QbittorrentHookService>();
         builder.Services.AddSingleton<ITorrentFileSource, HttpTorrentFileSource>();
         builder.Services.AddSingleton<IFeedSourceReader, RssFeedSourceReader>();
         builder.Services.AddSingleton<ISubjectLinkResolver, MikanSubjectLinkResolver>();
@@ -159,6 +161,21 @@ internal class Program
         app.UseHttpsRedirection();
         app.UseAntiforgery();
         app.MapStaticAssets();
+        // qBittorrent“运行外部程序”钩子：凭令牌回调，立即唤醒对账轮（15 秒轮询仍为兜底）。
+        app.MapGet("/hooks/qbittorrent",
+                   async (QbittorrentHookService hook, HttpRequest request, CancellationToken cancellationToken) =>
+                   {
+                       var result = await hook.HandleAsync(request.Query["token"].FirstOrDefault(),
+                                                           request.Query["hash"].FirstOrDefault(),
+                                                           request.Query["event"].FirstOrDefault(),
+                                                           cancellationToken);
+                       return result switch
+                       {
+                           QbittorrentHookResult.Accepted    => Results.Ok(),
+                           QbittorrentHookResult.InvalidHash => Results.BadRequest(),
+                           _                                 => Results.StatusCode(StatusCodes.Status403Forbidden)
+                       };
+                   });
         app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
         app.MapAdditionalIdentityEndpoints();
     }

@@ -24,6 +24,11 @@ public sealed class SettingsPageViewModel(
     /// <summary>代理设置页维护的命名代理，供三张卡片的代理下拉展示。</summary>
     public IReadOnlyList<ProxyView> Proxies => _proxies;
 
+    private string? _hookToken;
+
+    /// <summary>粘贴到 qBittorrent“运行外部程序”的两条命令；尚未生成令牌时为 null。</summary>
+    public (string Added, string Completed)? HookCommands { get; private set; }
+
     public bool    Loaded        { get; private set; }
     public bool    Saving        { get; private set; }
     public bool    Testing       { get; private set; }
@@ -43,6 +48,11 @@ public sealed class SettingsPageViewModel(
         Downloader.SavePath = downloader.SavePath;
         Downloader.Enabled  = downloader.Enabled;
         Downloader.ProxyId  = downloader.ProxyId?.ToString();
+
+        var hookBaseUrl = await qbittorrentSettings.GetHookBaseUrlAsync(cancellationToken);
+        Downloader.HookBaseUrl = hookBaseUrl;
+        _hookToken             = await qbittorrentSettings.GetHookTokenAsync(cancellationToken);
+        HookCommands           = BuildHookCommands(hookBaseUrl, _hookToken);
 
         var telegram = await telegramSettings.GetAsync(cancellationToken);
         Telegram.ChatId   = telegram.ChatId;
@@ -80,6 +90,9 @@ public sealed class SettingsPageViewModel(
                                                     ? null
                                                     : Downloader.Password,
                                                 cancellationToken);
+            await qbittorrentSettings.SaveHookBaseUrlAsync(Downloader.HookBaseUrl, cancellationToken);
+            HookCommands = BuildHookCommands(await qbittorrentSettings.GetHookBaseUrlAsync(cancellationToken),
+                                             _hookToken);
             await telegramSettings.SaveAsync(Telegram.ToSettings(),
                                              string.IsNullOrWhiteSpace(Telegram.BotToken)
                                                  ? null
@@ -112,6 +125,25 @@ public sealed class SettingsPageViewModel(
         {
             Saving = false;
         }
+    }
+
+    /// <summary>重新生成钩子令牌并刷新命令行展示；旧令牌立即失效。</summary>
+    public async Task RegenerateHookTokenAsync(CancellationToken cancellationToken = default)
+    {
+        _hookToken   = await qbittorrentSettings.GenerateHookTokenAsync(cancellationToken);
+        HookCommands = BuildHookCommands(Downloader.HookBaseUrl, _hookToken);
+    }
+
+    private static (string Added, string Completed)? BuildHookCommands(string? baseUrl, string? token)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return null;
+
+        var host = string.IsNullOrWhiteSpace(baseUrl)
+            ? "<MediaManager 地址>"
+            : baseUrl.Trim().TrimEnd('/');
+        var added     = $"curl -s \"{host}/hooks/qbittorrent?token={token}&hash=%I&event=added\"";
+        var completed = $"curl -s \"{host}/hooks/qbittorrent?token={token}&hash=%I&event=completed\"";
+        return (added, completed);
     }
 
     /// <summary>用当前草稿测试下载器连接；密码留空时使用已保存密码。</summary>
@@ -218,6 +250,9 @@ public sealed class QbittorrentSettingsDraft
 
     /// <summary>代理下拉的绑定值（代理 Id 的字符串形式）；空表示直连。</summary>
     public string? ProxyId { get; set; }
+
+    /// <summary>钩子回调的对外可达基础地址；空表示未配置。</summary>
+    public string? HookBaseUrl { get; set; }
 
     public bool Enabled { get; set; }
 
