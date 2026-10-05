@@ -271,9 +271,20 @@ public sealed class MikanRefreshService(
                                                         FeedSourceItem       item, DateTimeOffset seenAtUtc,
                                                         CancellationToken    cancellationToken)
     {
-        if (await db.FeedItems.AnyAsync(value => value.SubscriptionId == subscriptionId &&
-                                                 value.StableId       == item.StableId, cancellationToken))
+        var existing = await db.FeedItems.SingleOrDefaultAsync(value => value.SubscriptionId == subscriptionId &&
+                                                                        value.StableId       == item.StableId,
+                                                               cancellationToken);
+        if (existing is not null)
+        {
+            // 历史条目可能因旧版解析不到发布时间而缺失（Mikan 把 pubDate 藏在 torrent 扩展元素内），刷新时用 feed 值回填。
+            if (existing.PublishedAtUtc is null && item.PublishedAtUtc is not null)
+            {
+                existing.PublishedAtUtc = item.PublishedAtUtc;
+                await db.SaveChangesAsync(cancellationToken);
+            }
+
             return false;
+        }
 
         var entity = new FeedItem
         {

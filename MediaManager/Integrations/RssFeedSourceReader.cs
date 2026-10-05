@@ -60,12 +60,11 @@ public sealed class RssFeedSourceReader(IProxiedHttpClientSource httpClientSourc
         var torrentText = enclosure?.Attribute("url")?.Value ?? enclosure?.Attribute("href")?.Value;
         Uri.TryCreate(torrentText?.Trim(), UriKind.Absolute, out var torrentUri);
         var publishedText = ChildValue(element, "pubDate") ?? ChildValue(element, "published") ??
-            ChildValue(element, "updated");
-        DateTimeOffset? published = DateTimeOffset.TryParse(publishedText, CultureInfo.InvariantCulture,
-                                                            DateTimeStyles.AllowWhiteSpaces |
-                                                            DateTimeStyles.AssumeUniversal, out var timestamp)
-            ? timestamp.ToUniversalTime()
-            : null;
+            ChildValue(element, "updated") ??
+            // Mikan 顶层没有 pubDate，发布时间位于 torrent 扩展元素内，顶层缺失时向下探一层。
+            element.Elements().SelectMany(child => child.Elements())
+                   .FirstOrDefault(value => value.Name.LocalName is "pubDate" or "published" or "updated")?.Value;
+        var published = ParseTimestamp(publishedText);
         var bgmIdText = ChildValue(element, "bgmId")?.Trim();
         int? sourceSubjectId = int.TryParse(bgmIdText, NumberStyles.Integer, CultureInfo.InvariantCulture,
                                             out var bgmId) && bgmId > 0
@@ -81,6 +80,31 @@ public sealed class RssFeedSourceReader(IProxiedHttpClientSource httpClientSourc
     private static string? ChildValue(XElement element, string localName)
     {
         return element.Elements().FirstOrDefault(value => value.Name.LocalName == localName)?.Value;
+    }
+
+    /// <summary>Mikan torrent 扩展元素的裸时间为源站东八区本地时间。</summary>
+    private static readonly TimeSpan SourceLocalZone = new(8, 0, 0);
+
+    private static DateTimeOffset? ParseTimestamp(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var trimmed = text.Trim();
+        // 带时区标记（Z/GMT/UTC 或末尾 ±hh:mm、±hhmm）按原偏移解析；裸时间按东八区解释。
+        var hasZone = trimmed.EndsWith('Z') ||
+                      trimmed.EndsWith("GMT", StringComparison.OrdinalIgnoreCase) ||
+                      trimmed.EndsWith("UTC", StringComparison.OrdinalIgnoreCase) ||
+                      trimmed.EndsWith("UT", StringComparison.OrdinalIgnoreCase) ||
+                      (trimmed.Length >= 5 && (trimmed[^5] is '+' or '-' ||
+                                               trimmed.Length >= 6 && trimmed[^6] is '+' or '-'));
+        if (hasZone)
+            return DateTimeOffset.TryParse(trimmed, CultureInfo.InvariantCulture,
+                                           DateTimeStyles.AllowWhiteSpaces, out var zoned)
+                ? zoned.ToUniversalTime()
+                : null;
+        return DateTime.TryParse(trimmed, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var bare)
+            ? new DateTimeOffset(DateTime.SpecifyKind(bare, DateTimeKind.Unspecified), SourceLocalZone)
+                .ToUniversalTime()
+            : null;
     }
 
     private static string NormalizeUri(Uri uri)

@@ -33,6 +33,34 @@ public sealed class MikanIntegrationTests
     }
 
     [Fact]
+    public async Task FeedReader_ReadsPubDateInsideTorrentExtensionAsChinaLocalTime()
+    {
+        // 真实 Mikan RSS 的 <item> 顶层没有 pubDate：发布时间在 torrent 扩展元素内，
+        // 且为无时区后缀的东八区裸时间。
+        const string xml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <rss version="2.0"><channel><item>
+              <guid>episode-1</guid>
+              <title>[ANi] Example - 01 [1080P][Baha][WEB-DL][AAC AVC][CHT][MP4]</title>
+              <link>https://mikanani.me/Home/Episode/episode-1</link>
+              <torrent xmlns="https://mikanani.me/0.1/">
+                <link>https://mikanani.me/Home/Episode/episode-1</link>
+                <contentLength>341730912</contentLength>
+                <pubDate>2026-10-05T22:07:41.210</pubDate>
+              </torrent>
+              <enclosure url="https://mikanani.me/Download/20261005/episode-1.torrent" type="application/x-bittorrent" />
+            </item></channel></rss>
+            """;
+        var reader = new RssFeedSourceReader(new FakeHttpClientSource(_ =>
+                                                                          new HttpResponseMessage(HttpStatusCode.OK)
+                                                                              { Content = new StringContent(xml) }));
+
+        var item = Assert.Single(await reader.ReadAsync(new Uri("https://mikanani.me/RSS/test")));
+
+        Assert.Equal(new DateTimeOffset(2026, 10, 5, 14, 7, 41, 210, TimeSpan.Zero), item.PublishedAtUtc);
+    }
+
+    [Fact]
     public async Task SubjectResolver_FollowsMikanPagesAndExtractsBangumiId()
     {
         // Bangumi 页夹具按真实页面结构排列多个 bangumi-info 段落：
