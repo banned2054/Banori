@@ -6,6 +6,7 @@ using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
 using MediaManager.Core.Subjects;
 using MediaManager.Data;
+using MediaManager.Features.Anime;
 using MediaManager.Features.Dashboard;
 using MediaManager.Features.Downloads;
 using MediaManager.Features.FeedItems;
@@ -119,6 +120,7 @@ internal class Program
         builder.Services.AddScoped<CandidateSelectionService>();
         builder.Services.AddScoped<FeedItemQueries>();
         builder.Services.AddScoped<DashboardQueries>();
+        builder.Services.AddScoped<AnimeQueries>();
         builder.Services.AddScoped<DownloadService>();
         builder.Services.AddScoped<IQbittorrentSessionFactory, QbittorrentSessionFactory>();
         builder.Services.AddSingleton<ProxyService>();

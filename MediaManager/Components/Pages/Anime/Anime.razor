@@ -1,0 +1,128 @@
+@page "/anime"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using MediaManager.Features.Anime
+@using MediaManager.Features.Subscriptions
+@using System.Globalization
+@implements IDisposable
+
+@inject AnimeQueries Queries
+
+<PageTitle>动画 - MediaManager</PageTitle>
+
+<h1>动画</h1>
+<p class="text-body-secondary">按 Bangumi Subject 汇总已识别的条目；点击封面或标题展开单集列表，每集仅显示当前最终版本。</p>
+
+@if (!_vm.Loaded)
+{
+	<p>正在加载…</p>
+}
+else if (_vm.Animes.Count == 0)
+{
+	<div class="empty-state">还没有已关联 Subject 的条目。</div>
+}
+else
+{
+	var expandedIndex = -1;
+	<div class="anime-grid">
+		@for (var i = 0; i < _vm.Animes.Count; i++)
+		{
+			var anime = _vm.Animes[i];
+			var expanded = _vm.ExpandedSubjectId == anime.SubjectId;
+			if (expanded) expandedIndex = i;
+			<div class="card anime-card @(expanded ? "anime-card-active" : null)" style="order: @(i * 2)" role="button"
+			     tabindex="0" aria-expanded="@expanded" @onclick="() => Toggle(anime.SubjectId)">
+				<div class="poster-frame">
+					@if (!string.IsNullOrEmpty(anime.ImageUrl))
+					{
+						<img class="poster-img" src="@anime.ImageUrl" alt="@anime.DisplayName" loading="lazy"
+						     referrerpolicy="no-referrer"/>
+					}
+					else
+					{
+						<div class="poster-img poster-placeholder"><span class="bi bi-film-fill"></span></div>
+					}
+				</div>
+				<div class="anime-name" title="@anime.DisplayName">@anime.DisplayName</div>
+			</div>
+		}
+			@if (expandedIndex >= 0)
+			{
+				var expandedAnime = _vm.Animes[expandedIndex];
+				<div class="anime-panel" style="order: @(expandedIndex * 2 + 1); --i: @expandedIndex">
+					<div class="anime-panel-box">
+						<div class="anime-episodes">
+							@foreach (var episode in expandedAnime.Episodes)
+							{
+								var final = episode.Final;
+								<div class="anime-episode @(final.Outcome == SelectionOutcome.Winner ? "is-winner" : null)">
+									<span class="anime-episode-status">
+										@if (final.Outcome == SelectionOutcome.Winner)
+										{
+											<span class="bi bi-check-circle-fill" title="当前优胜"></span>
+										}
+									</span>
+									<span class="anime-episode-no">E@(FormatEpisode(episode.Episode))</span>
+									<span>@(final.Group)</span>
+									@if (!string.IsNullOrWhiteSpace(final.Language))
+									{
+										<span>@(final.Language)</span>
+									}
+									@if (final.Version > 1)
+									{
+										<span>v@(final.Version)</span>
+									}
+									<span class="anime-episode-date">@(final.PublishedAtUtc?.ToLocalTime().ToString("MM-dd HH:mm") ?? "—")</span>
+								</div>
+							}
+						</div>
+					</div>
+				</div>
+			}
+	</div>
+}
+
+@code {
+	private readonly CancellationTokenSource _cts = new();
+	private          AnimePageViewModel      _vm  = null!;
+
+	protected override void OnInitialized()
+	{
+		_vm = new AnimePageViewModel(Queries);
+	}
+
+	protected override Task OnInitializedAsync()
+	{
+		return RunAsync(_vm.LoadAsync);
+	}
+
+	private void Toggle(int subjectId)
+	{
+		_vm.Toggle(subjectId);
+	}
+
+	private static string FormatEpisode(decimal episode)
+	{
+		return episode == decimal.Truncate(episode)
+			? ((int)episode).ToString(CultureInfo.InvariantCulture)
+			: episode.ToString(CultureInfo.InvariantCulture);
+	}
+
+	/// <summary>页面离开后取消进行中的查询属于预期，不向线路报错。</summary>
+	private async Task RunAsync(Func<CancellationToken, Task> operation)
+	{
+		try
+		{
+			await operation(_cts.Token);
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+	}
+
+	public void Dispose()
+	{
+		_cts.Cancel();
+		_cts.Dispose();
+	}
+}
