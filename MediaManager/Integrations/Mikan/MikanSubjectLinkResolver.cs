@@ -21,12 +21,21 @@ public sealed partial class MikanSubjectLinkResolver(IProxiedHttpClientSource ht
         if (!Uri.TryCreate(episodeUri, href, out var bangumiPageUri) || !IsMikanUri(bangumiPageUri)) return null;
 
         var bangumiHtml = await GetHtmlAsync(bangumiPageUri, proxyId, cancellationToken);
-        var infoMatch   = BangumiInfoParagraphRegex().Match(bangumiHtml);
-        if (!infoMatch.Success) return null;
-        var subjectMatch = BangumiSubjectRegex().Match(infoMatch.Value);
-        return subjectMatch.Success && int.TryParse(subjectMatch.Groups[1].Value, out var subjectId)
-            ? subjectId
-            : null;
+        // Bangumi 页面有多个 bangumi-info 段落（放送日期、总集数、官方网站等），
+        // bgm.tv 链接在末尾的"Bangumi番组计划链接"段落，必须扫描全部段落。
+        foreach (Match infoMatch in BangumiInfoParagraphRegex().Matches(bangumiHtml))
+        foreach (Match candidateHrefMatch in HrefRegex().Matches(infoMatch.Value))
+        {
+            var candidateHref         = WebUtility.HtmlDecode(candidateHrefMatch.Groups[1].Value);
+            var candidateSubjectMatch = BangumiSubjectRegex().Match(candidateHref);
+            if (candidateSubjectMatch.Success &&
+                int.TryParse(candidateSubjectMatch.Groups[1].Value, out var subjectId))
+            {
+                return subjectId;
+            }
+        }
+
+        return null;
     }
 
     private async Task<string> GetHtmlAsync(Uri uri, Guid? proxyId, CancellationToken cancellationToken)

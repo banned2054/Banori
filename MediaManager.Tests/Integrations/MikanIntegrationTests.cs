@@ -35,11 +35,18 @@ public sealed class MikanIntegrationTests
     [Fact]
     public async Task SubjectResolver_FollowsMikanPagesAndExtractsBangumiId()
     {
+        // Bangumi 页夹具按真实页面结构排列多个 bangumi-info 段落：
+        // bgm.tv 链接在最后一个段落，且前面存在带非 bgm.tv 链接的段落（官方网站）。
         var factory = new FakeHttpClientSource(request =>
         {
             var html = request.RequestUri!.AbsolutePath.Contains("Episode", StringComparison.Ordinal)
                 ? "<p class='bangumi-title'><a href='/Home/Bangumi/abcd'>Example</a></p>"
-                : "<p class=\"bangumi-info extra\"><a href=\"https://bgm.tv/subject/123456\">Bangumi</a></p>";
+                : """
+                  <p class="bangumi-info">放送日期：星期日</p>
+                  <p class="bangumi-info">总集数：12</p>
+                  <p class="bangumi-info">官方网站：<a href="https://example-anime.com/">https://example-anime.com/</a></p>
+                  <p class="bangumi-info">Bangumi番组计划链接：<a href="https://bgm.tv/subject/123456">Bangumi</a></p>
+                  """;
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(html) };
         });
         var resolver = new MikanSubjectLinkResolver(factory);
