@@ -6,25 +6,25 @@
 @inject IdentityRedirectManager      RedirectManager
 @inject ILogger<Disable2fa>          Logger
 
-<PageTitle>Disable two-factor authentication (2FA)</PageTitle>
+<PageTitle>关闭两步验证（2FA） - MediaManager</PageTitle>
 
 <StatusMessage/>
-<h3>Disable two-factor authentication (2FA)</h3>
+<h3>关闭两步验证（2FA）</h3>
 
 <div class="alert alert-warning" role="alert">
 	<p>
-		<strong>This action only disables 2FA.</strong>
+		<strong>此操作仅关闭两步验证。</strong>
 	</p>
 	<p>
-		Disabling 2FA does not change the keys used in authenticator apps. If you wish to change the key
-		used in an authenticator app you should <a href="Account/Manage/ResetAuthenticator">reset your authenticator keys.</a>
+		关闭两步验证不会更改身份验证器应用中使用的密钥。如需更换密钥，请
+		<a href="Account/Manage/ResetAuthenticator">重置身份验证器密钥</a>。
 	</p>
 </div>
 
 <div>
 	<form @formname="disable-2fa" @onsubmit="OnSubmitAsync" method="post">
 		<AntiforgeryToken/>
-		<button class="btn btn-danger" type="submit">Disable 2FA</button>
+		<button class="btn btn-danger" type="submit">关闭两步验证</button>
 	</form>
 </div>
 
@@ -45,7 +45,7 @@
 
 		if (HttpMethods.IsGet(HttpContext.Request.Method) && !await UserManager.GetTwoFactorEnabledAsync(user))
 		{
-			throw new InvalidOperationException("Cannot disable 2FA for user as it's not currently enabled.");
+			throw new InvalidOperationException("用户当前未启用两步验证，无法关闭。");
 		}
 	}
 
@@ -60,12 +60,12 @@
 		var disable2faResult = await UserManager.SetTwoFactorEnabledAsync(user, false);
 		if (!disable2faResult.Succeeded)
 		{
-			throw new InvalidOperationException("Unexpected error occurred disabling 2FA.");
+			throw new InvalidOperationException("关闭两步验证时发生意外错误。");
 		}
 
 		var userId = await UserManager.GetUserIdAsync(user);
 		Logger.LogInformation("User with ID '{UserId}' has disabled 2fa.", userId);
-		RedirectManager.RedirectToWithStatus("Account/Manage/TwoFactorAuthentication", "2fa has been disabled. You can reenable 2fa when you setup an authenticator app", HttpContext);
+		RedirectManager.RedirectToWithStatus("Account/Manage/TwoFactorAuthentication", "两步验证已关闭。配置身份验证器应用后可重新开启。", HttpContext);
 	}
 
 }

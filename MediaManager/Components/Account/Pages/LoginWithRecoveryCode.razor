@@ -8,14 +8,13 @@
 @inject IdentityRedirectManager        RedirectManager
 @inject ILogger<LoginWithRecoveryCode> Logger
 
-<PageTitle>Recovery code verification</PageTitle>
+<PageTitle>恢复代码验证 - MediaManager</PageTitle>
 
-<h1>Recovery code verification</h1>
+<h1>恢复代码验证</h1>
 <hr/>
 <StatusMessage Message="@message"/>
 <p>
-	You have requested to log in with a recovery code. This login will not be remembered until you provide
-	an authenticator app code at log in or disable 2FA and log in again.
+	你请求使用恢复代码登录。在登录时输入身份验证器验证码、或关闭两步验证后重新登录之前，此登录不会被记住。
 </p>
 <div class="row">
 	<div class="col-md-4">
@@ -23,11 +22,11 @@
 			<DataAnnotationsValidator/>
 			<ValidationSummary class="text-danger" role="alert"/>
 			<div class="form-floating mb-3">
-				<InputText @bind-Value="Input.RecoveryCode" id="Input.RecoveryCode" class="form-control" autocomplete="off" placeholder="RecoveryCode"/>
-				<label for="Input.RecoveryCode" class="form-label">Recovery Code</label>
+				<InputText @bind-Value="Input.RecoveryCode" id="Input.RecoveryCode" class="form-control" autocomplete="off" placeholder="恢复代码"/>
+				<label for="Input.RecoveryCode" class="form-label">恢复代码</label>
 				<ValidationMessage For="() => Input.RecoveryCode" class="text-danger"/>
 			</div>
-			<button type="submit" class="w-100 btn btn-lg btn-primary">Log in</button>
+			<button type="submit" class="w-100 btn btn-lg btn-primary">登录</button>
 		</EditForm>
 	</div>
 </div>
@@ -48,7 +47,7 @@
 
 		// Ensure the user has gone through the username & password screen first
 		user = await SignInManager.GetTwoFactorAuthenticationUserAsync() ??
-		       throw new InvalidOperationException("Unable to load two-factor authentication user.");
+		       throw new InvalidOperationException("无法加载两步验证用户。");
 	}
 
 	private async Task OnValidSubmitAsync()
@@ -72,15 +71,15 @@
 		else
 		{
 			Logger.LogWarning("Invalid recovery code entered for user with ID '{UserId}' ", userId);
-			message = "Error: Invalid recovery code entered.";
+			message = "错误：恢复代码无效。";
 		}
 	}
 
 	private sealed class InputModel
 	{
-		[Required]
+		[Required(ErrorMessage = "请输入恢复代码。")]
 		[DataType(DataType.Text)]
-		[Display(Name = "Recovery Code")]
+		[Display(Name = "恢复代码")]
 		public string RecoveryCode { get; set; } = "";
 	}
 

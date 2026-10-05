@@ -21,11 +21,6 @@
 		<AuthorizeView>
 			<Authorized>
 				<div class="nav-item px-3">
-					<NavLink class="nav-link" href="subscriptions">
-						<span class="bi bi-list-nested-nav-menu" aria-hidden="true"></span> 订阅
-					</NavLink>
-				</div>
-				<div class="nav-item px-3">
 					<NavLink class="nav-link" href="items">
 						<span class="bi bi-table-nav-menu" aria-hidden="true"></span> 条目
 					</NavLink>
@@ -33,6 +28,11 @@
 				<div class="nav-item px-3">
 					<NavLink class="nav-link" href="downloads">
 						<span class="bi bi-cloud-download-nav-menu" aria-hidden="true"></span> 下载任务
+					</NavLink>
+				</div>
+				<div class="nav-item px-3">
+					<NavLink class="nav-link" href="subscriptions">
+						<span class="bi bi-list-nested-nav-menu" aria-hidden="true"></span> 订阅
 					</NavLink>
 				</div>
 				<div class="nav-item px-3">
@@ -57,7 +57,7 @@
 			<Authorized>
 				<div class="nav-item px-3">
 					<NavLink class="nav-link" href="Account/Manage">
-						<span class="bi bi-person-fill-nav-menu" aria-hidden="true"></span> @context.User.Identity?.Name
+						<span class="bi bi-person-fill-nav-menu" aria-hidden="true"></span> 用户
 					</NavLink>
 				</div>
 				<div class="nav-item px-3">

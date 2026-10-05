@@ -12,7 +12,7 @@ async function fetchWithErrorHandling(url, options = {}) {
     if (!response.ok) {
         const text = await response.text();
         console.error(text);
-        throw new Error(`The server responded with status ${response.status}.`);
+        throw new Error(`服务器返回状态码 ${response.status}。`);
     }
     return response;
 }
@@ -68,7 +68,7 @@ customElements.define('passkey-submit', class extends HTMLElement {
 
     async obtainCredential(useConditionalMediation, signal) {
         if (!browserSupportsPasskeys) {
-            throw new Error('Some passkey features are missing. Please update your browser.');
+            throw new Error('浏览器缺少通行密钥支持，请更新浏览器。');
         }
 
         const headers = {
@@ -82,7 +82,7 @@ customElements.define('passkey-submit', class extends HTMLElement {
             const mediation = useConditionalMediation ? 'conditional' : undefined;
             return await requestCredential(email, mediation, headers, signal);
         } else {
-            throw new Error(`Unknown passkey operation '${this.attrs.operation}'.`);
+            throw new Error(`未知的通行密钥操作“${this.attrs.operation}”。`);
         }
     }
 
@@ -107,7 +107,7 @@ customElements.define('passkey-submit', class extends HTMLElement {
                 return;
             }
             const errorMessage = error.name === 'NotAllowedError'
-                ? 'No passkey was provided by the authenticator.'
+                ? '身份验证器未提供通行密钥。'
                 : error.message;
             formData.append(`${this.attrs.name}.Error`, errorMessage);
         }

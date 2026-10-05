@@ -7,24 +7,24 @@
 @inject IdentityRedirectManager        RedirectManager
 @inject ILogger<ResetAuthenticator>    Logger
 
-<PageTitle>Reset authenticator key</PageTitle>
+<PageTitle>重置身份验证器密钥 - MediaManager</PageTitle>
 
 <StatusMessage/>
-<h3>Reset authenticator key</h3>
+<h3>重置身份验证器密钥</h3>
 <div class="alert alert-warning" role="alert">
 	<p>
 		<span class="glyphicon glyphicon-warning-sign"></span>
-		<strong>If you reset your authenticator key your authenticator app will not work until you reconfigure it.</strong>
+		<strong>重置密钥后，身份验证器应用在重新配置前将无法使用。</strong>
 	</p>
 	<p>
-		This process disables 2FA until you verify your authenticator app.
-		If you do not complete your authenticator app configuration you may lose access to your account.
+		此过程会先禁用两步验证，直到你重新验证身份验证器应用。
+		如果未完成身份验证器应用的配置，你可能无法访问自己的账户。
 	</p>
 </div>
 <div>
 	<form @formname="reset-authenticator" @onsubmit="OnSubmitAsync" method="post">
 		<AntiforgeryToken/>
-		<button class="btn btn-danger" type="submit">Reset authenticator key</button>
+		<button class="btn btn-danger" type="submit">重置身份验证器密钥</button>
 	</form>
 </div>
 
@@ -51,7 +51,7 @@
 
 		RedirectManager.RedirectToWithStatus(
 		                                     "Account/Manage/EnableAuthenticator",
-		                                     "Your authenticator app key has been reset, you will need to configure your authenticator app using the new key.",
+		                                     "身份验证器密钥已重置，请使用新密钥重新配置身份验证器应用。",
 		                                     HttpContext);
 	}
 

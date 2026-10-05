@@ -88,6 +88,7 @@ internal class Program
                 })
                .AddEntityFrameworkStores<ApplicationDbContext>()
                .AddSignInManager()
+               .AddErrorDescriber<ChineseIdentityErrorDescriber>()
                .AddDefaultTokenProviders();
 
         builder.Services.Configure<BootstrapAdminOptions>(builder.Configuration.GetSection(BootstrapAdminOptions

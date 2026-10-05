@@ -8,9 +8,9 @@
 @inject SignInManager<ApplicationUser> SignInManager
 @inject IdentityRedirectManager        RedirectManager
 
-<PageTitle>Confirm email change</PageTitle>
+<PageTitle>确认邮箱变更 - MediaManager</PageTitle>
 
-<h1>Confirm email change</h1>
+<h1>确认邮箱变更</h1>
 
 <StatusMessage Message="@message"/>
 
@@ -33,15 +33,15 @@
 	{
 		if (UserId is null || Email is null || Code is null)
 		{
-			RedirectManager.RedirectToWithStatus(
-			                                     "Account/Login", "Error: Invalid email change confirmation link.", HttpContext);
+		RedirectManager.RedirectToWithStatus(
+		                                     "Account/Login", "错误：邮箱变更确认链接无效。", HttpContext);
 			return;
 		}
 
 		var user = await UserManager.FindByIdAsync(UserId);
 		if (user is null)
 		{
-			message = "Unable to find user with Id '{userId}'";
+			message = $"错误：找不到 ID 为 '{UserId}' 的用户。";
 			return;
 		}
 
@@ -49,7 +49,7 @@
 		var result = await UserManager.ChangeEmailAsync(user, Email, code);
 		if (!result.Succeeded)
 		{
-			message = "Error changing email.";
+			message = "错误：邮箱修改失败。";
 			return;
 		}
 
@@ -58,12 +58,12 @@
 		var setUserNameResult = await UserManager.SetUserNameAsync(user, Email);
 		if (!setUserNameResult.Succeeded)
 		{
-			message = "Error changing user name.";
+			message = "错误：用户名修改失败。";
 			return;
 		}
 
 		await SignInManager.RefreshSignInAsync(user);
-		message = "Thank you for confirming your email change.";
+		message = "感谢你确认邮箱变更。";
 	}
 
 }

@@ -11,10 +11,10 @@
 @inject NavigationManager             NavigationManager
 @inject IdentityRedirectManager       RedirectManager
 
-<PageTitle>Resend email confirmation</PageTitle>
+<PageTitle>重发邮箱确认邮件 - MediaManager</PageTitle>
 
-<h1>Resend email confirmation</h1>
-<h2>Enter your email.</h2>
+<h1>重发邮箱确认邮件</h1>
+<h2>输入你的邮箱。</h2>
 <hr/>
 <StatusMessage Message="@message"/>
 <div class="row">
@@ -24,10 +24,10 @@
 			<ValidationSummary class="text-danger" role="alert"/>
 			<div class="form-floating mb-3">
 				<InputText @bind-Value="Input.Email" id="Input.Email" class="form-control" aria-required="true" placeholder="name@example.com"/>
-				<label for="Input.Email" class="form-label">Email</label>
+				<label for="Input.Email" class="form-label">邮箱</label>
 				<ValidationMessage For="() => Input.Email" class="text-danger"/>
 			</div>
-			<button type="submit" class="w-100 btn btn-lg btn-primary">Resend</button>
+			<button type="submit" class="w-100 btn btn-lg btn-primary">重发</button>
 		</EditForm>
 	</div>
 </div>
@@ -48,7 +48,7 @@
 		var user = await UserManager.FindByEmailAsync(Input.Email!);
 		if (user is null)
 		{
-			message = "Verification email sent. Please check your email.";
+			message = "验证邮件已发送，请查收邮件。";
 			return;
 		}
 
@@ -60,13 +60,13 @@
 		                                                              new Dictionary<string, object?> { ["userId"] = userId, ["code"] = code });
 		await EmailSender.SendConfirmationLinkAsync(user, Input.Email, HtmlEncoder.Default.Encode(callbackUrl));
 
-		message = "Verification email sent. Please check your email.";
+		message = "验证邮件已发送，请查收邮件。";
 	}
 
 	private sealed class InputModel
 	{
-		[Required]
-		[EmailAddress]
+		[Required(ErrorMessage = "请输入邮箱。")]
+		[EmailAddress(ErrorMessage = "邮箱格式不正确。")]
 		public string Email { get; set; } = "";
 	}
 
