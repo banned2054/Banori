@@ -96,7 +96,6 @@ internal class Program
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RefreshPulse>();
         builder.Services.AddScoped<IApplicationSettingStore, EfApplicationSettingStore>();
-        builder.Services.AddScoped<ManageGeneralSettings>();
         builder.Services.AddScoped<ManageQbittorrentSettings>();
         builder.Services.AddScoped<ManageSelectionRuleSettings>();
         builder.Services.AddScoped<ManageTelegramSettings>();
