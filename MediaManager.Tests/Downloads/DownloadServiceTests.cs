@@ -52,6 +52,77 @@ public sealed class DownloadServiceTests
     }
 
     [Fact]
+    public async Task CreateUpload_PersistsTaskWithoutFeedItemAndSubmitsThroughExistingPipeline()
+    {
+        using var harness = await CreateHarnessAsync();
+        var       bytes   = TestTorrentBytes.Create("Uploaded Anime - 01");
+
+        var taskId = await harness.CreateUploadAsync(bytes);
+
+        await using var db   = await harness.CreateDbContextAsync();
+        var             task = await db.DownloadTasks.AsNoTracking().SingleAsync();
+        Assert.Equal(DownloadTaskStatus.PendingSubmit, task.Status);
+        Assert.Null(task.FeedItemId);
+        Assert.Null(task.SubjectId);
+        Assert.Null(task.Episode);
+        Assert.Equal(TestTorrentBytes.InfoHashOf("Uploaded Anime - 01"), task.InfoHash);
+        Assert.Equal("upload://" + task.InfoHash, task.TorrentUrl);
+        Assert.Equal("Uploaded Anime - 01", task.NamingSnapshot);
+        Assert.Equal("/downloads/Uploaded Anime - 01-" + task.InfoHash[..8], task.SavePath);
+
+        // 沿用既有提交管线：一轮对账后进入下载中，不因缺少条目来源而绕过隔离路径。
+        await harness.ReconcileAsync();
+        var submitted = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Downloading, submitted.Status);
+        var add = Assert.Single(harness.Store.AddCalls);
+        Assert.Equal(task.SavePath, add.SavePath);
+        Assert.Equal("MediaManager", add.Category);
+    }
+
+    [Fact]
+    public async Task CreateUpload_EnforcesHashDeduplicationAcrossStatuses()
+    {
+        using var harness = await CreateHarnessAsync();
+        var       bytes   = TestTorrentBytes.Create("Uploaded Anime - 01");
+        var       taskId  = await harness.CreateUploadAsync(bytes);
+
+        // 活动任务存在时同 hash 上传被拒绝。
+        await Assert.ThrowsAsync<InvalidOperationException>(() => harness.CreateUploadAsync(bytes));
+
+        // 已完成同样拒绝重新登记（与条目路径一致）。
+        await using (var db = await harness.CreateDbContextAsync())
+        {
+            var entity = await db.DownloadTasks.SingleAsync(value => value.Id == taskId);
+            entity.Status = DownloadTaskStatus.Completed;
+            await db.SaveChangesAsync();
+        }
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => harness.CreateUploadAsync(bytes));
+
+        // 非活动的终态不阻止同 hash 重新登记。
+        await using (var db = await harness.CreateDbContextAsync())
+        {
+            var entity = await db.DownloadTasks.SingleAsync(value => value.Id == taskId);
+            entity.Status = DownloadTaskStatus.Replaced;
+            await db.SaveChangesAsync();
+        }
+
+        var recreated = await harness.CreateUploadAsync(bytes);
+        Assert.NotEqual(taskId, recreated);
+    }
+
+    [Fact]
+    public async Task CreateUpload_RejectsUnconfiguredDownloaderAndInvalidTorrentBytes()
+    {
+        using var unconfigured = await CreateHarnessAsync(configureDownloader: false);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => unconfigured.CreateUploadAsync(TestTorrentBytes.Create("Uploaded Anime - 01")));
+
+        using var configured = await CreateHarnessAsync();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => configured.CreateUploadAsync([0x62, 0x61, 0x64]));
+    }
+
+    [Fact]
     public async Task Reconcile_SubmitsPendingTaskWithIsolatedPath()
     {
         using var harness = await CreateHarnessAsync();
@@ -811,6 +882,11 @@ public sealed class DownloadServiceTests
         public Task<Guid> CreateDownloadAsync(Guid itemId)
         {
             return Service.CreateForFeedItemAsync(itemId);
+        }
+
+        public Task<Guid> CreateUploadAsync(byte[] torrentBytes)
+        {
+            return Service.CreateFromUploadAsync(torrentBytes);
         }
 
         public Task ReconcileAsync()

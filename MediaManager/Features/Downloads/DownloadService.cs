@@ -63,6 +63,59 @@ public sealed class DownloadService(
         }
     }
 
+    /// <summary>
+    ///     一次性上传种子：与一次性 RSS 一样创建即等待提交，但不关联订阅、条目与 Subject。
+    ///     命名快照取种子内 info.name（缺失时按 hash 派生）；来源记为 upload://hash 便于区分。
+    /// </summary>
+    public async Task<Guid> CreateFromUploadAsync(byte[] torrentBytes, CancellationToken cancellationToken = default)
+    {
+        if (torrentBytes.Length == 0) throw new InvalidOperationException("所选文件为空，请重新选择。");
+
+        var settings = await qbittorrentSettings.GetAsync(cancellationToken);
+        if (!settings.Enabled || !settings.IsConfigured)
+            throw new InvalidOperationException("请先在设置页启用并配置 qBittorrent 下载器。");
+
+        if (!TorrentInfoHashExtractor.TryExtractInfoHash(torrentBytes, out var infoHash))
+            throw new InvalidOperationException("无法从种子文件中提取 info-hash，文件可能无效或已损坏。");
+
+        var namingSnapshot = TorrentInfoHashExtractor.TryExtractDisplayName(torrentBytes, out var displayName)
+            ? displayName
+            : $"上传种子：{infoHash[..8]}";
+
+        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        if (await FindActiveDuplicateIdAsync(db, infoHash, null, cancellationToken) is not null)
+            throw new InvalidOperationException("同一资源已有进行中的下载任务。");
+
+        // 与条目路径一致：已完成的同资源同样不重复登记。
+        if (await FindCompletedDuplicateIdAsync(db, infoHash, cancellationToken) is not null)
+            throw new InvalidOperationException("同一资源已有已完成的下载任务。");
+
+        var task = new DownloadTask
+        {
+            Id             = Guid.NewGuid(),
+            InfoHash       = infoHash,
+            TorrentFile    = torrentBytes,
+            TorrentUrl     = $"upload://{infoHash}",
+            SavePath       = BuildSavePath(settings.SavePath, null, namingSnapshot, infoHash),
+            NamingSnapshot = namingSnapshot,
+            Status         = DownloadTaskStatus.PendingSubmit,
+            CreatedAtUtc   = timeProvider.GetUtcNow()
+        };
+        db.DownloadTasks.Add(task);
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            // 并发下绕过前置查重时由数据库活动唯一索引兜底。
+            throw new InvalidOperationException("同一资源已有进行中的下载任务，重复提交已被数据库约束阻止。");
+        }
+
+        logger.LogInformation("已从上传种子创建下载任务 {TaskId}（hash {InfoHash}）。", task.Id, infoHash);
+        return task.Id;
+    }
+
     /// <summary>下载种子文件并提取 info-hash；网络请求不置于数据库事务内。</summary>
     public async Task<(byte[] TorrentBytes, string InfoHash)> DownloadTorrentAsync(
         string torrentUrl, Guid? proxyId, CancellationToken cancellationToken)
@@ -82,23 +135,11 @@ public sealed class DownloadService(
         ApplicationDbContext db, FeedItem item, byte[] torrentBytes, string infoHash,
         CancellationToken    cancellationToken)
     {
-        var activeDuplicate = await db.DownloadTasks.AsNoTracking()
-                                      .Where(task => task.FeedItemId == item.Id || task.InfoHash == infoHash)
-                                      .Where(task => task.Status == DownloadTaskStatus.PendingSubmit ||
-                                                     task.Status == DownloadTaskStatus.Submitting    ||
-                                                     task.Status == DownloadTaskStatus.Downloading   ||
-                                                     task.Status == DownloadTaskStatus.Paused)
-                                      .Select(task => (Guid?)task.Id)
-                                      .FirstOrDefaultAsync(cancellationToken);
-        if (activeDuplicate is not null) throw new InvalidOperationException("该条目或同一资源已有进行中的下载任务。");
+        if (await FindActiveDuplicateIdAsync(db, infoHash, item.Id, cancellationToken) is not null)
+            throw new InvalidOperationException("该条目或同一资源已有进行中的下载任务。");
 
         // 有效完成的同资源不自动重新下载；完成记录不因不属于活动唯一索引而被重复登记绕过。
-        var completedDuplicate = await db.DownloadTasks.AsNoTracking()
-                                         .Where(task => task.InfoHash == infoHash &&
-                                                        task.Status   == DownloadTaskStatus.Completed)
-                                         .Select(task => (Guid?)task.Id)
-                                         .FirstOrDefaultAsync(cancellationToken);
-        if (completedDuplicate is not null)
+        if (await FindCompletedDuplicateIdAsync(db, infoHash, cancellationToken) is not null)
             throw new InvalidOperationException("同一资源已有已完成的下载任务。");
 
         // 替换对象在创建与完成两处共用同一规则，见 FindReplacementTargetAsync。
@@ -599,6 +640,31 @@ public sealed class DownloadService(
 
         rootFolder = candidate;
         return true;
+    }
+
+    /// <summary>活动任务查重：同 hash 一律冲突；条目路径额外覆盖同条目换源的情况，上传路径没有条目来源。</summary>
+    private static async Task<Guid?> FindActiveDuplicateIdAsync(
+        ApplicationDbContext db, string infoHash, Guid? feedItemId, CancellationToken cancellationToken)
+    {
+        var query = db.DownloadTasks.AsNoTracking()
+                      .Where(task => task.Status == DownloadTaskStatus.PendingSubmit ||
+                                     task.Status == DownloadTaskStatus.Submitting    ||
+                                     task.Status == DownloadTaskStatus.Downloading   ||
+                                     task.Status == DownloadTaskStatus.Paused);
+        query = feedItemId is null
+            ? query.Where(task => task.InfoHash == infoHash)
+            : query.Where(task => task.InfoHash == infoHash || task.FeedItemId == feedItemId);
+        return await query.Select(task => (Guid?)task.Id).FirstOrDefaultAsync(cancellationToken);
+    }
+
+    private static async Task<Guid?> FindCompletedDuplicateIdAsync(
+        ApplicationDbContext db, string infoHash, CancellationToken cancellationToken)
+    {
+        return await db.DownloadTasks.AsNoTracking()
+                       .Where(task => task.InfoHash == infoHash &&
+                                      task.Status   == DownloadTaskStatus.Completed)
+                       .Select(task => (Guid?)task.Id)
+                       .FirstOrDefaultAsync(cancellationToken);
     }
 
     /// <summary>

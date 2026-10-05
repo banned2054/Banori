@@ -16,13 +16,29 @@
 	</div>
 </div>
 
+<div class="card mb-3">
+	<div class="card-body">
+		<h2 class="h5">上传种子</h2>
+		<div class="text-body-secondary small mb-2">
+			选择文件后会立即登记一次性下载任务；不关联订阅与条目，按种子内名称命名并提交下载器。
+		</div>
+		<div class="d-flex align-items-center gap-2">
+			<InputFile id="torrent-file-upload" class="visually-hidden" accept=".torrent" disabled="@_vm.Busy" OnChange="UploadTorrentAsync"/>
+			<label for="torrent-file-upload" class="btn btn-primary mb-0 @(_vm.Busy ? "disabled" : string.Empty)">
+				<span class="bi bi-cloud-arrow-up me-1" aria-hidden="true"></span>选择并上传 .torrent
+			</label>
+			<span class="small text-body-secondary">最大 10 MB</span>
+		</div>
+	</div>
+</div>
+
 @if (!_vm.Loaded)
 {
 	<p>正在加载…</p>
 }
 else if (_vm.Tasks.Count == 0)
 {
-	<p class="text-body-secondary">还没有下载任务。在条目详情页对已选择的条目创建下载任务。</p>
+	<p class="text-body-secondary">还没有下载任务。上传 .torrent 文件，或在条目详情页对已选择的条目创建下载任务。</p>
 }
 else
 {
@@ -168,6 +184,26 @@ else
 		return RunOperationAsync(() => _vm.RetryAsync(taskId, _cts.Token));
 	}
 
+	private async Task UploadTorrentAsync(InputFileChangeEventArgs e)
+	{
+		var file = e.File;
+		if (file is null) return;
+
+		try
+		{
+			await using var stream = file.OpenReadStream(
+				maxAllowedSize: DownloadTasksPageViewModel.MaxTorrentUploadBytes + 1024 * 1024);
+			await _vm.UploadTorrentAsync(stream, _cts.Token);
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+		catch (IOException)
+		{
+			_vm.NoteFailure("读取上传文件失败，请重试。");
+		}
+	}
+
 	private async Task RunOperationAsync(Func<Task> operation)
 	{
 		try
@@ -181,7 +217,7 @@ else
 
 	private static string DownloadStatusTitle(DownloadTaskView task)
 	{
-		var subject = string.IsNullOrWhiteSpace(task.SubjectName) ? "未知条目" : task.SubjectName;
+		var subject = string.IsNullOrWhiteSpace(task.SubjectName) ? task.NamingSnapshot : task.SubjectName;
 		var episode = task.Episode is null ? string.Empty : $" 第{task.Episode:0.##}集";
 		var version = task.Version > 1 ? $" v{task.Version}" : string.Empty;
 		return $"{subject}{episode}{version}";

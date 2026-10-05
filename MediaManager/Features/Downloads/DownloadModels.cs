@@ -44,7 +44,7 @@ public static class DownloadTaskStatusExtensions
 public sealed record DownloadTaskView
 {
     public required Guid               Id               { get; init; }
-    public required Guid               FeedItemId       { get; init; }
+    public required Guid?              FeedItemId       { get; init; }
     public          string?            TorrentName      { get; init; }
     public          int?               SubjectId        { get; init; }
     public          string?            SubjectName      { get; init; }

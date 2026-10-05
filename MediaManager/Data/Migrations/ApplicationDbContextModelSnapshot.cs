@@ -184,7 +184,7 @@ namespace MediaManager.Data.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("TEXT");
 
-                    b.Property<Guid>("FeedItemId")
+                    b.Property<Guid?>("FeedItemId")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("InfoHash")
@@ -233,7 +233,6 @@ namespace MediaManager.Data.Migrations
                         .HasColumnType("BLOB");
 
                     b.Property<string>("TorrentUrl")
-                        .IsRequired()
                         .HasMaxLength(2000)
                         .HasColumnType("TEXT");
 
@@ -827,8 +826,7 @@ namespace MediaManager.Data.Migrations
                     b.HasOne("MediaManager.Data.FeedItem", "FeedItem")
                         .WithMany()
                         .HasForeignKey("FeedItemId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Cascade);
 
                     b.HasOne("MediaManager.Data.MediaSubject", "Subject")
                         .WithMany()

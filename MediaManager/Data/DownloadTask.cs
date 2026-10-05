@@ -9,8 +9,9 @@ namespace MediaManager.Data;
 public sealed class DownloadTask
 {
     public Guid     Id         { get; set; }
-    public Guid     FeedItemId { get; set; }
-    public FeedItem FeedItem   { get; set; } = null!;
+    /// <summary>来源 RSS 条目；本地上传种子没有 RSS 来源，创建任务后保持为空。</summary>
+    public Guid?    FeedItemId { get; set; }
+    public FeedItem? FeedItem  { get; set; }
 
     /// <summary>决策时的 Subject 快照，仅用于查询与展示；Subject 被删除后置空，快照字段不受影响。</summary>
     public int? SubjectId { get; set; }
@@ -23,7 +24,8 @@ public sealed class DownloadTask
     /// <summary>.torrent 原始字节；重试沿用原决策，不依赖源地址仍可访问。</summary>
     public byte[] TorrentFile { get; set; } = [];
 
-    public string TorrentUrl { get; set; } = string.Empty;
+    /// <summary>远程种子地址；本地上传种子没有下载来源，保存为 upload://hash。</summary>
+    public string? TorrentUrl { get; set; }
 
     /// <summary>提交时使用的下载器隔离保存路径（含 hash 短码），创建后不变。</summary>
     public string SavePath { get; set; } = string.Empty;

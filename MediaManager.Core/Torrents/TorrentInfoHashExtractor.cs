@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 
 namespace MediaManager.Core.Torrents;
 
@@ -29,6 +30,52 @@ public static class TorrentInfoHashExtractor
                                      .ToLowerInvariant();
                 return true;
             }
+        }
+
+        return false;
+    }
+
+    /// <summary>提取 BEP-3 info.name，作为上传种子的默认显示名；不要求种子包含可选的 name.utf-8。</summary>
+    public static bool TryExtractDisplayName(ReadOnlySpan<byte> torrentBytes, out string displayName)
+    {
+        displayName = string.Empty;
+        if (torrentBytes.Length < 2 || torrentBytes[0] != (byte)'d') return false;
+
+        var position = 1;
+        while (position < torrentBytes.Length)
+        {
+            if (torrentBytes[position] == (byte)'e') return false;
+
+            if (!TryReadStringBytes(torrentBytes, ref position, out var key)) return false;
+
+            if (key.SequenceEqual("info"u8))
+                return TryReadInfoName(torrentBytes, ref position, out displayName);
+
+            if (!SkipValue(torrentBytes, ref position)) return false;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadInfoName(ReadOnlySpan<byte> data, ref int position, out string displayName)
+    {
+        displayName = string.Empty;
+        if (position >= data.Length || data[position] != (byte)'d') return false;
+
+        position++;
+        while (position < data.Length && data[position] != (byte)'e')
+        {
+            if (!TryReadStringBytes(data, ref position, out var key)) return false;
+
+            if (key.SequenceEqual("name"u8))
+            {
+                if (!TryReadStringBytes(data, ref position, out var value)) return false;
+
+                displayName = Encoding.UTF8.GetString(value);
+                return displayName.Length > 0;
+            }
+
+            if (!SkipValue(data, ref position)) return false;
         }
 
         return false;

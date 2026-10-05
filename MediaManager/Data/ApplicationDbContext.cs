@@ -127,7 +127,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.ToTable("DownloadTasks");
             entity.HasKey(item => item.Id);
             entity.Property(item => item.InfoHash).HasMaxLength(40).IsRequired();
-            entity.Property(item => item.TorrentUrl).HasMaxLength(2000).IsRequired();
+            entity.Property(item => item.TorrentUrl).HasMaxLength(2000);
             entity.Property(item => item.SavePath).HasMaxLength(1000).IsRequired();
             entity.Property(item => item.NamingSnapshot).HasMaxLength(200).IsRequired();
             entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(32);
