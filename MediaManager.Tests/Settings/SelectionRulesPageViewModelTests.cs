@@ -246,6 +246,7 @@ public sealed class SelectionRulesPageViewModelTests
         services.AddSingleton<ITorrentFileSource>(_ => new FakeTorrentFileSource(_ => TestTorrentBytes.Create()));
         services.AddScoped<ManageQbittorrentSettings>();
         services.AddNotificationTestFakes();
+        services.AddSingleton<IFeedSourceReader>(new FakeFeedSourceReader());
         services.AddScoped<DownloadService>();
         services.AddSingleton<CandidateEligibilityPolicy>();
         services.AddSingleton<CandidateRankingPolicy>();
@@ -327,6 +328,18 @@ public sealed class SelectionRulesPageViewModelTests
         /// <summary>测试用应用生命周期：控制规则保存后重选的停机令牌。</summary>
         public FakeHostApplicationLifetime Lifetime { get; } = new();
 
+        public void Dispose()
+        {
+            provider.Dispose();
+            try
+            {
+                Directory.Delete(true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+
         public AsyncServiceScope CreateScope()
         {
             return provider.CreateAsyncScope();
@@ -397,18 +410,6 @@ public sealed class SelectionRulesPageViewModelTests
             db.MediaSubscriptions.Add(subscription);
             await db.SaveChangesAsync();
             return subscription.Id;
-        }
-
-        public void Dispose()
-        {
-            provider.Dispose();
-            try
-            {
-                Directory.Delete(true);
-            }
-            catch (IOException)
-            {
-            }
         }
     }
 }

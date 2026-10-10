@@ -23,7 +23,7 @@ public sealed class DownloadTasksPageViewModel(
         Loaded = true;
     }
 
-    /// <summary>上传种子登记：读取浏览器流后交给服务校验与去重，与一次性 RSS 一样创建即等待提交。</summary>
+    /// <summary>上传种子登记：读取浏览器流后交给服务校验与去重，创建即等待提交。</summary>
     public async Task UploadTorrentAsync(Stream torrentStream, CancellationToken cancellationToken = default)
     {
         using var buffer = new MemoryStream();

@@ -84,7 +84,7 @@ public sealed class MikanRefreshService(
         // RSS 顺序不影响结果；随后为需要新增或升级的优胜登记下载意图。
         var groupKeys = await CollectGroupKeysAsync(evaluatedIds, cancellationToken);
         // 刷新批次是自动路径：同一优胜已记录失败或已登记任务时不重试种子登记。
-        await selectionService.SelectAndRegisterAsync(groupKeys, cancellationToken: cancellationToken);
+        await selectionService.SelectAndRegisterAsync(groupKeys, cancellationToken : cancellationToken);
 
         if (fetchError is null)
         {
@@ -240,19 +240,19 @@ public sealed class MikanRefreshService(
 
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var items = await db.FeedItems.AsNoTracking()
-                            .Where(item => evaluatedIds.Contains(item.Id) &&
+                            .Where(item => evaluatedIds.Contains(item.Id)            &&
                                            item.Status    == FeedItemStatus.Accepted &&
-                                           item.SubjectId != null &&
-                                           item.Episode   != null &&
+                                           item.SubjectId != null                    &&
+                                           item.Episode   != null                    &&
                                            item.MediaType != null)
                             .Select(item => new { item.SubjectId, item.MediaType, item.Episode })
                             .ToListAsync(cancellationToken);
 
         return items
-               .Where(item => item.MediaType != "MultipleEpisode")
-               .Select(item => new SelectionGroupKey(item.SubjectId!.Value, item.MediaType!, item.Episode!.Value))
-               .Distinct()
-               .ToList();
+              .Where(item => item.MediaType != "MultipleEpisode")
+              .Select(item => new SelectionGroupKey(item.SubjectId!.Value, item.MediaType!, item.Episode!.Value))
+              .Distinct()
+              .ToList();
     }
 
     private async Task MarkItemFailedAsync(Guid itemId, CancellationToken cancellationToken)
@@ -329,9 +329,7 @@ public sealed class MikanRefreshService(
         {
             subscription.LastRefreshCompletedAtUtc = now;
             subscription.LastError                 = null;
-            // 一次性订阅不参与定时调度：完成后不排下次刷新时间。
-            if (subscription.IsEnabled && !subscription.IsOneShot)
-                subscription.NextRefreshAtUtc = now.AddMinutes(refreshIntervalMinutes);
+            subscription.NextRefreshAtUtc          = now.AddMinutes(refreshIntervalMinutes);
         }
 
         await db.SaveChangesAsync(cancellationToken);
@@ -353,10 +351,8 @@ public sealed class MikanRefreshService(
         {
             subscription.LastRefreshCompletedAtUtc = failedAtUtc;
             subscription.LastError                 = error;
-            // 一次性订阅不参与定时调度：失败后同样不排下次刷新，等待手动重试。
-            if (subscription.IsEnabled && !subscription.IsOneShot)
-                subscription.NextRefreshAtUtc =
-                    failedAtUtc.AddMinutes(refreshIntervalMinutes ?? subscription.RefreshIntervalMinutes);
+            subscription.NextRefreshAtUtc =
+                failedAtUtc.AddMinutes(refreshIntervalMinutes ?? subscription.RefreshIntervalMinutes);
         }
 
         await db.SaveChangesAsync(cancellationToken);
@@ -383,7 +379,7 @@ public sealed class MikanRefreshService(
         Guid?  ProxyId)
     {
         public RefreshSubscription(MediaSubscription entity, string feedUrl) : this(entity.Id, entity.Name, feedUrl,
-            entity.RefreshIntervalMinutes, entity.FixedSubjectId, entity.ProxyId)
+                 entity.RefreshIntervalMinutes, entity.FixedSubjectId, entity.ProxyId)
         {
         }
     }

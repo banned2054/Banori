@@ -242,6 +242,7 @@ public sealed class FeedItemDetailsPageViewModelTests
         services.AddSingleton<ITorrentFileSource>(_ => new FakeTorrentFileSource(_ => TestTorrentBytes.Create()));
         services.AddScoped<ManageQbittorrentSettings>();
         services.AddNotificationTestFakes();
+        services.AddSingleton<IFeedSourceReader>(new FakeFeedSourceReader());
         services.AddScoped<DownloadService>();
         // 与应用及订阅/设置测试保持一致的 Identity 模型配置：Identity 服务注册影响
         // ApplicationDbContext 模型缓存的行为，缺注册会与先构建模型的测试产生顺序依赖。
@@ -253,8 +254,8 @@ public sealed class FeedItemDetailsPageViewModelTests
 
     private sealed class CountingSubjectLinkResolver(int? subjectId) : ISubjectLinkResolver
     {
-        public Task<int?> ResolveSubjectIdAsync(Uri episodeUri, Guid? proxyId = default,
-                                                CancellationToken   cancellationToken = default)
+        public Task<int?> ResolveSubjectIdAsync(Uri               episodeUri, Guid? proxyId = default,
+                                                CancellationToken cancellationToken = default)
         {
             return Task.FromResult(subjectId);
         }

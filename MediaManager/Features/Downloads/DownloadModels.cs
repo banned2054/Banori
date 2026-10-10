@@ -66,6 +66,36 @@ public sealed record DownloadTaskView
     public          string?            ReplacedByNaming { get; init; }
 }
 
+/// <summary>RSS 链接下载中单个条目的登记结果。</summary>
+public enum RssDownloadItemOutcome
+{
+    /// <summary>已登记为新的下载任务。</summary>
+    Created,
+
+    /// <summary>同 hash 任务已存在（进行中或已完成），跳过。</summary>
+    Duplicate,
+
+    /// <summary>登记失败（种子下载失败、种子无效等）。</summary>
+    Failed
+}
+
+/// <summary>RSS 链接下载中单个条目的处理明细。</summary>
+public sealed record RssDownloadItemResult(
+    string                 Title,
+    RssDownloadItemOutcome Outcome,
+    Guid?                  TaskId,
+    string?                Error);
+
+/// <summary>RSS 链接下载的整批结果：逐条尽力登记，汇总各类计数。</summary>
+public sealed record RssDownloadResult(
+    int                                  CreatedCount,
+    int                                  DuplicateCount,
+    int                                  FailedCount,
+    IReadOnlyList<RssDownloadItemResult> Items)
+{
+    public bool HasChanges => CreatedCount > 0 || DuplicateCount > 0;
+}
+
 /// <summary>条目详情页附带的下载任务摘要。</summary>
 public sealed record DownloadTaskBrief
 {

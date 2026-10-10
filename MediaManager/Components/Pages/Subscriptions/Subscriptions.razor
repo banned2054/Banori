@@ -1,9 +1,9 @@
 @page "/subscriptions"
 @rendermode InteractiveServer
 @attribute [Authorize]
-@using MediaManager.Features.Subscriptions
-@using MediaManager.Features.Proxies
 @using MediaManager.Data
+@using MediaManager.Features.Proxies
+@using MediaManager.Features.Subscriptions
 @implements IDisposable
 
 @inject SubscriptionService                 SubscriptionService
@@ -48,22 +48,11 @@
 							<div class="form-text">留空表示继续使用已保存地址。</div>
 						}
 					</div>
-					@if (_vm.EditingOneShot)
-					{
-						<div class="col-md-4">
-							<label class="form-label">刷新周期（分钟）</label>
-							<input class="form-control" value="—" disabled>
-							<div class="form-text">一次性订阅不参与定时刷新。</div>
-						</div>
-					}
-					else
-					{
-						<div class="col-md-4">
-							<label class="form-label" for="refresh-interval">刷新周期（分钟）</label>
-							<InputNumber id="refresh-interval" class="form-control" @bind-Value="_vm.Draft.RefreshIntervalMinutes"/>
-							<ValidationMessage For="() => _vm.Draft.RefreshIntervalMinutes"/>
-						</div>
-					}
+					<div class="col-md-4">
+						<label class="form-label" for="refresh-interval">刷新周期（分钟）</label>
+						<InputNumber id="refresh-interval" class="form-control" @bind-Value="_vm.Draft.RefreshIntervalMinutes"/>
+						<ValidationMessage For="() => _vm.Draft.RefreshIntervalMinutes"/>
+					</div>
 					<div class="col-md-4">
 						<label class="form-label" for="subject-id">固定 Subject ID（可选）</label>
 						<InputNumber id="subject-id" class="form-control" @bind-Value="_vm.Draft.FixedSubjectId"/>
@@ -80,15 +69,12 @@
 						</select>
 						<div class="form-text">RSS 抓取、条目页面解析与种子下载都走此代理。代理可在<a href="settings#network-proxy">设置的「网络代理」</a>中维护。</div>
 					</div>
-					@if (!_vm.EditingOneShot)
-					{
-						<div class="col-md-4 d-flex align-items-center pt-4">
-							<div class="form-check">
-								<InputCheckbox id="subscription-enabled" class="form-check-input" @bind-Value="_vm.Draft.IsEnabled"/>
-								<label class="form-check-label" for="subscription-enabled">启用定时刷新</label>
-							</div>
+					<div class="col-md-4 d-flex align-items-center pt-4">
+						<div class="form-check">
+							<InputCheckbox id="subscription-enabled" class="form-check-input" @bind-Value="_vm.Draft.IsEnabled"/>
+							<label class="form-check-label" for="subscription-enabled">启用定时刷新</label>
 						</div>
-					}
+					</div>
 				</div>
 				<div class="mt-3 d-flex gap-2">
 					<button type="submit" class="btn btn-primary" disabled="@_vm.Saving">@(_vm.Saving ? "正在保存…" : "保存")</button>
@@ -98,30 +84,6 @@
 		</div>
 	</EditForm>
 }
-
-<EditForm Model="_vm.OneShotDraft" OnValidSubmit="SaveOneShotAsync" FormName="one-shot-subscription-editor">
-	<DataAnnotationsValidator/>
-	<div class="card mb-4">
-		<div class="card-body">
-			<h2 class="h5">一次性 RSS 订阅</h2>
-			<p class="text-body-secondary small mb-3">粘贴任意 RSS 地址，添加后立即抓取一次；不参与定时刷新，可随时手动重新抓取。</p>
-			<div class="row g-3">
-				<div class="col-md-6">
-					<label class="form-label" for="one-shot-url">RSS 地址</label>
-					<InputText id="one-shot-url" class="form-control" type="url" @bind-Value="_vm.OneShotDraft.FeedUrl"/>
-					<ValidationMessage For="() => _vm.OneShotDraft.FeedUrl"/>
-				</div>
-				<div class="col-md-6">
-					<label class="form-label" for="one-shot-name">名称（可选）</label>
-					<InputText id="one-shot-name" class="form-control" placeholder="留空则使用域名" @bind-Value="_vm.OneShotDraft.Name"/>
-				</div>
-			</div>
-			<div class="mt-3">
-				<button type="submit" class="btn btn-primary" disabled="@_vm.Saving">@(_vm.Saving ? "正在添加…" : "添加并立即抓取")</button>
-			</div>
-		</div>
-	</div>
-</EditForm>
 
 @if (!_vm.Loaded)
 {
@@ -136,22 +98,16 @@ else
 	<div class="table-responsive">
 		<table class="table align-middle">
 			<thead>
-				<tr>
-					<th>订阅</th><th>状态</th><th>刷新周期</th><th>最近刷新</th><th>下次刷新</th><th class="text-end">操作</th>
-				</tr>
+			<tr>
+				<th>订阅</th><th>状态</th><th>刷新周期</th><th>最近刷新</th><th>下次刷新</th><th class="text-end">操作</th>
+			</tr>
 			</thead>
 			<tbody>
 			@foreach (var subscription in _vm.Subscriptions)
 			{
 				<tr>
 					<td>
-						<div class="fw-semibold">
-							@subscription.Name
-							@if (subscription.IsOneShot)
-							{
-								<span class="badge text-bg-info align-middle">一次性</span>
-							}
-						</div>
+						<div class="fw-semibold">@subscription.Name</div>
 						<div class="small text-body-secondary text-break">@subscription.FeedUrlDisplay</div>
 						@if (subscription.FixedSubjectId is not null)
 						{
@@ -171,7 +127,7 @@ else
 							<div class="small text-danger mt-1">@subscription.LastError</div>
 						}
 					</td>
-					<td>@(subscription.IsOneShot ? "—" : $"{subscription.RefreshIntervalMinutes} 分钟")</td>
+					<td>@($"{subscription.RefreshIntervalMinutes} 分钟")</td>
 					<td>@FormatTime(subscription.LastRefreshCompletedAtUtc)</td>
 					<td>@(subscription.IsEnabled ? FormatTime(subscription.NextRefreshAtUtc) : "—")</td>
 					<td class="text-end text-nowrap">
@@ -203,11 +159,6 @@ else
 	private Task SaveAsync()
 	{
 		return RunAsync(_vm.SaveAsync);
-	}
-
-	private Task SaveOneShotAsync()
-	{
-		return RunAsync(_vm.SaveOneShotAsync);
 	}
 
 	private Task RefreshAsync(Guid id)

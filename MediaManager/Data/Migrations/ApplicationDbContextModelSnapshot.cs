@@ -452,9 +452,6 @@ namespace MediaManager.Data.Migrations
                     b.Property<bool>("IsEnabled")
                         .HasColumnType("INTEGER");
 
-                    b.Property<bool>("IsOneShot")
-                        .HasColumnType("INTEGER");
-
                     b.Property<string>("LastError")
                         .HasMaxLength(1000)
                         .HasColumnType("TEXT");

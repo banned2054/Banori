@@ -150,6 +150,7 @@ public sealed class NotificationHookTests
         services.AddScoped<ManageQbittorrentSettings>();
         services.AddDataProtection();
         services.AddNotificationTestFakes();
+        services.AddSingleton<IFeedSourceReader>(new FakeFeedSourceReader());
         services.AddScoped<DownloadService>();
         // 与应用及下载/订阅测试保持一致的 Identity 模型配置，避免 ApplicationDbContext 模型缓存顺序依赖。
         services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion =

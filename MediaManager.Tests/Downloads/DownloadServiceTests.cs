@@ -114,12 +114,183 @@ public sealed class DownloadServiceTests
     [Fact]
     public async Task CreateUpload_RejectsUnconfiguredDownloaderAndInvalidTorrentBytes()
     {
-        using var unconfigured = await CreateHarnessAsync(configureDownloader: false);
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => unconfigured.CreateUploadAsync(TestTorrentBytes.Create("Uploaded Anime - 01")));
+        using var unconfigured = await CreateHarnessAsync(false);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                                                                unconfigured
+                                                                   .CreateUploadAsync(TestTorrentBytes
+                                                                       .Create("Uploaded Anime - 01")));
 
         using var configured = await CreateHarnessAsync();
         await Assert.ThrowsAsync<InvalidOperationException>(() => configured.CreateUploadAsync([0x62, 0x61, 0x64]));
+    }
+
+    [Fact]
+    public async Task CreateFromRssFeed_CreatesTaskPerItemWithoutSubjectLinkage()
+    {
+        using var harness = await CreateHarnessAsync();
+        var       feedUrl = "https://example.com/rss.xml";
+        harness.FeedReader.Items.Add(RssItem("rss-1", "RSS 番剧 第 1 集 [1080p]",
+                                             "https://example.com/torrents/rss-1.torrent"));
+        harness.FeedReader.Items.Add(RssItem("rss-2", "RSS 番剧 第 2 集 [1080p]",
+                                             "https://example.com/torrents/rss-2.torrent"));
+
+        var result = await harness.CreateFromRssFeedAsync(feedUrl);
+
+        Assert.Equal(2, result.CreatedCount);
+        Assert.Equal(0, result.DuplicateCount);
+        Assert.Equal(0, result.FailedCount);
+        Assert.All(result.Items, item =>
+        {
+            Assert.Equal(RssDownloadItemOutcome.Created, item.Outcome);
+            Assert.NotNull(item.TaskId);
+        });
+
+        // 每个 RSS 条目各自登记为一个任务：不关联订阅、条目与 Subject，命名取条目标题。
+        await using var db    = await harness.CreateDbContextAsync();
+        var             tasks = await db.DownloadTasks.AsNoTracking().ToListAsync();
+        Assert.Equal(2, tasks.Count);
+        Assert.All(tasks, task =>
+        {
+            Assert.Null(task.FeedItemId);
+            Assert.Null(task.SubjectId);
+            Assert.Null(task.Episode);
+            Assert.Equal(DownloadTaskStatus.PendingSubmit, task.Status);
+            Assert.StartsWith("https://example.com/torrents/", task.TorrentUrl);
+            Assert.StartsWith("/downloads/", task.SavePath);
+            Assert.EndsWith($"-{task.InfoHash[..8]}", task.SavePath);
+        });
+        Assert.Equal("RSS 番剧 第 1 集 [1080p]",
+                     tasks.Single(task => task.TorrentUrl!.EndsWith("rss-1.torrent")).NamingSnapshot);
+        Assert.Equal("RSS 番剧 第 2 集 [1080p]",
+                     tasks.Single(task => task.TorrentUrl!.EndsWith("rss-2.torrent")).NamingSnapshot);
+
+        // 沿用既有提交管线：一轮对账后全部进入下载中。
+        await harness.ReconcileAsync();
+        Assert.All(await db.DownloadTasks.AsNoTracking().ToListAsync(),
+                   task => Assert.Equal(DownloadTaskStatus.Downloading, task.Status));
+        Assert.Equal(2, harness.Store.AddCalls.Count);
+    }
+
+    [Fact]
+    public async Task CreateFromRssFeed_SkipsDuplicateHashesAcrossStatuses()
+    {
+        using var harness = await CreateHarnessAsync();
+        // 预置一个活动任务；RSS 条目的种子名注册为同名以产生相同 hash。
+        var uploadedTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Uploaded Anime - 01"));
+        harness.TorrentNames["dup"] = "Uploaded Anime - 01";
+        harness.FeedReader.Items.Add(RssItem("dup", "重复资源条目", "https://example.com/torrents/dup.torrent"));
+
+        var first = await harness.CreateFromRssFeedAsync("https://example.com/rss.xml");
+
+        var item = Assert.Single(first.Items);
+        Assert.Equal(RssDownloadItemOutcome.Duplicate, item.Outcome);
+        Assert.Equal(0, first.CreatedCount);
+        Assert.Equal(1, await CountTasksAsync(harness));
+
+        // 已完成同样跳过；非活动终态（被替换）才允许重新登记。
+        await using (var db = await harness.CreateDbContextAsync())
+        {
+            var entity = await db.DownloadTasks.SingleAsync(value => value.Id == uploadedTaskId);
+            entity.Status = DownloadTaskStatus.Completed;
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(RssDownloadItemOutcome.Duplicate,
+                     (await harness.CreateFromRssFeedAsync("https://example.com/rss.xml")).Items[0].Outcome);
+
+        await using (var db = await harness.CreateDbContextAsync())
+        {
+            var entity = await db.DownloadTasks.SingleAsync(value => value.Id == uploadedTaskId);
+            entity.Status = DownloadTaskStatus.Replaced;
+            await db.SaveChangesAsync();
+        }
+
+        var third = await harness.CreateFromRssFeedAsync("https://example.com/rss.xml");
+        Assert.Equal(RssDownloadItemOutcome.Created, third.Items[0].Outcome);
+        Assert.Equal(2, await CountTasksAsync(harness));
+    }
+
+    [Fact]
+    public async Task CreateFromRssFeed_PartialFailuresDoNotBlockOtherItems()
+    {
+        using var harness   = await CreateHarnessAsync();
+        var       failedUri = "https://example.com/torrents/broken.torrent";
+        harness.TorrentSource.ThrowOnUri[failedUri] = new HttpRequestException("模拟源站不可达");
+        harness.FeedReader.Items.Add(RssItem("broken", "下载失败的条目", failedUri));
+        // 无种子地址的条目同样失败，但不影响其他条目。
+        harness.FeedReader.Items.Add(new FeedSourceItem("guid:no-torrent", "no-torrent", "没有种子的条目",
+                                                        new Uri("https://example.com/posts/none"), null,
+                                                        harness.Timestamp));
+        harness.FeedReader.Items.Add(RssItem("ok", "正常条目", "https://example.com/torrents/ok.torrent"));
+
+        var result = await harness.CreateFromRssFeedAsync("https://example.com/rss.xml");
+
+        Assert.Equal(1, result.CreatedCount);
+        Assert.Equal(0, result.DuplicateCount);
+        Assert.Equal(2, result.FailedCount);
+        Assert.Equal(RssDownloadItemOutcome.Failed,
+                     result.Items.Single(item => item.Title == "下载失败的条目").Outcome);
+        Assert.Contains("没有种子地址",
+                        result.Items.Single(item => item.Title == "没有种子的条目").Error);
+        Assert.Equal(RssDownloadItemOutcome.Created, result.Items.Single(item => item.Title == "正常条目").Outcome);
+
+        // feed 本身抓取失败时整批失败，不落任何任务。
+        harness.FeedReader.Items.Clear();
+        harness.FeedReader.ThrowOnRead = new HttpRequestException("模拟 feed 不可达");
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+                                                           harness
+                                                              .CreateFromRssFeedAsync("https://example.com/rss.xml"));
+        Assert.Equal(1, await CountTasksAsync(harness));
+    }
+
+    [Fact]
+    public async Task CreateFromRssFeed_PassesProxyToFeedAndTorrentRequests()
+    {
+        using var harness = await CreateHarnessAsync();
+        var       proxyId = Guid.NewGuid();
+        harness.FeedReader.Items.Add(RssItem("proxied", "走代理的条目", "https://example.com/torrents/proxied.torrent"));
+
+        await harness.CreateFromRssFeedAsync("https://example.com/rss.xml", proxyId);
+
+        Assert.Equal(proxyId, harness.FeedReader.LastProxyId);
+        Assert.Equal(proxyId, harness.TorrentSource.LastProxyId);
+    }
+
+    [Fact]
+    public async Task CreateFromRssFeed_RejectsUnconfiguredDownloaderAndInvalidInput()
+    {
+        using var unconfigured = await CreateHarnessAsync(false);
+        unconfigured.FeedReader.Items.Add(RssItem("rss-1", "任意条目", "https://example.com/torrents/rss-1.torrent"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                                                                unconfigured
+                                                                   .CreateFromRssFeedAsync("https://example.com/rss.xml"));
+
+        using var configured = await CreateHarnessAsync();
+        await Assert.ThrowsAsync<ArgumentException>(() => configured
+                                                       .CreateFromRssFeedAsync("ftp://example.com/rss.xml"));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+                                                        configured
+                                                           .CreateFromRssFeedAsync("http://example.com/rss.xml"));
+
+        // 空 feed 视为无效输入，不落任何任务。
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                                                                configured
+                                                                   .CreateFromRssFeedAsync("https://example.com/rss.xml"));
+        Assert.Equal(0, await CountTasksAsync(configured));
+    }
+
+    private static FeedSourceItem RssItem(string stableId, string title, string torrentUrl)
+    {
+        return new FeedSourceItem($"guid:{stableId}", stableId, title,
+                                  new Uri($"https://example.com/posts/{stableId}"),
+                                  new Uri(torrentUrl),
+                                  new DateTimeOffset(2026, 10, 5, 0, 0, 0, TimeSpan.Zero));
+    }
+
+    private static async Task<int> CountTasksAsync(TestHarness harness)
+    {
+        await using var db = await harness.CreateDbContextAsync();
+        return await db.DownloadTasks.AsNoTracking().CountAsync();
     }
 
     [Fact]
@@ -805,15 +976,18 @@ public sealed class DownloadServiceTests
         services.AddSingleton<IQbittorrentSessionFactory>(provider =>
                                                               provider
                                                                  .GetRequiredService<FakeQbittorrentSessionFactory>());
-        services.AddSingleton<ITorrentFileSource>(_ =>
-                                                      new FakeTorrentFileSource(uri =>
-                                                      {
-                                                          // 每个条目的种子名由 seeding 注册；未注册的条目按 stableId 生成独立种子。
-                                                          var stableId =
-                                                              Path.GetFileNameWithoutExtension(uri.Segments[^1]);
-                                                          return TestTorrentBytes.Create(harnessTorrentNames
-                                                                      .GetValueOrDefault(stableId, stableId));
-                                                      }));
+        var feedReader = new FakeFeedSourceReader();
+        services.AddSingleton(feedReader);
+        services.AddSingleton<IFeedSourceReader>(feedReader);
+        var torrentFileSource = new FakeTorrentFileSource(uri =>
+        {
+            // 每个条目的种子名由 seeding 注册；未注册的条目按 stableId 生成独立种子。
+            var stableId =
+                Path.GetFileNameWithoutExtension(uri.Segments[^1]);
+            return TestTorrentBytes.Create(harnessTorrentNames
+                                              .GetValueOrDefault(stableId, stableId));
+        });
+        services.AddSingleton<ITorrentFileSource>(torrentFileSource);
         services.AddScoped<ManageQbittorrentSettings>();
         services.AddNotificationTestFakes();
         services.AddScoped<DownloadService>();
@@ -826,7 +1000,8 @@ public sealed class DownloadServiceTests
 
         var harness = new TestHarness(directory, timestamp, provider, store,
                                       provider.GetRequiredService<FakeQbittorrentSessionFactory>(),
-                                      provider.GetRequiredService<DownloadService>(), harnessTorrentNames);
+                                      provider.GetRequiredService<DownloadService>(), harnessTorrentNames,
+                                      feedReader, torrentFileSource);
         await using var db = await harness.CreateDbContextAsync();
         await db.Database.EnsureCreatedAsync();
         db.MediaSubjects.Add(new MediaSubject
@@ -857,7 +1032,9 @@ public sealed class DownloadServiceTests
         FakeTorrentStore              store,
         FakeQbittorrentSessionFactory factory,
         DownloadService               service,
-        Dictionary<string, string>    torrentNames) : IDisposable
+        Dictionary<string, string>    torrentNames,
+        FakeFeedSourceReader          feedReader,
+        FakeTorrentFileSource         torrentFileSource) : IDisposable
     {
         public DirectoryInfo                 Directory        { get; } = directory;
         public DateTimeOffset                Timestamp        { get; } = timestamp;
@@ -866,6 +1043,8 @@ public sealed class DownloadServiceTests
         public DownloadService               Service          { get; } = service;
         public Dictionary<string, string>    TorrentNames     { get; } = torrentNames;
         public HashSet<string>               UsedWinnerGroups { get; } = new(StringComparer.Ordinal);
+        public FakeFeedSourceReader          FeedReader       { get; } = feedReader;
+        public FakeTorrentFileSource         TorrentSource    { get; } = torrentFileSource;
 
         public void Dispose()
         {
@@ -887,6 +1066,11 @@ public sealed class DownloadServiceTests
         public Task<Guid> CreateUploadAsync(byte[] torrentBytes)
         {
             return Service.CreateFromUploadAsync(torrentBytes);
+        }
+
+        public Task<RssDownloadResult> CreateFromRssFeedAsync(string feedUrl, Guid? proxyId = null)
+        {
+            return Service.CreateFromRssFeedAsync(feedUrl, proxyId);
         }
 
         public Task ReconcileAsync()

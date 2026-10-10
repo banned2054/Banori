@@ -4,7 +4,7 @@ namespace MediaManager.Workers;
 
 /// <summary>
 ///     周期调度订阅刷新：每轮先补齐到期工作，再串行消费，直到没有待执行工作。
-///     入队新工作（一次性订阅添加、手动刷新）时被唤醒立即处理，否则按空闲间隔轮询。
+///     入队新工作（订阅添加、手动刷新）时被唤醒立即处理，否则按空闲间隔轮询。
 ///     启动时先把上次进程遗留的执行中工作恢复为待执行，恢复成功后才开始消费；
 ///     恢复失败时退避等待并重试，直到成功或进程停止。
 /// </summary>
@@ -37,10 +37,10 @@ public sealed class SubscriptionRefreshWorker(
     /// <summary>等待下一轮：被刷新脉冲立即唤醒，或空闲间隔到期；进程停止时返回。</summary>
     private async Task WaitForNextTickAsync(CancellationToken cancellationToken)
     {
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var delay     = Task.Delay(IdlePollInterval, timeProvider, linked.Token);
-        var pulseTask = refreshPulse.WaitAsync(cancellationToken);
-        var completed = await Task.WhenAny(delay, pulseTask);
+        using var linked    = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var       delay     = Task.Delay(IdlePollInterval, timeProvider, linked.Token);
+        var       pulseTask = refreshPulse.WaitAsync(cancellationToken);
+        var       completed = await Task.WhenAny(delay, pulseTask);
         if (completed == pulseTask) await linked.CancelAsync();
         await completed;
     }

@@ -1,6 +1,7 @@
 using Banned.Qbittorrent.Exceptions;
 using MediaManager.Core.Torrents;
 using MediaManager.Features.Settings;
+using MediaManager.Features.Subscriptions;
 using MediaManager.Integrations;
 using MediaManager.Integrations.Qbittorrent;
 using System.Text;
@@ -123,23 +124,29 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     }
 
     public Task<IReadOnlyList<TorrentSnapshot>> FindTorrentsAsync(
-        IReadOnlyCollection<string> infoHashes, CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<TorrentSnapshot>>(infoHashes
-                                                       .Where(hash => store.Torrents.ContainsKey(hash))
-                                                       .Select(SnapshotFor)
-                                                       .ToList());
+        IReadOnlyCollection<string> infoHashes, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<IReadOnlyList<TorrentSnapshot>>(infoHashes
+                                                              .Where(hash => store.Torrents.ContainsKey(hash))
+                                                              .Select(SnapshotFor)
+                                                              .ToList());
+    }
 
 
     public Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(
-        string category, CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<TorrentSnapshot>>(store.Torrents.Values
-                                                             .Select(snapshot => SnapshotFor(snapshot.Hash))
-                                                             .ToList());
+        string category, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<IReadOnlyList<TorrentSnapshot>>(store.Torrents.Values
+                                                                    .Select(snapshot => SnapshotFor(snapshot.Hash))
+                                                                    .ToList());
+    }
 
 
     public Task<IReadOnlyList<string>> ListFileNamesAsync(
-        string infoHash, CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<string>>(store.Files.TryGetValue(infoHash, out var names) ? names : []);
+        string infoHash, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<IReadOnlyList<string>>(store.Files.TryGetValue(infoHash, out var names) ? names : []);
+    }
 
 
     public Task PauseAsync(string infoHash, CancellationToken cancellationToken = default)
@@ -240,12 +247,36 @@ public sealed class FakeTorrentFileSource(Func<Uri, byte[]> resolver) : ITorrent
     /// <summary>最近一次下载请求携带的代理 Id，供传递断言使用。</summary>
     public Guid? LastProxyId { get; private set; }
 
-    public Task<byte[]> DownloadAsync(Uri torrentUri, Guid? proxyId = default,
-                                      CancellationToken   cancellationToken = default)
+    /// <summary>按绝对 URI 注入的下载异常，模拟个别源站失败。</summary>
+    public Dictionary<string, Exception> ThrowOnUri { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public Task<byte[]> DownloadAsync(Uri               torrentUri, Guid? proxyId = default,
+                                      CancellationToken cancellationToken = default)
     {
         CallCount++;
         LastProxyId = proxyId;
+        if (ThrowOnUri.TryGetValue(torrentUri.AbsoluteUri, out var exception)) throw exception;
         return Task.FromResult(resolver(torrentUri));
+    }
+}
+
+/// <summary>假 RSS 源读取器：返回预设条目；可注入异常模拟抓取失败。</summary>
+public sealed class FakeFeedSourceReader : IFeedSourceReader
+{
+    public List<FeedSourceItem> Items { get; } = [];
+
+    /// <summary>设置后读取时抛出该异常，模拟 feed 不可达或解析失败。</summary>
+    public Exception? ThrowOnRead { get; set; }
+
+    /// <summary>最近一次读取请求携带的代理 Id，供传递断言使用。</summary>
+    public Guid? LastProxyId { get; private set; }
+
+    public Task<IReadOnlyList<FeedSourceItem>> ReadAsync(
+        Uri feedUri, Guid? proxyId = default, CancellationToken cancellationToken = default)
+    {
+        LastProxyId = proxyId;
+        if (ThrowOnRead is not null) throw ThrowOnRead;
+        return Task.FromResult<IReadOnlyList<FeedSourceItem>>(Items);
     }
 }
 

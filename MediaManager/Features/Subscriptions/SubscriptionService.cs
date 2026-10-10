@@ -37,7 +37,7 @@ public sealed class SubscriptionService(
     {
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var item = await db.MediaSubscriptions.AsNoTracking().SingleOrDefaultAsync(value => value.Id == id,
-            cancellationToken);
+                 cancellationToken);
         if (item is null) return null;
         // SQLite 不支持按 DateTimeOffset 服务端排序，取回后在内存中排序。
         var latestStatus = (await db.RefreshWorkItems.AsNoTracking()
@@ -69,13 +69,12 @@ public sealed class SubscriptionService(
                 Name                   = normalized.Name,
                 FeedUrlProtected       = _urlProtector.Protect(normalized.FeedUrl!),
                 IsEnabled              = normalized.IsEnabled,
-                IsOneShot              = normalized.IsOneShot,
                 RefreshIntervalMinutes = normalized.RefreshIntervalMinutes,
                 FixedSubjectId         = normalized.FixedSubjectId,
                 ProxyId                = normalized.ProxyId,
                 CreatedAtUtc           = now,
                 UpdatedAtUtc           = now,
-                NextRefreshAtUtc       = normalized.IsEnabled && !normalized.IsOneShot ? now : null
+                NextRefreshAtUtc       = normalized.IsEnabled ? now : null
             };
             db.MediaSubscriptions.Add(entity);
             await db.SaveChangesAsync(cancellationToken);
@@ -97,7 +96,7 @@ public sealed class SubscriptionService(
         if (normalized.FeedUrl is not null) existing.FeedUrlProtected = _urlProtector.Protect(normalized.FeedUrl);
 
         if (!normalized.IsEnabled) existing.NextRefreshAtUtc = null;
-        else if (!wasEnabled && !existing.IsOneShot) existing.NextRefreshAtUtc = now;
+        else if (!wasEnabled) existing.NextRefreshAtUtc      = now;
         await db.SaveChangesAsync(cancellationToken);
         return existing.Id;
     }
@@ -123,7 +122,7 @@ public sealed class SubscriptionService(
         return workId;
     }
 
-    /// <summary>到期调度：为已启用、非一次性且到达刷新时间的订阅补齐待执行工作，与手动请求共用入队检查。</summary>
+    /// <summary>到期调度：为已启用且到达刷新时间的订阅补齐待执行工作，与手动请求共用入队检查。</summary>
     public Task<int> EnqueueDueRefreshesAsync(CancellationToken cancellationToken = default)
     {
         return enqueueGate.RunExclusiveAsync(async token =>
@@ -131,7 +130,7 @@ public sealed class SubscriptionService(
             var             now = timeProvider.GetUtcNow();
             await using var db  = await dbContextFactory.CreateDbContextAsync(token);
             var dueIds = (await db.MediaSubscriptions.AsNoTracking()
-                                  .Where(item => item.IsEnabled && !item.IsOneShot)
+                                  .Where(item => item.IsEnabled)
                                   .Select(item => new { item.Id, item.NextRefreshAtUtc })
                                   .ToListAsync(token))
                         .Where(item => item.NextRefreshAtUtc is null || item.NextRefreshAtUtc <= now)
@@ -193,7 +192,6 @@ public sealed class SubscriptionService(
     private static SaveSubscriptionRequest Validate(SaveSubscriptionRequest request)
     {
         string? feedUrl = null;
-        string  uriHost = string.Empty;
         if (!string.IsNullOrWhiteSpace(request.FeedUrl))
         {
             if (!Uri.TryCreate(request.FeedUrl.Trim(), UriKind.Absolute, out var uri) ||
@@ -201,14 +199,11 @@ public sealed class SubscriptionService(
                  !(uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback)))
                 throw new ArgumentException("RSS 地址必须是 HTTPS 绝对地址（本机测试可使用 HTTP）。", nameof(request));
 
-            // 一次性订阅可指向任意来源的 RSS；定时订阅限定已支持的数据源
-            //（Mikan 依赖其条目页面解析，AniBT 依赖 feed 自带的 bgmId）。
-            if (!request.IsOneShot && !uri.IsLoopback && !IsSupportedSubscriptionHost(uri.Host))
-                throw new ArgumentException("定时订阅目前仅支持 Mikan（mikanani.me）与 AniBT（anibt.net）的 RSS 地址。",
+            if (!uri.IsLoopback && !IsSupportedSubscriptionHost(uri.Host))
+                throw new ArgumentException("订阅目前仅支持 Mikan（mikanani.me）与 AniBT（anibt.net）的 RSS 地址。",
                                             nameof(request));
 
             feedUrl = uri.AbsoluteUri;
-            uriHost = uri.Host;
         }
         else if (request.Id is null)
         {
@@ -216,8 +211,6 @@ public sealed class SubscriptionService(
         }
 
         var name = request.Name?.Trim() ?? string.Empty;
-        if (name.Length == 0 && request.IsOneShot && request.Id is null)
-            name = $"一次性 RSS：{uriHost}";
         if (name.Length is < 1 or > 100) throw new ArgumentException("订阅名称长度必须为 1 到 100 个字符。", nameof(request));
 
         if (request.RefreshIntervalMinutes is < 5 or > 10080)
@@ -244,7 +237,7 @@ public sealed class SubscriptionService(
         var uri = new Uri(_urlProtector.Unprotect(item.FeedUrlProtected));
         var display = $"{uri.Scheme}://{uri.Authority}{uri.AbsolutePath}" +
                       (string.IsNullOrEmpty(uri.Query) ? string.Empty : "?•••");
-        return new SubscriptionView(item.Id, item.Name, display, item.IsEnabled, item.IsOneShot,
+        return new SubscriptionView(item.Id, item.Name, display, item.IsEnabled,
                                     item.RefreshIntervalMinutes,
                                     item.FixedSubjectId,
                                     item.LastRefreshStartedAtUtc, item.LastRefreshCompletedAtUtc, item.NextRefreshAtUtc,

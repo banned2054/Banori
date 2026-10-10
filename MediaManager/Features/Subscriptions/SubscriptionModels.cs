@@ -38,7 +38,6 @@ public sealed record SubscriptionView(
     string             Name,
     string             FeedUrlDisplay,
     bool               IsEnabled,
-    bool               IsOneShot,
     int                RefreshIntervalMinutes,
     int?               FixedSubjectId,
     DateTimeOffset?    LastRefreshStartedAtUtc,
@@ -55,8 +54,7 @@ public sealed record SaveSubscriptionRequest(
     bool    IsEnabled,
     int     RefreshIntervalMinutes,
     int?    FixedSubjectId,
-    bool    IsOneShot = false,
-    Guid?   ProxyId   = null);
+    Guid?   ProxyId = null);
 
 public sealed record RefreshWork(Guid Id, Guid SubscriptionId, int AttemptCount);
 
@@ -68,7 +66,7 @@ public sealed record FeedSourceItem(
     Uri?            TorrentUri,
     DateTimeOffset? PublishedAtUtc,
     /// <summary>来源 feed 直接提供的 Bangumi Subject ID（如 AniBT 的 bgmId）；feed 未提供时为 null。</summary>
-    int?            SourceSubjectId = null);
+    int? SourceSubjectId = null);
 
 public sealed record SubjectMetadata(
     int            Id,
@@ -143,13 +141,13 @@ public sealed record FeedItemView
     public          string?                NamingPreview  { get; init; }
 
     /// <summary>条目在同集择优中的结果；None 表示尚未参与择优（含历史数据）。</summary>
-    public          SelectionOutcome       SelectionOutcome { get; init; }
+    public SelectionOutcome SelectionOutcome { get; init; }
 
     /// <summary>条目所在同集组选择记录的规则版本；无选择记录或非详情查询时为 null。</summary>
-    public          int?                   SelectionRuleVersion { get; init; }
+    public int? SelectionRuleVersion { get; init; }
 
     /// <summary>条目所在同集组选择记录的优胜依据（描述组内优胜，非本条目）；仅详情查询填充。</summary>
-    public          string?                SelectionBasis { get; init; }
+    public string? SelectionBasis { get; init; }
 
     /// <summary>该条目最近一次下载任务摘要；从未创建下载任务时为 null。仅详情查询填充。</summary>
     public DownloadTaskBrief? Download { get; init; }

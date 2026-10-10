@@ -207,7 +207,7 @@ public sealed class CandidateSelectionServiceTests
         // 批次评估中途中断：组内已有选择记录（如下载器未配置时落库）但意图未登记，且同订阅
         // 仍有待评估条目——与“无选择记录”分支同一等待规则，不得按旧候选提前登记下载意图。
         var itemId = await harness.AddItemAsync("guid:unregistered", "ANi", "JpSc", 1);
-        await harness.AddSelectionRecordAsync(itemId, intentTaskId : null, intentFailedReason : null);
+        await harness.AddSelectionRecordAsync(itemId, null, null);
         await using (var db = await harness.CreateDbContextAsync())
         {
             db.FeedItems.Add(new FeedItem
@@ -250,7 +250,7 @@ public sealed class CandidateSelectionServiceTests
     [Fact]
     public async Task Select_WinnerChangesWhileDownloaderNotReady_RecoveryRegistersNewWinner()
     {
-        using var harness = await CreateHarnessAsync(configureDownloader : false);
+        using var harness = await CreateHarnessAsync(false);
         var       aniItem = await harness.AddItemAsync("guid:ani", "ANi", "JpSc", 1);
 
         await harness.SelectionService
@@ -334,7 +334,7 @@ public sealed class CandidateSelectionServiceTests
         // 人工重评路径显式要求重试（resetFailedIntent）时，修复种子来源后重试成功。
         harness.HealTorrent("guid:ani");
         await harness.SelectionService.SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)],
-                                                              resetFailedIntent : true);
+                                                              true);
 
         selection = await harness.GetSelectionAsync();
         Assert.NotNull(selection.IntentTaskId);
@@ -400,7 +400,7 @@ public sealed class CandidateSelectionServiceTests
     {
         using var harness = await CreateHarnessAsync();
         var       itemId  = await harness.AddItemAsync("guid:unregistered", "ANi", "JpSc", 1);
-        await harness.AddSelectionRecordAsync(itemId, intentTaskId : null, intentFailedReason : null);
+        await harness.AddSelectionRecordAsync(itemId, null, null);
 
         await harness.SelectionService.RecoverPendingSelectionsAsync();
 
@@ -416,7 +416,7 @@ public sealed class CandidateSelectionServiceTests
     {
         using var harness = await CreateHarnessAsync();
         var       itemId  = await harness.AddItemAsync("guid:failed", "ANi", "JpSc", 1);
-        await harness.AddSelectionRecordAsync(itemId, intentTaskId : null, intentFailedReason : "获取种子文件失败。");
+        await harness.AddSelectionRecordAsync(itemId, null, "获取种子文件失败。");
 
         await harness.SelectionService.RecoverPendingSelectionsAsync();
 
@@ -520,7 +520,7 @@ public sealed class CandidateSelectionServiceTests
     {
         using var harness  = await CreateHarnessAsync();
         var       loliItem = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
-        await harness.AddSelectionRecordAsync(loliItem, intentTaskId : null, intentFailedReason : "获取种子文件失败。");
+        await harness.AddSelectionRecordAsync(loliItem, null, "获取种子文件失败。");
 
         var processed = await harness.SelectionService.ReselectAllGroupsAsync();
 
@@ -791,7 +791,7 @@ public sealed class CandidateSelectionServiceTests
     {
         // 回归：下载器未就绪只应跳过意图登记窗口；规则版本对账窗口不受下载器约束，
         // 否则下载器长期未配置时陈旧选择记录永远不会被修正。
-        using var harness  = await CreateHarnessAsync(configureDownloader : false);
+        using var harness  = await CreateHarnessAsync(false);
         var       aniItem  = await harness.AddItemAsync("guid:ani", "ANi", "JpSc", 1);
         var       loliItem = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
         var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode);
@@ -860,6 +860,7 @@ public sealed class CandidateSelectionServiceTests
                                                        sessionFactory);
         var downloadService = new DownloadService(dbFactory,
                                                   provider.GetRequiredService<ITorrentFileSource>(),
+                                                  new FakeFeedSourceReader(),
                                                   sessionFactory, qbSettings,
                                                   provider.GetRequiredService<NotificationEnqueuer>(),
                                                   provider.GetRequiredService<TimeProvider>(),
@@ -868,19 +869,22 @@ public sealed class CandidateSelectionServiceTests
         // 旧的 DefaultSelectionRuleProvider 相同，同时支撑规则保存 / 预览 / 整库重选的回归。
         var ruleSettings = new ManageSelectionRuleSettings(provider.GetRequiredService<IApplicationSettingStore>(),
                                                            NullLogger<ManageSelectionRuleSettings>.Instance);
-        ISelectionRuleProvider selectionRuleProvider = switchableProvider ??
-                                                       (ISelectionRuleProvider)(ruleConfig is null
-                                                           ? new SettingsSelectionRuleProvider(ruleSettings)
-                                                           : new FixedRuleProvider(ruleConfig));
+        var selectionRuleProvider = switchableProvider ??
+                                    (ISelectionRuleProvider)(ruleConfig is null
+                                        ? new SettingsSelectionRuleProvider(ruleSettings)
+                                        : new FixedRuleProvider(ruleConfig));
         // 门闸必须进程级共享：与应用的单例注册一致，两个服务实例（模拟刷新 worker 与
         // Blazor 电路各自的 Scoped 实例）通过同一门闸互斥同组并发。
         var gate      = new SelectionGroupGate();
         var fixedTime = provider.GetRequiredService<TimeProvider>();
 
-        CandidateSelectionService CreateService() => new(dbFactory, selectionRuleProvider, gate,
-                                                         new CandidateEligibilityPolicy(), new CandidateRankingPolicy(),
-                                                         qbSettings, downloadService, fixedTime,
-                                                         NullLogger<CandidateSelectionService>.Instance);
+        CandidateSelectionService CreateService()
+        {
+            return new CandidateSelectionService(dbFactory, selectionRuleProvider, gate,
+                                                 new CandidateEligibilityPolicy(), new CandidateRankingPolicy(),
+                                                 qbSettings, downloadService, fixedTime,
+                                                 NullLogger<CandidateSelectionService>.Instance);
+        }
 
         var harness = new SelectionHarness(directory, timestamp, provider, downloadService, CreateService(),
                                            CreateService(), ruleSettings, brokenStableIds, fetchCounter);
@@ -899,7 +903,10 @@ public sealed class CandidateSelectionServiceTests
 
     private sealed class FixedTimeProvider(DateTimeOffset timestamp) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow() => timestamp;
+        public override DateTimeOffset GetUtcNow()
+        {
+            return timestamp;
+        }
     }
 
     private sealed class TorrentFetchCounter
@@ -913,11 +920,10 @@ public sealed class CandidateSelectionServiceTests
     /// <summary>第一次种子获取的挂起点：Arrived 表示获取已到达并停住，Release 放行。</summary>
     private sealed class FirstFetchHold
     {
+        private  int                  _acquired;
         internal TaskCompletionSource Arrived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private int _acquired;
 
         public bool TryAcquire()
         {
@@ -928,8 +934,10 @@ public sealed class CandidateSelectionServiceTests
     /// <summary>固定返回指定规则配置的提供者，用于测试 NeedsReview 等非默认政策。</summary>
     private sealed class FixedRuleProvider(SelectionRuleConfig config) : ISelectionRuleProvider
     {
-        public ValueTask<SelectionRuleConfig> GetAsync(CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(config);
+        public ValueTask<SelectionRuleConfig> GetAsync(CancellationToken cancellationToken = default)
+        {
+            return ValueTask.FromResult(config);
+        }
     }
 
     /// <summary>
@@ -953,11 +961,6 @@ public sealed class CandidateSelectionServiceTests
         /// <summary>第一次读取已到达且被挂起；释放用 <see cref="ReleaseFirstRead" />。</summary>
         public Task FirstReadArrived => _firstReadArrived.Task;
 
-        public void ReleaseFirstRead()
-        {
-            _releaseFirstRead.TrySetResult();
-        }
-
         public async ValueTask<SelectionRuleConfig> GetAsync(CancellationToken cancellationToken = default)
         {
             var snapshot = Config;
@@ -968,6 +971,11 @@ public sealed class CandidateSelectionServiceTests
             }
 
             return snapshot;
+        }
+
+        public void ReleaseFirstRead()
+        {
+            _releaseFirstRead.TrySetResult();
         }
     }
 
@@ -993,15 +1001,27 @@ public sealed class CandidateSelectionServiceTests
         /// <summary>规则设置服务：与 SelectionService 的提供者共享同一存储，用于规则保存回归。</summary>
         public ManageSelectionRuleSettings RuleSettings { get; } = ruleSettings;
 
+        /// <summary>把下载器的种子拉取次数，用于断言同一优胜不重复拉取种子。</summary>
+        public int TorrentFetchCount => fetchCounter.Count;
+
+        public void Dispose()
+        {
+            provider.Dispose();
+            try
+            {
+                Directory.Delete(true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+
         /// <summary>把存储的规则配置改成非法 JSON，模拟配置损坏回退内置默认规则。</summary>
         public Task CorruptRuleSettingsAsync()
         {
             var store = (MemoryApplicationSettingStore)provider.GetRequiredService<IApplicationSettingStore>();
             return store.SetAsync(ManageSelectionRuleSettings.SettingKey, "{corrupt", CancellationToken.None);
         }
-
-        /// <summary>把下载器的种子拉取次数，用于断言同一优胜不重复拉取种子。</summary>
-        public int TorrentFetchCount => fetchCounter.Count;
 
         /// <summary>
         ///     把下一次种子获取挂起：返回的 Arrived 在获取到达并停住时完成，调用 Release 放行。
@@ -1162,18 +1182,6 @@ public sealed class CandidateSelectionServiceTests
             db.MediaSubscriptions.Add(subscription);
             await db.SaveChangesAsync();
             return subscription.Id;
-        }
-
-        public void Dispose()
-        {
-            provider.Dispose();
-            try
-            {
-                Directory.Delete(true);
-            }
-            catch (IOException)
-            {
-            }
         }
     }
 }

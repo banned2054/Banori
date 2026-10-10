@@ -10,17 +10,15 @@ public sealed class SubscriptionsPageViewModel(
     ProxyService                        proxyService,
     ILogger<SubscriptionsPageViewModel> logger)
 {
-    private readonly List<SubscriptionView> _subscriptions = [];
     private readonly List<ProxyView>        _proxies       = [];
+    private readonly List<SubscriptionView> _subscriptions = [];
 
     public IReadOnlyList<SubscriptionView> Subscriptions => _subscriptions;
     public IReadOnlyList<ProxyView>        Proxies       => _proxies;
     public SubscriptionDraft               Draft         { get; } = new();
-    public OneShotSubscriptionDraft        OneShotDraft  { get; } = new();
 
     public bool    Loaded             { get; private set; }
     public bool    Editing            { get; private set; }
-    public bool    EditingOneShot     { get; private set; }
     public bool    Saving             { get; private set; }
     public bool    OperationSucceeded { get; private set; }
     public string? StatusMessage      { get; private set; }
@@ -37,23 +35,20 @@ public sealed class SubscriptionsPageViewModel(
     public void BeginCreate()
     {
         Draft.Reset();
-        Editing        = true;
-        EditingOneShot = false;
-        StatusMessage  = null;
+        Editing       = true;
+        StatusMessage = null;
     }
 
     public void BeginEdit(SubscriptionView subscription)
     {
         Draft.Load(subscription);
-        Editing        = true;
-        EditingOneShot = subscription.IsOneShot;
-        StatusMessage  = null;
+        Editing       = true;
+        StatusMessage = null;
     }
 
     public void CancelEdit()
     {
-        Editing        = false;
-        EditingOneShot = false;
+        Editing = false;
     }
 
     public async Task SaveAsync(CancellationToken cancellationToken = default)
@@ -74,36 +69,6 @@ public sealed class SubscriptionsPageViewModel(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "保存订阅失败。");
-            OperationSucceeded = false;
-            StatusMessage      = exception is ArgumentException ? exception.Message : "保存失败，请查看服务日志。";
-        }
-        finally
-        {
-            Saving = false;
-        }
-    }
-
-    /// <summary>保存一次性订阅：服务端保存后立即入队抓取，不参与定时刷新。</summary>
-    public async Task SaveOneShotAsync(CancellationToken cancellationToken = default)
-    {
-        Saving = true;
-        try
-        {
-            var request = new SaveSubscriptionRequest(null, OneShotDraft.Name?.Trim() ?? string.Empty,
-                                                      OneShotDraft.FeedUrl.Trim(), true, 30, null, IsOneShot: true);
-            await subscriptionService.SaveAsync(request, cancellationToken);
-            OperationSucceeded = true;
-            StatusMessage      = "一次性订阅已添加，正在立即抓取。";
-            OneShotDraft.Reset();
-            await LoadAsync(cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            logger.LogWarning(exception, "保存一次性订阅失败。");
             OperationSucceeded = false;
             StatusMessage      = exception is ArgumentException ? exception.Message : "保存失败，请查看服务日志。";
         }
@@ -202,21 +167,6 @@ public sealed class SubscriptionDraft
     public SaveSubscriptionRequest ToRequest()
     {
         return new SaveSubscriptionRequest(Id, Name, FeedUrl, IsEnabled, RefreshIntervalMinutes, FixedSubjectId,
-                                           ProxyId: Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null);
-    }
-}
-
-/// <summary>一次性订阅添加表单：只需 RSS 地址，名称留空由服务端按域名派生。</summary>
-public sealed class OneShotSubscriptionDraft
-{
-    [Required(ErrorMessage = "请填写 RSS 地址。")]
-    public string FeedUrl { get; set; } = string.Empty;
-
-    public string? Name { get; set; }
-
-    public void Reset()
-    {
-        FeedUrl = string.Empty;
-        Name    = null;
+                                           Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null);
     }
 }

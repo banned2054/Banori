@@ -19,6 +19,7 @@ namespace MediaManager.Features.Downloads;
 public sealed class DownloadService(
     IDbContextFactory<ApplicationDbContext> dbContextFactory,
     ITorrentFileSource                      torrentFileSource,
+    IFeedSourceReader                       feedSourceReader,
     IQbittorrentSessionFactory              sessionFactory,
     ManageQbittorrentSettings               qbittorrentSettings,
     NotificationEnqueuer                    notificationEnqueuer,
@@ -64,7 +65,7 @@ public sealed class DownloadService(
     }
 
     /// <summary>
-    ///     一次性上传种子：与一次性 RSS 一样创建即等待提交，但不关联订阅、条目与 Subject。
+    ///     一次性上传种子：创建即等待提交，不关联订阅、条目与 Subject。
     ///     命名快照取种子内 info.name（缺失时按 hash 派生）；来源记为 upload://hash 便于区分。
     /// </summary>
     public async Task<Guid> CreateFromUploadAsync(byte[] torrentBytes, CancellationToken cancellationToken = default)
@@ -114,6 +115,112 @@ public sealed class DownloadService(
 
         logger.LogInformation("已从上传种子创建下载任务 {TaskId}（hash {InfoHash}）。", task.Id, infoHash);
         return task.Id;
+    }
+
+    /// <summary>
+    ///     RSS 链接下载：抓取 feed 后逐条下载种子并直接登记为下载任务，与上传种子一样不关联订阅、条目与 Subject。
+    ///     逐条尽力而为：单条失败或重复不影响其他条目，结果按明细返回。feed 与种子下载共用同一代理出口。
+    /// </summary>
+    public async Task<RssDownloadResult> CreateFromRssFeedAsync(
+        string feedUrl, Guid? proxyId, CancellationToken cancellationToken = default)
+    {
+        var settings = await qbittorrentSettings.GetAsync(cancellationToken);
+        if (!settings.Enabled || !settings.IsConfigured)
+            throw new InvalidOperationException("请先在设置页启用并配置 qBittorrent 下载器。");
+
+        if (!Uri.TryCreate(feedUrl.Trim(), UriKind.Absolute, out var feedUri) ||
+            (feedUri.Scheme != Uri.UriSchemeHttps && !(feedUri.Scheme == Uri.UriSchemeHttp && feedUri.IsLoopback)))
+            throw new ArgumentException("RSS 地址必须是 HTTPS 绝对地址（本机测试可使用 HTTP）。", nameof(feedUrl));
+
+        var feedItems = await feedSourceReader.ReadAsync(feedUri, proxyId, cancellationToken);
+        if (feedItems.Count == 0) throw new InvalidOperationException("RSS 中没有条目。");
+
+        var results = new List<RssDownloadItemResult>(feedItems.Count);
+        foreach (var item in feedItems)
+        {
+            if (item.TorrentUri is null)
+            {
+                results.Add(new RssDownloadItemResult(item.Title, RssDownloadItemOutcome.Failed, null,
+                                                      "条目没有种子地址。"));
+                continue;
+            }
+
+            try
+            {
+                var taskId = await RegisterRssItemAsync(item, settings.SavePath, proxyId, cancellationToken);
+                results.Add(taskId is null
+                                ? new RssDownloadItemResult(item.Title, RssDownloadItemOutcome.Duplicate, null,
+                                                            "同一资源已有下载任务。")
+                                : new RssDownloadItemResult(item.Title, RssDownloadItemOutcome.Created, taskId, null));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (DbUpdateException)
+            {
+                // 并发下绕过前置查重时由数据库活动唯一索引兜底，按重复处理。
+                results.Add(new RssDownloadItemResult(item.Title, RssDownloadItemOutcome.Duplicate, null,
+                                                      "同一资源已有下载任务。"));
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "RSS 条目 {Title} 登记下载任务失败。", item.Title);
+                results.Add(new RssDownloadItemResult(item.Title, RssDownloadItemOutcome.Failed, null,
+                                                      exception.Message));
+            }
+        }
+
+        var result = new RssDownloadResult(results.Count(item => item.Outcome == RssDownloadItemOutcome.Created),
+                                           results.Count(item => item.Outcome == RssDownloadItemOutcome.Duplicate),
+                                           results.Count(item => item.Outcome == RssDownloadItemOutcome.Failed),
+                                           results);
+        logger.LogInformation(
+                              "RSS 链接下载完成：{FeedUrl} 新建 {Created} 个、跳过重复 {Duplicate} 个、失败 {Failed} 个。",
+                              feedUri, result.CreatedCount, result.DuplicateCount, result.FailedCount);
+        return result;
+    }
+
+    /// <summary>下载单条 RSS 条目的种子并在查重后登记任务；返回 null 表示同 hash 任务已存在。</summary>
+    private async Task<Guid?> RegisterRssItemAsync(
+        FeedSourceItem item, string basePath, Guid? proxyId, CancellationToken cancellationToken)
+    {
+        var (torrentBytes, infoHash) = await DownloadTorrentAsync(item.TorrentUri!.AbsoluteUri, proxyId,
+                                                                  cancellationToken);
+
+        var namingSnapshot = TruncateSnapshot(item.Title) ??
+                             (TorrentInfoHashExtractor.TryExtractDisplayName(torrentBytes, out var displayName)
+                                 ? TruncateSnapshot(displayName)
+                                 : null) ?? $"RSS 下载：{infoHash[..8]}";
+
+        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        if (await FindActiveDuplicateIdAsync(db, infoHash, null, cancellationToken) is not null ||
+            await FindCompletedDuplicateIdAsync(db, infoHash, cancellationToken) is not null)
+            return null;
+
+        var task = new DownloadTask
+        {
+            Id             = Guid.NewGuid(),
+            InfoHash       = infoHash,
+            TorrentFile    = torrentBytes,
+            TorrentUrl     = item.TorrentUri.AbsoluteUri,
+            SavePath       = BuildSavePath(basePath, null, namingSnapshot, infoHash),
+            NamingSnapshot = namingSnapshot,
+            Status         = DownloadTaskStatus.PendingSubmit,
+            CreatedAtUtc   = timeProvider.GetUtcNow()
+        };
+        db.DownloadTasks.Add(task);
+        await db.SaveChangesAsync(cancellationToken);
+        logger.LogInformation("已从 RSS 条目创建下载任务 {TaskId}（hash {InfoHash}）。", task.Id, infoHash);
+        return task.Id;
+    }
+
+    /// <summary>命名快照列上限 200 字符，超长截断；标题为空白时返回 null 交给回退来源。</summary>
+    private static string? TruncateSnapshot(string? value)
+    {
+        var trimmed = value?.Trim();
+        if (string.IsNullOrEmpty(trimmed)) return null;
+        return trimmed.Length > 200 ? trimmed[..200] : trimmed;
     }
 
     /// <summary>下载种子文件并提取 info-hash；网络请求不置于数据库事务内。</summary>

@@ -92,7 +92,7 @@ public sealed class SubscriptionRefreshTests
         var testDirectory = Directory.CreateTempSubdirectory("MediaManager.Anibt.FeedId.Tests.");
         try
         {
-            var timestamp  = new DateTimeOffset(2026, 9, 28, 4, 0, 0, TimeSpan.Zero);
+            var timestamp = new DateTimeOffset(2026, 9, 28, 4, 0, 0, TimeSpan.Zero);
             var sourceItem = new FeedSourceItem("guid:anibt-1", "rel_anibt-1",
                                                 "[S1百综字幕组] 死灵子的宇宙恐怖秀 / Necronomico no Cosmic Horror Show[12][1080p][WebRip][AVC_AAC][CHS][简体内嵌]",
                                                 new Uri("https://anibt.net/release/rel_anibt-1"),
@@ -111,8 +111,8 @@ public sealed class SubscriptionRefreshTests
 
                 var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
                 await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "AniBT 订阅",
-                                                                    "https://anibt.net/rss/magnets.xml?limit=100",
-                                                                    true, 30, null));
+                                                                                    "https://anibt.net/rss/magnets.xml?limit=100",
+                                                                                    true, 30, null));
                 var refreshService = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
                 var result         = await refreshService.ProcessNextAsync();
 
@@ -137,7 +137,7 @@ public sealed class SubscriptionRefreshTests
         var testDirectory = Directory.CreateTempSubdirectory("MediaManager.Proxy.Passthrough.Tests.");
         try
         {
-            var timestamp  = new DateTimeOffset(2026, 9, 28, 6, 0, 0, TimeSpan.Zero);
+            var timestamp = new DateTimeOffset(2026, 9, 28, 6, 0, 0, TimeSpan.Zero);
             var sourceItem = new FeedSourceItem("guid:proxy-1", "proxy-1",
                                                 "[S1百综字幕组] 死灵子的宇宙恐怖秀 / Necronomico no Cosmic Horror Show[12][1080p][WebRip][AVC_AAC][CHS][简体内嵌]",
                                                 new Uri("https://mikanani.me/Home/Episode/proxy-1"),
@@ -168,8 +168,8 @@ public sealed class SubscriptionRefreshTests
 
                 var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
                 await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "代理订阅",
-                                                                    "https://mikanani.me/RSS/Bangumi?token=secret",
-                                                                    true, 30, null, ProxyId: proxyId));
+                                                                                    "https://mikanani.me/RSS/Bangumi?token=secret",
+                                                                                    true, 30, null, proxyId));
                 var result = await scope.ServiceProvider.GetRequiredService<MikanRefreshService>().ProcessNextAsync();
 
                 Assert.NotNull(result);
@@ -222,23 +222,24 @@ public sealed class SubscriptionRefreshTests
 
                 // 先以固定 Subject=100 评估该标题并写入映射；随后同标题条目即使带 bgmId 也应命中映射。
                 await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "种子订阅",
-                                                                    "https://mikanani.me/RSS/Bangumi?token=secret",
-                                                                    true, 30, 100));
+                                                                                    "https://mikanani.me/RSS/Bangumi?token=secret",
+                                                                                    true, 30, 100));
                 Assert.NotNull(await refreshService.ProcessNextAsync());
 
                 var feedReader =
                     (FakeFeedReader)scope.ServiceProvider.GetRequiredService<IFeedSourceReader>();
                 feedReader.SetItems([hintItem]);
-                var oneShotId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "",
-                                                                    "https://anibt.net/rss/magnets.xml?limit=100",
-                                                                    true, 30, null, true));
+                var hintSubscriptionId =
+                    await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "AniBT 提示源",
+                                                            "https://anibt.net/rss/magnets.xml?limit=100",
+                                                            true, 30, null));
                 var result = await refreshService.ProcessNextAsync();
 
                 Assert.NotNull(result);
                 Assert.Null(result.Error);
                 Assert.Equal(1, result.AddedItems);
                 var items     = await scope.ServiceProvider.GetRequiredService<FeedItemQueries>().ListAsync();
-                var hintEntry = items.Single(item => item.SubscriptionId == oneShotId);
+                var hintEntry = items.Single(item => item.SubscriptionId == hintSubscriptionId);
                 Assert.Equal(FeedItemStatus.Accepted, hintEntry.Status);
                 Assert.Equal(100, hintEntry.SubjectId);
                 Assert.Equal(0, resolver.CallCount);
@@ -805,50 +806,9 @@ public sealed class SubscriptionRefreshTests
     }
 
     [Fact]
-    public async Task SaveOneShot_NonMikanUrl_EnqueuesImmediatelyWithoutScheduling()
+    public async Task Save_HttpNonLoopback_Rejected()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P4.OneShot.Tests.");
-        try
-        {
-            var timestamp = new DateTimeOffset(2026, 9, 27, 4, 0, 0, TimeSpan.Zero);
-            var services  = CreateServices(testDirectory, timestamp, () => []);
-
-            await using var provider = services.BuildServiceProvider();
-            await using (var scope = provider.CreateAsyncScope())
-            {
-                var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
-                await using var db = await factory.CreateDbContextAsync();
-                await db.Database.EnsureCreatedAsync();
-
-                var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
-                var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "",
-                                                                             "https://example.com/rss.xml",
-                                                                             true, 30, null, true));
-
-                var view = Assert.Single(await subscriptionService.ListAsync());
-                Assert.True(view.IsOneShot);
-                Assert.Equal("一次性 RSS：example.com", view.Name);
-                Assert.Null(view.NextRefreshAtUtc);
-
-                var work = await db.RefreshWorkItems.AsNoTracking()
-                                   .SingleOrDefaultAsync(item => item.SubscriptionId == subscriptionId);
-                Assert.NotNull(work);
-                Assert.Equal(RefreshWorkStatus.Pending, work.Status);
-
-                // 一次性订阅不参与到期调度。
-                Assert.Equal(0, await subscriptionService.EnqueueDueRefreshesAsync());
-            }
-        }
-        finally
-        {
-            testDirectory.Delete(true);
-        }
-    }
-
-    [Fact]
-    public async Task SaveOneShot_HttpNonLoopback_Rejected()
-    {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P4.OneShotHttp.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P4.HttpNonLoopback.Tests.");
         try
         {
             var             services            = CreateServices(testDirectory, DateTimeOffset.UtcNow, () => []);
@@ -859,113 +819,7 @@ public sealed class SubscriptionRefreshTests
             await Assert.ThrowsAsync<ArgumentException>(() => subscriptionService.SaveAsync(
                                                          new SaveSubscriptionRequest(null, "临时",
                                                              "http://example.com/rss.xml",
-                                                             true, 30, null, true)));
-        }
-        finally
-        {
-            testDirectory.Delete(true);
-        }
-    }
-
-    [Fact]
-    public async Task SaveOneShot_CompletesWithoutScheduling_NextRefreshStaysNull()
-    {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P4.OneShotComplete.Tests.");
-        try
-        {
-            var timestamp = new DateTimeOffset(2026, 9, 27, 4, 0, 0, TimeSpan.Zero);
-            var sourceItem = new FeedSourceItem("guid:one-shot-1", "one-shot-1", "任意来源的番剧第一话 [1080p]",
-                                                new Uri("https://example.com/posts/1"),
-                                                new Uri("https://example.com/posts/1.torrent"),
-                                                timestamp.AddHours(-1));
-            var services = CreateServices(testDirectory, timestamp, () => [sourceItem]);
-
-            await using var provider = services.BuildServiceProvider();
-            await using (var scope = provider.CreateAsyncScope())
-            {
-                var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
-                await using var db = await factory.CreateDbContextAsync();
-                await db.Database.EnsureCreatedAsync();
-
-                var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
-                await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "临时抓取",
-                                                                                    "https://example.com/rss.xml",
-                                                                                    true, 30, null, true));
-                var refreshService = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
-                var result         = await refreshService.ProcessNextAsync();
-
-                Assert.NotNull(result);
-                Assert.Null(result.Error);
-                Assert.Equal(1, result.AddedItems);
-
-                var subscription = await db.MediaSubscriptions.AsNoTracking().SingleAsync();
-                Assert.True(subscription.IsOneShot);
-                Assert.Null(subscription.NextRefreshAtUtc);
-                Assert.NotNull(subscription.LastRefreshCompletedAtUtc);
-            }
-        }
-        finally
-        {
-            testDirectory.Delete(true);
-        }
-    }
-
-    [Fact]
-    public async Task SaveOneShot_TitleMappingHit_EntersSelectionPipeline()
-    {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P4.OneShotMapping.Tests.");
-        try
-        {
-            var timestamp = new DateTimeOffset(2026, 9, 27, 4, 0, 0, TimeSpan.Zero);
-            var mikanItem = new FeedSourceItem("guid:mikan-1", "mikan-1",
-                                               "[S1百综字幕组] 死灵子的宇宙恐怖秀 / Necronomico no Cosmic Horror Show[12][1080p][WebRip][AVC_AAC][CHS][简体内嵌]",
-                                               new Uri("https://mikanani.me/Home/Episode/mikan-1"),
-                                               new Uri("https://mikanani.me/Download/mikan-1.torrent"),
-                                               timestamp.AddHours(-2));
-            var oneShotItem = new FeedSourceItem("guid:temp-1", "temp-1",
-                                                 "[S1百综字幕组] 死灵子的宇宙恐怖秀 / Necronomico no Cosmic Horror Show[12][1080p][WebRip][AVC_AAC][CHS][简体内嵌]",
-                                                 new Uri("https://example.com/posts/temp-1"),
-                                                 new Uri("https://example.com/posts/temp-1.torrent"),
-                                                 timestamp.AddHours(-1));
-            var services = CreateServices(testDirectory, timestamp, () => [mikanItem]);
-
-            await using var provider = services.BuildServiceProvider();
-            await using (var scope = provider.CreateAsyncScope())
-            {
-                var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
-                await using var db = await factory.CreateDbContextAsync();
-                await db.Database.EnsureCreatedAsync();
-
-                var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
-                var refreshService      = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
-                var feedReader =
-                    (FakeFeedReader)scope.ServiceProvider.GetRequiredService<IFeedSourceReader>();
-
-                // 先以 Mikan 订阅建立标题映射；随后同标题的一次性 RSS 条目应直接命中映射关联 Subject。
-                await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "Mikan 源",
-                                                                                    "https://mikanani.me/RSS/Bangumi?token=secret",
-                                                                                    true, 30, 42));
-                Assert.NotNull(await refreshService.ProcessNextAsync());
-
-                feedReader.SetItems([oneShotItem]);
-                var oneShotId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "",
-                                                                        "https://example.com/rss.xml",
-                                                                        true, 30, null, true));
-                var result = await refreshService.ProcessNextAsync();
-                Assert.NotNull(result);
-                Assert.Null(result.Error);
-                Assert.Equal(1, result.AddedItems);
-
-                var items        = await scope.ServiceProvider.GetRequiredService<FeedItemQueries>().ListAsync();
-                var oneShotEntry = items.Single(item => item.SubscriptionId == oneShotId);
-                Assert.Equal(FeedItemStatus.Accepted, oneShotEntry.Status);
-                Assert.Equal(42, oneShotEntry.SubjectId);
-
-                // 同集组进入择优：Mikan 条目与一次性条目同组，仅登记一个优胜。
-                var selection = await db.CandidateSelections.AsNoTracking().SingleAsync();
-                Assert.Equal(42, selection.SubjectId);
-                Assert.Equal(12m, selection.Episode);
-            }
+                                                             true, 30, null)));
         }
         finally
         {
@@ -1060,8 +914,8 @@ public sealed class SubscriptionRefreshTests
         /// <summary>最近一次解析请求携带的订阅代理 Id，供传递断言使用。</summary>
         public Guid? LastProxyId { get; private set; }
 
-        public Task<int?> ResolveSubjectIdAsync(Uri episodeUri, Guid? proxyId = default,
-                                                CancellationToken   cancellationToken = default)
+        public Task<int?> ResolveSubjectIdAsync(Uri               episodeUri, Guid? proxyId = default,
+                                                CancellationToken cancellationToken = default)
         {
             CallCount++;
             LastProxyId = proxyId;
