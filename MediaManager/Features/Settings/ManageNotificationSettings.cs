@@ -3,6 +3,42 @@ using MediaManager.Integrations.Notifications;
 
 namespace MediaManager.Features.Settings;
 
+internal static class NotificationChannelSettingsStore
+{
+    public static async Task<(string ChannelValue, bool Enabled, Guid? ProxyId,
+        IReadOnlyList<NotificationEventType> Events)> GetAsync(
+        IApplicationSettingStore store, string enabledKey, string channelValueKey, string eventsKey, string proxyIdKey,
+        CancellationToken cancellationToken)
+    {
+        var enabledText = await store.GetAsync(enabledKey, cancellationToken);
+        var channelValue = await store.GetAsync(channelValueKey, cancellationToken) ?? string.Empty;
+        var eventsText = await store.GetAsync(eventsKey, cancellationToken);
+        var proxyText = await store.GetAsync(proxyIdKey, cancellationToken);
+        return (channelValue,
+                string.Equals(enabledText, "true", StringComparison.OrdinalIgnoreCase),
+                Guid.TryParse(proxyText, out var proxyId) ? proxyId : null,
+                NotificationEvents.Parse(eventsText));
+    }
+
+    public static async Task SaveAsync(
+        IApplicationSettingStore store, string enabledKey, string channelValueKey, string channelValue,
+        string proxyIdKey, string eventsKey, bool enabled, Guid? proxyId,
+        IReadOnlyList<NotificationEventType> events, CancellationToken cancellationToken)
+    {
+        await store.SetAsync(enabledKey, enabled ? "true" : "false", cancellationToken);
+        await store.SetAsync(channelValueKey, channelValue, cancellationToken);
+        await store.SetAsync(proxyIdKey, proxyId?.ToString() ?? string.Empty, cancellationToken);
+        await store.SetAsync(eventsKey, NotificationEvents.Format(events), cancellationToken);
+    }
+
+    public static async Task SaveTokenIfProvidedAsync(
+        IApplicationSettingStore store, string tokenKey, string? token, CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(token))
+            await store.SetProtectedAsync(tokenKey, token, cancellationToken);
+    }
+}
+
 /// <summary>
 ///     Telegram 通知渠道设置的读取、校验与保存。BotToken 使用受保护存储；
 ///     保存时不回传明文，token 参数为 null 或空白表示沿用原值。测试发送用草稿设置执行。
@@ -17,17 +53,9 @@ public sealed class ManageTelegramSettings(IApplicationSettingStore settingStore
 
     public async Task<TelegramSettings> GetAsync(CancellationToken cancellationToken = default)
     {
-        var enabledText = await settingStore.GetAsync(EnabledKey, cancellationToken);
-        var chatId      = await settingStore.GetAsync(ChatIdKey, cancellationToken) ?? string.Empty;
-        var events      = NotificationEvents.Parse(await settingStore.GetAsync(EventsKey, cancellationToken));
-        return new TelegramSettings(chatId.Trim(),
-                                    ParseProxyId(await settingStore.GetAsync(ProxyIdKey, cancellationToken)),
-                                    string.Equals(enabledText, "true", StringComparison.OrdinalIgnoreCase), events);
-    }
-
-    private static Guid? ParseProxyId(string? stored)
-    {
-        return Guid.TryParse(stored, out var proxyId) ? proxyId : null;
+        var stored = await NotificationChannelSettingsStore.GetAsync(
+            settingStore, EnabledKey, ChatIdKey, EventsKey, ProxyIdKey, cancellationToken);
+        return new TelegramSettings(stored.ChannelValue.Trim(), stored.ProxyId, stored.Enabled, stored.Events);
     }
 
     /// <summary>已保存的 Bot Token；投递与测试发送时使用，不进入设置模型。</summary>
@@ -56,12 +84,11 @@ public sealed class ManageTelegramSettings(IApplicationSettingStore settingStore
                 throw new ArgumentException("启用 Telegram 通知时必须填写 Bot Token。", nameof(settings));
         }
 
-        await settingStore.SetAsync(EnabledKey, settings.Enabled ? "true" : "false", cancellationToken);
-        await settingStore.SetAsync(ChatIdKey, chatId, cancellationToken);
-        await settingStore.SetAsync(ProxyIdKey, settings.ProxyId?.ToString() ?? string.Empty, cancellationToken);
-        await settingStore.SetAsync(EventsKey, NotificationEvents.Format(settings.Events), cancellationToken);
-        if (!string.IsNullOrWhiteSpace(botToken))
-            await settingStore.SetProtectedAsync(BotTokenKey, botToken, cancellationToken);
+        await NotificationChannelSettingsStore.SaveAsync(
+            settingStore, EnabledKey, ChatIdKey, chatId, ProxyIdKey, EventsKey, settings.Enabled, settings.ProxyId,
+            settings.Events, cancellationToken);
+        await NotificationChannelSettingsStore.SaveTokenIfProvidedAsync(
+            settingStore, BotTokenKey, botToken, cancellationToken);
     }
 
     /// <summary>
@@ -109,19 +136,11 @@ public sealed class ManageGotifySettings(IApplicationSettingStore settingStore, 
     public const string ProxyIdKey  = "Notification.Gotify.ProxyId";
     public const string EventsKey   = "Notification.Gotify.Events";
 
-    private static Guid? ParseProxyId(string? stored)
-    {
-        return Guid.TryParse(stored, out var proxyId) ? proxyId : null;
-    }
-
     public async Task<GotifySettings> GetAsync(CancellationToken cancellationToken = default)
     {
-        var enabledText = await settingStore.GetAsync(EnabledKey, cancellationToken);
-        var baseUrl     = await settingStore.GetAsync(BaseUrlKey, cancellationToken) ?? string.Empty;
-        var events      = NotificationEvents.Parse(await settingStore.GetAsync(EventsKey, cancellationToken));
-        return new GotifySettings(baseUrl.Trim(),
-                                  ParseProxyId(await settingStore.GetAsync(ProxyIdKey, cancellationToken)),
-                                  string.Equals(enabledText, "true", StringComparison.OrdinalIgnoreCase), events);
+        var stored = await NotificationChannelSettingsStore.GetAsync(
+            settingStore, EnabledKey, BaseUrlKey, EventsKey, ProxyIdKey, cancellationToken);
+        return new GotifySettings(stored.ChannelValue.Trim(), stored.ProxyId, stored.Enabled, stored.Events);
     }
 
     /// <summary>已保存的 App Token；投递与测试发送时使用，不进入设置模型。</summary>
@@ -158,12 +177,11 @@ public sealed class ManageGotifySettings(IApplicationSettingStore settingStore, 
                 throw new ArgumentException("启用 Gotify 通知时必须填写应用 Token。", nameof(settings));
         }
 
-        await settingStore.SetAsync(EnabledKey, settings.Enabled ? "true" : "false", cancellationToken);
-        await settingStore.SetAsync(BaseUrlKey, baseUrl, cancellationToken);
-        await settingStore.SetAsync(ProxyIdKey, settings.ProxyId?.ToString() ?? string.Empty, cancellationToken);
-        await settingStore.SetAsync(EventsKey, NotificationEvents.Format(settings.Events), cancellationToken);
-        if (!string.IsNullOrWhiteSpace(appToken))
-            await settingStore.SetProtectedAsync(AppTokenKey, appToken, cancellationToken);
+        await NotificationChannelSettingsStore.SaveAsync(
+            settingStore, EnabledKey, BaseUrlKey, baseUrl, ProxyIdKey, EventsKey, settings.Enabled, settings.ProxyId,
+            settings.Events, cancellationToken);
+        await NotificationChannelSettingsStore.SaveTokenIfProvidedAsync(
+            settingStore, AppTokenKey, appToken, cancellationToken);
     }
 
     /// <summary>

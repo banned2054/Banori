@@ -146,39 +146,44 @@ public sealed class NotificationDeliveryService(
         await RecordDeliveredAsync(delivery.Id, cancellationToken);
     }
 
-    private async Task RecordDeliveredAsync(Guid id, CancellationToken cancellationToken)
+    private Task RecordDeliveredAsync(Guid id, CancellationToken cancellationToken)
     {
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var delivery = await db.NotificationDeliveries
-                               .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
-        if (delivery is null || delivery.Status != NotificationDeliveryStatus.Pending) return;
-
-        delivery.AttemptCount   += 1;
-        delivery.Status         =  NotificationDeliveryStatus.Delivered;
-        delivery.DeliveredAtUtc =  timeProvider.GetUtcNow();
-        await db.SaveChangesAsync(cancellationToken);
+        return UpdatePendingAsync(id, delivery =>
+        {
+            delivery.AttemptCount   += 1;
+            delivery.Status         =  NotificationDeliveryStatus.Delivered;
+            delivery.DeliveredAtUtc =  timeProvider.GetUtcNow();
+        }, cancellationToken);
     }
 
-    private async Task RecordFailureAsync(Guid id, string error, CancellationToken cancellationToken)
+    private Task RecordFailureAsync(Guid id, string error, CancellationToken cancellationToken)
+    {
+        return UpdatePendingAsync(id, delivery =>
+        {
+            delivery.AttemptCount += 1;
+            delivery.LastError    =  error.Length > 1000 ? error[..1000] : error;
+            if (delivery.AttemptCount >= MaxAttempts)
+            {
+                delivery.Status           = NotificationDeliveryStatus.Failed;
+                delivery.NextAttemptAtUtc = null;
+            }
+            else
+            {
+                delivery.NextAttemptAtUtc = timeProvider.GetUtcNow()
+                                                        .AddMinutes(BackoffMinutes(delivery.AttemptCount));
+            }
+        }, cancellationToken);
+    }
+
+    private async Task UpdatePendingAsync(
+        Guid id, Action<NotificationDelivery> update, CancellationToken cancellationToken)
     {
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var delivery = await db.NotificationDeliveries
                                .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
         if (delivery is null || delivery.Status != NotificationDeliveryStatus.Pending) return;
 
-        delivery.AttemptCount += 1;
-        delivery.LastError    =  error.Length > 1000 ? error[..1000] : error;
-        if (delivery.AttemptCount >= MaxAttempts)
-        {
-            delivery.Status           = NotificationDeliveryStatus.Failed;
-            delivery.NextAttemptAtUtc = null;
-        }
-        else
-        {
-            delivery.NextAttemptAtUtc = timeProvider.GetUtcNow()
-                                                    .AddMinutes(BackoffMinutes(delivery.AttemptCount));
-        }
-
+        update(delivery);
         await db.SaveChangesAsync(cancellationToken);
     }
 

@@ -92,6 +92,15 @@ public sealed class ManageTelegramSettingsTests
     }
 
     [Fact]
+    public async Task Get_WithInvalidProxyId_ReturnsNull()
+    {
+        var store = new MemoryApplicationSettingStore();
+        await store.SetAsync(ManageTelegramSettings.ProxyIdKey, "not-a-guid");
+
+        Assert.Null((await CreateService(store).GetAsync()).ProxyId);
+    }
+
+    [Fact]
     public async Task SaveWithEmptyEvents_StoresNoneSentinelAndReadsBackEmpty()
     {
         var store    = new MemoryApplicationSettingStore();
