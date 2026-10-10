@@ -185,11 +185,22 @@ public sealed class FeedItemEvaluator(
         // 命名模板的 {source} 令牌取订阅 feed 的来源站点（mikan/anibt 等）。
         var siteSource     = TorrentSiteSource.FromHost(feedHost);
         var namingTemplate = await namingTemplateStore.GetAsync(cancellationToken);
-        // 预览与命名要素同源生成：要素落库后，完成改名按每个内容文件的集数重渲染，与快照永远一致。
+        var fileTemplate = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
+        // 预览与命名要素同源生成，且分别快照 AniParser 与 Bangumi 字段。
         var ingredients = new TorrentNamingIngredients(namingTemplate, subject.DisplayName,
                                                        ReleaseNamePreviewPolicy.FormatEpisodeText(correction.Episode),
                                                        parsed.Version, preference, siteSource,
-                                                       parsed.Language.ToString(), parsed.Resolution.ToString());
+                                                       parsed.Language.ToString(), parsed.Resolution.ToString(),
+                                                       FileTemplate: fileTemplate, AniMediaType: parsed.MediaType.ToString(),
+                                                       AniTitle: parsed.Title,
+                                                       AniGroup: parsed.Group, AniGroupType: parsed.GroupType.ToString(),
+                                                       AniSubtitleType: parsed.SubtitleType.ToString(),
+                                                       AniSource: parsed.Source.ToString(), AniWebSource: parsed.WebSource,
+                                                       AniResolution: parsed.Resolution.ToString(),
+                                                       AniVideoCodec: parsed.VideoCodec, AniAudioCodec: parsed.AudioCodec,
+                                                       AniColorBitDepth: parsed.ColorBitDepth, BangumiId: subject.Id,
+                                                       BangumiName: subject.Name, BangumiNameCn: subject.NameCn,
+                                                       BangumiPlatform: subject.Platform, BangumiDate: subject.AirDate);
         var namingPreview = namingPolicy.Create(ingredients);
 
         await SaveAnalysisAsync(itemId,

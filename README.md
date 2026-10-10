@@ -17,7 +17,7 @@ MediaManager.Tests/       规则单元测试、SQLite 行为测试
 
 刷新链路：订阅页 / 到期调度 → `SubscriptionService` 入队 → `MikanRefreshService` 执行（读 RSS、去重入库、评估遗留条目）→ `FeedItemEvaluator`（AniParser 解析、Subject 关联、Core 规则决策、命名预览与命名要素）→ 保存结果与下次刷新时间。
 
-下载链路：优胜条目自动登记下载意图 / RSS 链接下载 / 本地上传种子（下载种子、提取 info-hash、登记 `DownloadTask`；命名统一按可配置模板渲染——订阅条目用评估生成的预览，RSS 与上传用 AniParser 解析标题，命名要素一并落库）→ `DownloadReconcileWorker` 周期对账 → 提交 qBittorrent（`rename` 参数直接设置种子名 + 来源 tag）→ 响应丢失按 hash 对账确认 → 完成后按命名要素改名并记录替换关系：种子名不带扩展名，单文件改文件名，多文件逐文件按各自集数改名、附属文件挪进 `Seed/`、有公共根目录时改根目录名（ByrTorrent 同源方法）；无命名要素的存量任务回退按命名快照改名。删除任务时先删下载器再删记录（幂等可重试），可选连带删除下载器种子与已下载文件；被删任务替换的旧任务回退为已完成。
+下载链路：优胜条目自动登记下载意图 / RSS 链接下载 / 本地上传种子（下载种子、提取 info-hash、登记 `DownloadTask`；qB 种子名称与种子内文件名称分别使用独立模板，模板及 AniParser/Bangumi 元数据一并快照落库）→ `DownloadReconcileWorker` 周期对账 → 提交 qBittorrent（`rename` 参数直接设置种子名 + 来源 tag）→ 响应丢失按 hash 对账确认 → 完成后按命名要素改名并记录替换关系：种子名和保存目录沿用种子名称模板，单文件与多文件内容项使用文件名称模板，并按各自实际集数渲染；附属文件挪进 `Seed/`、有公共根目录时改根目录名（ByrTorrent 同源方法）；无命名要素的存量任务回退按命名快照改名。命名模板支持 `{ani.*}` 解析属性、`{bgm.*}` Bangumi 属性与 `{site.source}` 站点来源；旧 `{title}`、`{episode}` 等令牌继续兼容。删除任务时先删下载器再删记录（幂等可重试），可选连带删除下载器种子与已下载文件；被删任务替换的旧任务回退为已完成。
 
 ## 本地启动
 

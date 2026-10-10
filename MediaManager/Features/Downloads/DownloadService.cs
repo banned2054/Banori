@@ -123,7 +123,7 @@ public sealed class DownloadService(
                       throw new InvalidOperationException(SubjectUnboundMessage);
         var (namingSnapshot, namingIngredients, namingParsed) =
             await BuildNamingAsync(displayName, null, resolvedSource, $"上传种子：{infoHash[..8]}",
-                                   uploadedParsed, binding.DisplayName, cancellationToken);
+                                   uploadedParsed, binding, cancellationToken);
 
         using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
@@ -399,7 +399,7 @@ public sealed class DownloadService(
             : null;
         var (namingSnapshot, namingIngredients, namingParsed) =
             await BuildNamingAsync(item.Title, displayName, resolvedSource, $"RSS 下载：{infoHash[..8]}", parsed,
-                                   binding.DisplayName, cancellationToken);
+                                   binding, cancellationToken);
 
         using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
@@ -488,9 +488,18 @@ public sealed class DownloadService(
     /// </summary>
     private async Task<(string Snapshot, string? IngredientsJson, ParseResult? Parsed)> BuildNamingAsync(
         string?      primaryTitle,  string? fallbackTitle, string?           siteSource, string lastResort,
-        ParseResult? primaryParsed, string? subjectName,   CancellationToken cancellationToken)
+        ParseResult? primaryParsed, SubjectBinding subject, CancellationToken cancellationToken)
     {
         var template = await namingTemplateStore.GetAsync(cancellationToken);
+        var fileTemplate = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
+        var metadata = await GetSubjectMetadataAsync(subject.SubjectId, cancellationToken);
+        var bgmName = metadata?.Name ?? subject.DisplayName;
+        var bgmNameCn = metadata?.NameCn ?? string.Empty;
+        var bgmPlatform = metadata?.Platform ?? string.Empty;
+        var bgmDate = metadata?.AirDate ?? string.Empty;
+        var displayName = string.IsNullOrWhiteSpace(bgmNameCn) ? bgmName : bgmNameCn;
+        subject = subject with { DisplayName = displayName };
+
         var attempts = new[]
         {
             (Title : primaryTitle, Parsed : primaryParsed),
@@ -504,9 +513,19 @@ public sealed class DownloadService(
             if (parsed is null || episodeText is null || string.IsNullOrWhiteSpace(parsed.Title)) continue;
 
             var group = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
-            var ingredients = new TorrentNamingIngredients(template, subjectName ?? parsed.Title, episodeText,
+            var ingredients = new TorrentNamingIngredients(template, subject.DisplayName, episodeText,
                                                            parsed.Version, group, siteSource,
-                                                           parsed.Language.ToString(), parsed.Resolution.ToString());
+                                                           parsed.Language.ToString(), parsed.Resolution.ToString(),
+                                                           FileTemplate: fileTemplate, AniMediaType: parsed.MediaType.ToString(),
+                                                           AniTitle: parsed.Title,
+                                                           AniGroup: parsed.Group, AniGroupType: parsed.GroupType.ToString(),
+                                                           AniSubtitleType: parsed.SubtitleType.ToString(),
+                                                           AniSource: parsed.Source.ToString(), AniWebSource: parsed.WebSource,
+                                                           AniResolution: parsed.Resolution.ToString(),
+                                                           AniVideoCodec: parsed.VideoCodec, AniAudioCodec: parsed.AudioCodec,
+                                                           AniColorBitDepth: parsed.ColorBitDepth, BangumiId: subject.SubjectId,
+                                                           BangumiName: bgmName, BangumiNameCn: bgmNameCn,
+                                                           BangumiPlatform: bgmPlatform, BangumiDate: bgmDate);
             return (namingPolicy.Create(ingredients), ingredients.ToJson(), parsed);
         }
 
@@ -623,6 +642,17 @@ public sealed class DownloadService(
         var metadata = await subjectMetadataProvider.GetAsync(subjectId, cancellationToken);
         await SaveSubjectMetadataAsync(metadata, cancellationToken);
         return new SubjectBinding(metadata.Id, metadata.DisplayName);
+    }
+
+    private async Task<SubjectMetadata?> GetSubjectMetadataAsync(int subjectId, CancellationToken cancellationToken)
+    {
+        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        return await db.MediaSubjects.AsNoTracking()
+                       .Where(subject => subject.Id == subjectId)
+                       .Select(subject => new SubjectMetadata(subject.Id, subject.Name, subject.NameCn,
+                                                              subject.Platform, subject.AirDate, subject.ImageUrl,
+                                                              subject.CachedAtUtc))
+                       .SingleOrDefaultAsync(cancellationToken);
     }
 
     private async Task SaveSubjectMetadataAsync(SubjectMetadata subject, CancellationToken cancellationToken)
@@ -1508,7 +1538,7 @@ public sealed class DownloadService(
                 var singleIngredients = ingredients is null
                     ? null
                     : CorrectIngredientsForFile(ingredients, Path.GetFileName(fileNames[0]), null, subjectId, taskVersion);
-                var singleName = singleIngredients is null ? targetName : namingPolicy.Create(singleIngredients);
+                var singleName = singleIngredients is null ? targetName : namingPolicy.Create(singleIngredients, fileName: true);
                 await session.RenameTorrentFileAsync(snapshot.Hash, fileNames[0],
                                                      AppendExtension(singleName, extension), cancellationToken);
             }
@@ -1722,7 +1752,20 @@ public sealed class DownloadService(
         return ingredients with
         {
             EpisodeText = correctedText,
-            Version = parsed.Version > 1 ? parsed.Version : taskVersion > 1 ? taskVersion : ingredients.Version
+            Version = parsed.Version > 1 ? parsed.Version : taskVersion > 1 ? taskVersion : ingredients.Version,
+            AniMediaType = parsed.MediaType.ToString(),
+            AniTitle = parsed.Title,
+            AniGroup = parsed.Group,
+            AniGroupType = parsed.GroupType.ToString(),
+            AniSubtitleType = parsed.SubtitleType.ToString(),
+            AniSource = parsed.Source.ToString(),
+            AniWebSource = parsed.WebSource,
+            AniResolution = parsed.Resolution.ToString(),
+            AniVideoCodec = parsed.VideoCodec,
+            AniAudioCodec = parsed.AudioCodec,
+            AniColorBitDepth = parsed.ColorBitDepth,
+            Language = parsed.Language.ToString(),
+            Resolution = parsed.Resolution.ToString()
         };
     }
 
@@ -1749,7 +1792,7 @@ public sealed class DownloadService(
                     newPath = path;
                     continue;
                 }
-                var candidate = prefix + namingPolicy.Create(fileIngredients) + extension;
+                var candidate = prefix + namingPolicy.Create(fileIngredients, fileName: true) + extension;
                 if (!usedTargets.Add(candidate))
                 {
                     logger.LogWarning("种子 {InfoHash} 内 {Path} 的目标命名与其他文件冲突，保留原名等待人工处理。",

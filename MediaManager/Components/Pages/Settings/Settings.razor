@@ -76,14 +76,24 @@ else
 						<ValidationMessage For="() => _vm.Downloader.SavePath"/>
 					</div>
 
-					<div class="mb-3">
-						<label for="downloader-naming-template" class="form-label">命名模板</label>
-						<InputText id="downloader-naming-template" class="form-control" placeholder="@_vm.DefaultNamingTemplate" @bind-Value="_vm.Downloader.NamingTemplate"/>
-						<ValidationMessage For="() => _vm.Downloader.NamingTemplate"/>
-						<div class="form-text">
-							订阅条目的命名快照与种子名按此模板生成。可用令牌：{title} 动画名、{episode} 集数、{version} 版本（首版为空）、{group} 字幕组或语言、{source} 来源站点（mikan/anibt/u2/byrbt/tjupt 等）。留空恢复默认。
+						<div class="mb-3">
+							<label for="downloader-naming-template" class="form-label">qB 种子名称模板</label>
+							<InputText id="downloader-naming-template" class="form-control" placeholder="@_vm.DefaultNamingTemplate" @bind-Value="_vm.Downloader.NamingTemplate"/>
+							<ValidationMessage For="() => _vm.Downloader.NamingTemplate"/>
+							<div class="form-text">
+								控制 qBittorrent 中的种子名和保存目录名。兼容旧变量 {title}、{episode}、{version}、{group}、{source}。来源明确变量：AniParser 用 {ani.mediaType}、{ani.title}、{ani.episode}、{ani.version}、{ani.group}、{ani.groupType}、{ani.language}、{ani.subtitleType}、{ani.source}、{ani.webSource}、{ani.resolution}、{ani.videoCodec}、{ani.audioCodec}、{ani.colorBitDepth}；Bangumi 用 {bgm.id}、{bgm.name}、{bgm.nameCn}、{bgm.platform}、{bgm.date}；站点用 {site.source}。留空恢复默认。
+							</div>
 						</div>
-					</div>
+
+						<div class="mb-3">
+							<label for="downloader-file-naming-template" class="form-label">种子内文件名称模板</label>
+							<InputText id="downloader-file-naming-template" class="form-control" placeholder="@_vm.DefaultFileNamingTemplate" @bind-Value="_vm.Downloader.FileNamingTemplate"/>
+							<ValidationMessage For="() => _vm.Downloader.FileNamingTemplate"/>
+							<div class="form-text">
+								只控制下载完成后视频、字幕文件的名称，不影响种子名或保存目录。可用与种子模板相同的 AniParser、Bangumi 和站点变量；{ani.episode} 对每个文件按其实际解析集数重新渲染。留空恢复默认。
+							</div>
+						</div>
+
 
 					<div class="mb-3">
 						<label for="downloader-proxy" class="form-label">代理（可选）</label>

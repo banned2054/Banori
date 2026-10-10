@@ -4,49 +4,87 @@ using System.Globalization;
 
 namespace MediaManager.Core.Rules;
 
-/// <summary>命名模板的可用令牌与默认模板；令牌大小写不敏感，未知令牌按字面保留。</summary>
+/// <summary>命名模板令牌；旧令牌保持既有解释，新模板推荐使用带来源前缀的令牌。</summary>
 public static class NamingTokens
 {
-    public const string Title   = "{title}";
+    public const string Title = "{title}";
     public const string Episode = "{episode}";
     public const string Version = "{version}";
-    public const string Group   = "{group}";
-    public const string Source  = "{source}";
+    public const string Group = "{group}";
+    public const string Source = "{source}";
+    public const string AniMediaType = "{ani.mediaType}";
+    public const string AniTitle = "{ani.title}";
+    public const string AniEpisode = "{ani.episode}";
+    public const string AniVersion = "{ani.version}";
+    public const string AniGroup = "{ani.group}";
+    public const string AniGroupType = "{ani.groupType}";
+    public const string AniLanguage = "{ani.language}";
+    public const string AniSubtitleType = "{ani.subtitleType}";
+    public const string AniSource = "{ani.source}";
+    public const string AniWebSource = "{ani.webSource}";
+    public const string AniResolution = "{ani.resolution}";
+    public const string AniVideoCodec = "{ani.videoCodec}";
+    public const string AniAudioCodec = "{ani.audioCodec}";
+    public const string AniColorBitDepth = "{ani.colorBitDepth}";
+    public const string BgmId = "{bgm.id}";
+    public const string BgmName = "{bgm.name}";
+    public const string BgmNameCn = "{bgm.nameCn}";
+    public const string BgmPlatform = "{bgm.platform}";
+    public const string BgmDate = "{bgm.date}";
+    public const string SiteSource = "{site.source}";
 }
 
 public sealed class ReleaseNamePreviewPolicy
 {
-    /// <summary>默认模板：[Anime]动画名 E集数 来源站点；来源缺失时自然收缩为无来源命名。</summary>
     public const string DefaultTemplate = "[Anime]{title} E{episode} {source}";
+    public const string DefaultFileTemplate = "[Anime]{title} E{episode} {source}";
 
     private static readonly char[] InvalidFileNameCharacters = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 
-    /// <summary>按模板生成命名；template 为空时用默认模板（兼容既有调用）。</summary>
-    public string Create(string subjectName, decimal episode, int version, string preference)
-    {
-        return Create(subjectName, episode, version, preference, null, null);
-    }
+    public string Create(string subjectName, decimal episode, int version, string preference) =>
+        Create(subjectName, episode, version, preference, null, null);
 
-    /// <summary>按命名要素渲染；EpisodeText 已是格式化好的集数段（单集 "07"、合集 "01-E12"）。</summary>
-    public string Create(TorrentNamingIngredients ingredients)
+    /// <summary>按模板变量渲染；种子名使用 Template，内容文件名使用 FileTemplate。</summary>
+    public string Create(TorrentNamingIngredients ingredients, bool fileName = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ingredients.Title);
         ArgumentException.ThrowIfNullOrWhiteSpace(ingredients.EpisodeText);
 
-        return Render(ingredients.Template, ingredients.Title, ingredients.EpisodeText, ingredients.Version,
-                      ingredients.Group, ingredients.Source);
+        var legacyGroup = ingredients.Group;
+        var legacyTitle = ingredients.Title;
+        return Render(fileName ? ingredients.FileTemplate ?? ingredients.Template : ingredients.Template,
+                      new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                      {
+                          [NamingTokens.Title] = legacyTitle,
+                          [NamingTokens.Episode] = ingredients.EpisodeText,
+                          [NamingTokens.Version] = VersionText(ingredients.Version),
+                          [NamingTokens.Group] = legacyGroup,
+                          [NamingTokens.Source] = ingredients.Source,
+                          [NamingTokens.AniMediaType] = ingredients.AniMediaType,
+                          [NamingTokens.AniTitle] = ingredients.AniTitle,
+                          [NamingTokens.AniEpisode] = ingredients.EpisodeText,
+                          [NamingTokens.AniVersion] = VersionText(ingredients.Version),
+                          [NamingTokens.AniGroup] = ingredients.AniGroup,
+                          [NamingTokens.AniGroupType] = ingredients.AniGroupType,
+                          [NamingTokens.AniLanguage] = ingredients.Language,
+                          [NamingTokens.AniSubtitleType] = ingredients.AniSubtitleType,
+                          [NamingTokens.AniSource] = ingredients.AniSource,
+                          [NamingTokens.AniWebSource] = ingredients.AniWebSource,
+                          [NamingTokens.AniResolution] = ingredients.AniResolution ?? ingredients.Resolution,
+                          [NamingTokens.AniVideoCodec] = ingredients.AniVideoCodec,
+                          [NamingTokens.AniAudioCodec] = ingredients.AniAudioCodec,
+                          [NamingTokens.AniColorBitDepth] = ingredients.AniColorBitDepth?.ToString(CultureInfo.InvariantCulture),
+                          [NamingTokens.BgmId] = ingredients.BangumiId?.ToString(CultureInfo.InvariantCulture),
+                          [NamingTokens.BgmName] = ingredients.BangumiName,
+                          [NamingTokens.BgmNameCn] = ingredients.BangumiNameCn,
+                          [NamingTokens.BgmPlatform] = ingredients.BangumiPlatform,
+                          [NamingTokens.BgmDate] = ingredients.BangumiDate,
+                          [NamingTokens.SiteSource] = ingredients.Source
+                      });
     }
 
-    /// <summary>单集的集数段：整数两位起（7 → "07"），小数集保留小数（2.5 → "02.5"）。</summary>
-    public static string FormatEpisodeText(decimal episode)
-    {
-        return FormatEpisode(episode);
-    }
+    public static string FormatEpisodeText(decimal episode) => FormatEpisode(episode);
 
-    /// <summary>
-    ///     解析结果的集数段：单集优先取集数；合集区间渲染为 "01-E12"，与 ByrTorrent 的合集种子
-    ///     命名同形（模板中的 "E{episode}" 令牌渲染后是完整的区间）；识别不出返回 null。
-    /// </summary>
     public static string? FormatEpisodeText(ParseResult parsed)
     {
         if (parsed.Episode is { } episode) return FormatEpisode(episode);
@@ -55,47 +93,37 @@ public sealed class ReleaseNamePreviewPolicy
         return null;
     }
 
-    /// <summary>
-    ///     按模板生成命名：{title} 动画名、{episode} 集数、{version} 版本（v2，首版为空）、
-    ///     {group} 字幕组或语言、{source} 来源站点。令牌替换后清理非法字符并收缩空白。
-    /// </summary>
-    public string Create(string  subjectName, decimal episode, int version, string preference,
-                         string? source,      string? template)
+    public string Create(string subjectName, decimal episode, int version, string preference,
+                         string? source, string? template)
     {
-        return Render(template, subjectName, FormatEpisode(episode), version, preference, source);
+        return Render(template, new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            [NamingTokens.Title] = subjectName,
+            [NamingTokens.Episode] = FormatEpisode(episode),
+            [NamingTokens.Version] = VersionText(version),
+            [NamingTokens.Group] = preference,
+            [NamingTokens.Source] = source
+        });
     }
 
-    private static string Render(string? template, string  title, string episodeText, int version,
-                                 string? group,    string? source)
+    private static string VersionText(int version) => version > 1 ? $"v{version}" : string.Empty;
+
+    private static string Render(string? template, Dictionary<string, string?> values)
     {
-        var safeSubjectName = new string(title.Trim()
-                                              .Select(character =>
-                                                          InvalidFileNameCharacters.Contains(character)
-                                                              ? ' '
-                                                              : character)
-                                              .ToArray());
-        safeSubjectName = string.Join(' ', safeSubjectName.Split(' ', StringSplitOptions.RemoveEmptyEntries));
-
         var pattern = string.IsNullOrWhiteSpace(template) ? DefaultTemplate : template;
-        var rendered = pattern
-                      .Replace(NamingTokens.Title, safeSubjectName, StringComparison.OrdinalIgnoreCase)
-                      .Replace(NamingTokens.Episode, episodeText, StringComparison.OrdinalIgnoreCase)
-                      .Replace(NamingTokens.Version, version > 1 ? $"v{version}" : string.Empty,
-                               StringComparison.OrdinalIgnoreCase)
-                      .Replace(NamingTokens.Group, group   ?? string.Empty, StringComparison.OrdinalIgnoreCase)
-                      .Replace(NamingTokens.Source, source ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-
-        var cleaned = new string(rendered.Select(character =>
-                                                     InvalidFileNameCharacters.Contains(character)
-                                                         ? ' '
-                                                         : character)
-                                         .ToArray());
+        var rendered = pattern;
+        foreach (var (token, value) in values)
+            rendered = rendered.Replace(token, Sanitize(value ?? string.Empty), StringComparison.OrdinalIgnoreCase);
+        var cleaned = new string(rendered.Select(character => InvalidFileNameCharacters.Contains(character) ? ' ' : character).ToArray());
         return string.Join(' ', cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 
-    private static string FormatEpisode(decimal episode)
+    private static string Sanitize(string value)
     {
-        return episode.ToString(episode == decimal.Truncate(episode) ? "00" : "00.###",
-                                CultureInfo.InvariantCulture);
+        var cleaned = new string(value.Trim().Select(character => InvalidFileNameCharacters.Contains(character) ? ' ' : character).ToArray());
+        return string.Join(' ', cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
+
+    private static string FormatEpisode(decimal episode) =>
+        episode.ToString(episode == decimal.Truncate(episode) ? "00" : "00.###", CultureInfo.InvariantCulture);
 }

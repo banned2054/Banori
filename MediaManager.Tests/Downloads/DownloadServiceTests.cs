@@ -1464,6 +1464,36 @@ public sealed class DownloadServiceTests
     }
 
     [Fact]
+    public async Task CreateUpload_UsesSeparateFileTemplateAndSnapshotsBangumiAndAniParserValues()
+    {
+        using var harness = await CreateHarnessAsync();
+        const string seedTemplate = "Seed {bgm.id} {bgm.nameCn} E{ani.episode}";
+        const string fileTemplate = "{ani.title} E{ani.episode} - {bgm.name}";
+        await harness.SaveNamingTemplateAsync(seedTemplate);
+        await harness.SaveFileNamingTemplateAsync(fileTemplate);
+        var title = NekoTitle("简日双语");
+
+        var taskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(title));
+        var task = await harness.GetTaskAsync(taskId);
+        Assert.Equal("Seed 42 测试作品 E12", task.NamingSnapshot);
+        var ingredients = Assert.IsType<TorrentNamingIngredients>(TorrentNamingIngredients.FromJson(task.NamingIngredients));
+        Assert.Equal("测试作品", ingredients.BangumiNameCn);
+        Assert.Equal(42, ingredients.BangumiId);
+        Assert.False(string.IsNullOrWhiteSpace(ingredients.AniTitle));
+        Assert.Equal(seedTemplate, ingredients.Template);
+        Assert.Equal(fileTemplate, ingredients.FileTemplate);
+
+        var hash = TestTorrentBytes.InfoHashOf(title);
+        harness.Store.Files[hash] = [title];
+        await harness.ReconcileAsync();
+        CompleteTorrent(harness, hash);
+        await harness.ReconcileAsync();
+
+        Assert.Equal("Seed 42 测试作品 E12", Assert.Single(harness.Store.RenameCalls).Name);
+        Assert.Equal("Seed 42 测试作品 E12.mp4", Assert.Single(harness.Store.RenameFileCalls).NewPath);
+    }
+
+    [Fact]
     public async Task CreateUpload_WithoutSubjectBinding_RejectsAndAsksForBangumiId()
     {
         using var harness = await CreateHarnessAsync();
@@ -2326,6 +2356,12 @@ public sealed class DownloadServiceTests
         {
             var namingTemplateStore = new NamingTemplateStore(provider.GetRequiredService<IApplicationSettingStore>());
             return namingTemplateStore.SaveAsync(template);
+        }
+
+        public Task SaveFileNamingTemplateAsync(string template)
+        {
+            var namingTemplateStore = new NamingTemplateStore(provider.GetRequiredService<IApplicationSettingStore>());
+            return namingTemplateStore.SaveFileTemplateAsync(template);
         }
 
         public Task SaveSelectionRulesAsync(SelectionRuleConfig config)

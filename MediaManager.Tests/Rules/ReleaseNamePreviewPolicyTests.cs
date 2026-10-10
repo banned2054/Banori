@@ -63,6 +63,33 @@ public sealed class ReleaseNamePreviewPolicyTests
     }
 
     [Fact]
+    public void Create_NamespacedTokens_KeepAniParserBangumiAndSiteValuesSeparate()
+    {
+        var ingredients = new TorrentNamingIngredients(
+            "{bgm.nameCn} {ani.episode} {ani.source} {site.source}", "中文名", "07", 2, "sc", "mikan",
+            FileTemplate: "{ani.title} {bgm.name} {ani.resolution}", AniTitle: "[Group] Parsed Title",
+            AniSource: "BluRay", AniResolution: "1080p", BangumiId: 123, BangumiName: "Original Name",
+            BangumiNameCn: "中文名");
+
+        var policy = new ReleaseNamePreviewPolicy();
+
+        Assert.Equal("中文名 07 BluRay mikan", policy.Create(ingredients));
+        Assert.Equal("[Group] Parsed Title Original Name 1080p", policy.Create(ingredients, fileName: true));
+    }
+
+    [Fact]
+    public void Create_FileTemplate_IsIndependentAndUsesCurrentFileEpisode()
+    {
+        var ingredients = new TorrentNamingIngredients("Seed {episode}", "作品", "01", 1, null, null,
+                                                       FileTemplate: "File E{ani.episode}");
+
+        var fileIngredients = ingredients with { EpisodeText = "12" };
+
+        Assert.Equal("Seed 01", new ReleaseNamePreviewPolicy().Create(ingredients));
+        Assert.Equal("File E12", new ReleaseNamePreviewPolicy().Create(fileIngredients, fileName: true));
+    }
+
+    [Fact]
     public void FormatEpisodeText_FromParseResult_SupportsSingleAndRange()
     {
         var single = new ParseResult { Episode = 7m };
@@ -84,6 +111,21 @@ public sealed class ReleaseNamePreviewPolicyTests
         var ingredients = new TorrentNamingIngredients(null, "龙与虎", "01-E12", 1, "Sc", "byrbt");
 
         Assert.Equal("[Anime]龙与虎 E01-E12 byrbt", new ReleaseNamePreviewPolicy().Create(ingredients));
+    }
+
+    [Fact]
+    public void Ingredients_FromLegacyJson_LeavesNewFileTemplateAndSourceFieldsUnset()
+    {
+        const string legacyJson = "{\"template\":\"{title} E{episode}\",\"title\":\"旧作品\",\"episodeText\":\"03\",\"version\":1,\"group\":null,\"source\":null}";
+
+        var restored = TorrentNamingIngredients.FromJson(legacyJson);
+
+        Assert.NotNull(restored);
+        Assert.Null(restored.FileTemplate);
+        Assert.Null(restored.AniTitle);
+        Assert.Null(restored.BangumiId);
+        Assert.Equal("旧作品 E03", new ReleaseNamePreviewPolicy().Create(restored));
+        Assert.Equal("旧作品 E03", new ReleaseNamePreviewPolicy().Create(restored, fileName: true));
     }
 
     [Fact]
