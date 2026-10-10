@@ -1,5 +1,5 @@
-using System.Security.Cryptography;
 using MediaManager.Integrations.Qbittorrent;
+using System.Security.Cryptography;
 
 namespace MediaManager.Features.Settings;
 
@@ -52,7 +52,7 @@ public sealed class ManageQbittorrentSettings(
         var baseUrl     = await settingStore.GetAsync(BaseUrlKey, cancellationToken)  ?? string.Empty;
         var username    = await settingStore.GetAsync(UsernameKey, cancellationToken) ?? string.Empty;
         var savePath    = await settingStore.GetAsync(SavePathKey, cancellationToken) ?? string.Empty;
-        var proxyId     = Guid.TryParse(await settingStore.GetAsync(ProxyIdKey, cancellationToken), out var parsed)
+        var proxyId = Guid.TryParse(await settingStore.GetAsync(ProxyIdKey, cancellationToken), out var parsed)
             ? (Guid?)parsed
             : null;
         return new QbittorrentSettings(baseUrl.Trim(), username, savePath.Trim(),

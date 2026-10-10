@@ -5,7 +5,6 @@
 @using MediaManager.Core.Rules.Selection
 @using MediaManager.Features.Settings
 @using MediaManager.Features.Subscriptions
-@using Microsoft.Extensions.Hosting
 @implements IDisposable
 
 @inject ManageSelectionRuleSettings          RuleSettings
@@ -65,12 +64,18 @@ else
 										<span>@_vm.Draft.GroupOrder[index]</span>
 										<span class="btn-group btn-group-sm">
 											<button type="button" class="btn btn-outline-secondary"
-											        disabled="@(index == 0)" @onclick="() => _vm.MoveGroup(index, -1)">上移</button>
+											        disabled="@(index == 0)" @onclick="() => _vm.MoveGroup(index, -1)">
+												上移
+											</button>
 											<button type="button" class="btn btn-outline-secondary"
 											        disabled="@(index == _vm.Draft.GroupOrder.Count - 1)"
-											        @onclick="() => _vm.MoveGroup(index, 1)">下移</button>
+											        @onclick="() => _vm.MoveGroup(index, 1)">
+												下移
+											</button>
 											<button type="button" class="btn btn-outline-danger"
-											        @onclick="() => _vm.RemoveGroup(index)">删除</button>
+											        @onclick="() => _vm.RemoveGroup(index)">
+												删除
+											</button>
 										</span>
 									</li>
 								}
@@ -90,12 +95,18 @@ else
 										<span>@SelectionRuleDisplay.LanguageText(_vm.Draft.LanguageOrder[index])</span>
 										<span class="btn-group btn-group-sm">
 											<button type="button" class="btn btn-outline-secondary"
-											        disabled="@(index == 0)" @onclick="() => _vm.MoveLanguage(index, -1)">上移</button>
+											        disabled="@(index == 0)" @onclick="() => _vm.MoveLanguage(index, -1)">
+												上移
+											</button>
 											<button type="button" class="btn btn-outline-secondary"
 											        disabled="@(index == _vm.Draft.LanguageOrder.Count - 1)"
-											        @onclick="() => _vm.MoveLanguage(index, 1)">下移</button>
+											        @onclick="() => _vm.MoveLanguage(index, 1)">
+												下移
+											</button>
 											<button type="button" class="btn btn-outline-danger"
-											        @onclick="() => _vm.RemoveLanguage(index)">删除</button>
+											        @onclick="() => _vm.RemoveLanguage(index)">
+												删除
+											</button>
 										</span>
 									</li>
 								}
@@ -138,12 +149,18 @@ else
 								</span>
 								<span class="btn-group btn-group-sm">
 									<button type="button" class="btn btn-outline-secondary"
-									        disabled="@(index == 0)" @onclick="() => _vm.MoveCombinedEntry(index, -1)">上移</button>
+									        disabled="@(index == 0)" @onclick="() => _vm.MoveCombinedEntry(index, -1)">
+										上移
+									</button>
 									<button type="button" class="btn btn-outline-secondary"
 									        disabled="@(index == _vm.Draft.CombinedEntries.Count - 1)"
-									        @onclick="() => _vm.MoveCombinedEntry(index, 1)">下移</button>
+									        @onclick="() => _vm.MoveCombinedEntry(index, 1)">
+										下移
+									</button>
 									<button type="button" class="btn btn-outline-danger"
-									        @onclick="() => _vm.RemoveCombinedEntry(index)">删除</button>
+									        @onclick="() => _vm.RemoveCombinedEntry(index)">
+										删除
+									</button>
 								</span>
 							</li>
 						}
@@ -241,39 +258,39 @@ else
 			<p>共 @preview.GroupCount 个同集组，@preview.ChangedCount 组优胜将变化。</p>
 			<table class="table table-sm align-middle">
 				<thead>
-					<tr>
-						<th>同集组</th>
-						<th>当前优胜</th>
-						<th>新优胜</th>
-						<th>变化</th>
-					</tr>
+				<tr>
+					<th>同集组</th>
+					<th>当前优胜</th>
+					<th>新优胜</th>
+					<th>变化</th>
+				</tr>
 				</thead>
 				<tbody>
-					@foreach (var group in preview.Groups)
-					{
-						<tr>
-							<td>
-								@group.SubjectName
-								第 @group.Key.Episode 集
-								@if (group.Key.MediaType != "SingleEpisode")
-								{
-									<span class="text-body-secondary">（@group.Key.MediaType）</span>
-								}
-							</td>
-							<td>@(group.CurrentWinnerTitle ?? "（无）")</td>
-							<td>@(group.DraftWinnerTitle ?? "（无）")</td>
-							<td>
-								@if (group.WinnerChanged)
-								{
-									<span class="badge text-bg-warning">将更换</span>
-								}
-								else
-								{
-									<span class="badge text-bg-secondary">保持</span>
-								}
-							</td>
-						</tr>
-					}
+				@foreach (var group in preview.Groups)
+				{
+					<tr>
+						<td>
+							@group.SubjectName
+							第 @group.Key.Episode 集
+							@if (group.Key.MediaType != "SingleEpisode")
+							{
+								<span class="text-body-secondary">（@group.Key.MediaType）</span>
+							}
+						</td>
+						<td>@(group.CurrentWinnerTitle ?? "（无）")</td>
+						<td>@(group.DraftWinnerTitle ?? "（无）")</td>
+						<td>
+							@if (group.WinnerChanged)
+							{
+								<span class="badge text-bg-warning">将更换</span>
+							}
+							else
+							{
+								<span class="badge text-bg-secondary">保持</span>
+							}
+						</td>
+					</tr>
+				}
 				</tbody>
 			</table>
 			<p class="form-text mb-0">仍有待评估条目的组不参与预览与保存重选；预览与保存执行使用同一套比较规则。</p>

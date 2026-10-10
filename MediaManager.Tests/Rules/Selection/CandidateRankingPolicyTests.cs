@@ -8,10 +8,10 @@ public sealed class CandidateRankingPolicyTests
 {
     private static readonly Guid CurrentItemId = Guid.NewGuid();
 
-    private static EpisodeCandidate Candidate(string group, EnumLanguage? language, int version = 1,
-                                              EnumResolution resolution = EnumResolution.R1080P,
+    private static EpisodeCandidate Candidate(string          group, EnumLanguage? language, int version = 1,
+                                              EnumResolution  resolution     = EnumResolution.R1080P,
                                               DateTimeOffset? publishedAtUtc = null,
-                                              string? stableId = null, Guid? itemId = null)
+                                              string?         stableId       = null, Guid? itemId = null)
     {
         return new EpisodeCandidate
         {
@@ -29,11 +29,11 @@ public sealed class CandidateRankingPolicyTests
     }
 
     private static SelectionRuleConfig IndependentConfig(
-        SelectionDimensionOrder order = SelectionDimensionOrder.GroupFirst,
-        LanguageMatchMode match = LanguageMatchMode.Exact,
-        UnmatchedPolicy unmatched = UnmatchedPolicy.LowestPriority,
-        EnumLanguage[]? languageOrder = null,
-        int version = 1)
+        SelectionDimensionOrder order         = SelectionDimensionOrder.GroupFirst,
+        LanguageMatchMode       match         = LanguageMatchMode.Exact,
+        UnmatchedPolicy         unmatched     = UnmatchedPolicy.LowestPriority,
+        EnumLanguage[]?         languageOrder = null,
+        int                     version       = 1)
     {
         return new SelectionRuleConfig
         {
@@ -51,8 +51,8 @@ public sealed class CandidateRankingPolicyTests
 
     private static SelectionRuleConfig CombinedConfig(
         IReadOnlyList<CombinedRuleEntry> entries,
-        LanguageMatchMode match = LanguageMatchMode.Exact,
-        UnmatchedPolicy unmatched = UnmatchedPolicy.NeedsReview)
+        LanguageMatchMode                match     = LanguageMatchMode.Exact,
+        UnmatchedPolicy                  unmatched = UnmatchedPolicy.NeedsReview)
     {
         return new SelectionRuleConfig
         {
@@ -70,9 +70,9 @@ public sealed class CandidateRankingPolicyTests
     [Fact]
     public void Select_AnivalsHigherGroup_AnyInputOrderPicksSameWinner()
     {
-        var anibaba  = Candidate("ANi", EnumLanguage.JpSc);
+        var anibaba   = Candidate("ANi", EnumLanguage.JpSc);
         var loliHouse = Candidate("LoliHouse", EnumLanguage.JpSc);
-        var policy   = new CandidateRankingPolicy();
+        var policy    = new CandidateRankingPolicy();
 
         var orders = new[]
         {
@@ -98,7 +98,7 @@ public sealed class CandidateRankingPolicyTests
 
         var groupFirst = policy.Select([loliHouseSc, aniJpSc], IndependentConfig());
         var languageFirst = policy.Select([loliHouseSc, aniJpSc],
-                                          IndependentConfig(order: SelectionDimensionOrder.LanguageFirst));
+                                          IndependentConfig(SelectionDimensionOrder.LanguageFirst));
 
         Assert.Equal("LoliHouse", groupFirst.Winner!.Group);
         Assert.Equal("ANi", languageFirst.Winner!.Group);
@@ -132,9 +132,9 @@ public sealed class CandidateRankingPolicyTests
         var policy  = new CandidateRankingPolicy();
 
         var needsReview = policy.Select([Candidate("LoliHouse", EnumLanguage.Sc)],
-                                        CombinedConfig(entries, unmatched: UnmatchedPolicy.NeedsReview));
+                                        CombinedConfig(entries, unmatched : UnmatchedPolicy.NeedsReview));
         var lowest = policy.Select([Candidate("LoliHouse", EnumLanguage.Sc), Candidate("ANi", EnumLanguage.Sc)],
-                                   CombinedConfig(entries, unmatched: UnmatchedPolicy.LowestPriority));
+                                   CombinedConfig(entries, unmatched : UnmatchedPolicy.LowestPriority));
 
         Assert.False(needsReview.HasWinner);
         Assert.All(needsReview.Ranking, rank => Assert.True(rank.IsExcluded));
@@ -145,12 +145,12 @@ public sealed class CandidateRankingPolicyTests
     [Fact]
     public void Select_LanguageMatch_ExactVersusContains()
     {
-        var scTc = Candidate("LoliHouse", EnumLanguage.ScTc, stableId: "guid:sctc");
-        var sc   = Candidate("LoliHouse", EnumLanguage.Sc, stableId: "guid:sc");
+        var scTc   = Candidate("LoliHouse", EnumLanguage.ScTc, stableId : "guid:sctc");
+        var sc     = Candidate("LoliHouse", EnumLanguage.Sc, stableId : "guid:sc");
         var policy = new CandidateRankingPolicy();
 
-        var exact = policy.Select([scTc, sc], IndependentConfig(match: LanguageMatchMode.Exact));
-        var contains = policy.Select([scTc, sc], IndependentConfig(match: LanguageMatchMode.Contains));
+        var exact    = policy.Select([scTc, sc], IndependentConfig(match : LanguageMatchMode.Exact));
+        var contains = policy.Select([scTc, sc], IndependentConfig(match : LanguageMatchMode.Contains));
 
         Assert.Equal("guid:sc", exact.Winner!.StableId);
         Assert.Contains("兜底", exact.Ranking.Single(r => r.Candidate.StableId == "guid:sctc").Basis,
@@ -162,13 +162,13 @@ public sealed class CandidateRankingPolicyTests
     [Fact]
     public void Select_UnknownGroupAndLanguage_FollowUnmatchedPolicy()
     {
-        var unknownGroup = Candidate("Sakurato", EnumLanguage.JpSc);
+        var unknownGroup    = Candidate("Sakurato", EnumLanguage.JpSc);
         var unknownLanguage = Candidate("LoliHouse", null);
-        var policy = new CandidateRankingPolicy();
+        var policy          = new CandidateRankingPolicy();
 
         var lowest = policy.Select([unknownGroup, unknownLanguage], IndependentConfig());
         var review = policy.Select([unknownGroup, unknownLanguage],
-                                   IndependentConfig(unmatched: UnmatchedPolicy.NeedsReview));
+                                   IndependentConfig(unmatched : UnmatchedPolicy.NeedsReview));
 
         Assert.True(lowest.HasWinner);
         Assert.Equal("LoliHouse", lowest.Winner!.Group);
@@ -179,11 +179,11 @@ public sealed class CandidateRankingPolicyTests
     [Fact]
     public void Select_SamePriority_KeepsCurrentWinner()
     {
-        var existing = Candidate("LoliHouse", EnumLanguage.JpSc, stableId: "guid:existing",
-                                 publishedAtUtc: new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero),
-                                 itemId: CurrentItemId);
-        var challenger = Candidate("LoliHouse", EnumLanguage.JpSc, stableId: "guid:challenger",
-                                   publishedAtUtc: new DateTimeOffset(2026, 9, 2, 0, 0, 0, TimeSpan.Zero));
+        var existing = Candidate("LoliHouse", EnumLanguage.JpSc, stableId : "guid:existing",
+                                 publishedAtUtc : new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero),
+                                 itemId : CurrentItemId);
+        var challenger = Candidate("LoliHouse", EnumLanguage.JpSc, stableId : "guid:challenger",
+                                   publishedAtUtc : new DateTimeOffset(2026, 9, 2, 0, 0, 0, TimeSpan.Zero));
         var policy = new CandidateRankingPolicy();
 
         var result = policy.Select([challenger, existing], IndependentConfig(), CurrentItemId);
@@ -195,8 +195,8 @@ public sealed class CandidateRankingPolicyTests
     public void Select_SamePriorityAcrossGroups_KeepsCurrentWinnerOverAlphabeticalReplacement()
     {
         // 两个未列入规则的字幕组同处兜底桶：字母序更小的新候选不得按名字替换现任优胜。
-        var currentAni = Candidate("ANi", EnumLanguage.Sc, stableId: "guid:current-ani", itemId: CurrentItemId);
-        var alphabeticalFirst = Candidate("ASakura", EnumLanguage.Sc, stableId: "guid:asakura");
+        var currentAni = Candidate("ANi", EnumLanguage.Sc, stableId : "guid:current-ani", itemId : CurrentItemId);
+        var alphabeticalFirst = Candidate("ASakura", EnumLanguage.Sc, stableId : "guid:asakura");
         var policy = new CandidateRankingPolicy();
 
         var result = policy.Select([alphabeticalFirst, currentAni], IndependentConfig(), CurrentItemId);
@@ -208,9 +208,9 @@ public sealed class CandidateRankingPolicyTests
     public void Select_SameGroupRevisionUpgrade_OverridesCurrentWinner()
     {
         // 现任优胜是 v1 时，同字幕组的 v2 是严格升级，必须胜出；现任保留不得阻止版本升级。
-        var currentV1 = Candidate("LoliHouse", EnumLanguage.JpSc, version: 1,
-                                  stableId: "guid:current-v1", itemId: CurrentItemId);
-        var newV2 = Candidate("LoliHouse", EnumLanguage.JpSc, version: 2, stableId: "guid:new-v2");
+        var currentV1 = Candidate("LoliHouse", EnumLanguage.JpSc, 1,
+                                  stableId : "guid:current-v1", itemId : CurrentItemId);
+        var newV2  = Candidate("LoliHouse", EnumLanguage.JpSc, 2, stableId : "guid:new-v2");
         var policy = new CandidateRankingPolicy();
 
         var result = policy.Select([currentV1, newV2], IndependentConfig(), CurrentItemId);
@@ -222,9 +222,9 @@ public sealed class CandidateRankingPolicyTests
     public void Select_SameGroupUpgrade_IgnoresGroupCase()
     {
         // 字幕组匹配不区分大小写：现任 ANi v1 与新候选 ani v2 是同组修订升级，不得视为跨组保留现任。
-        var currentV1 = Candidate("ANi", EnumLanguage.JpSc, version: 1, stableId: "guid:current-ani-v1",
-                                  itemId: CurrentItemId);
-        var newV2 = Candidate("ani", EnumLanguage.JpSc, version: 2, stableId: "guid:ani-lower-v2");
+        var currentV1 = Candidate("ANi", EnumLanguage.JpSc, 1, stableId : "guid:current-ani-v1",
+                                  itemId : CurrentItemId);
+        var newV2  = Candidate("ani", EnumLanguage.JpSc, 2, stableId : "guid:ani-lower-v2");
         var policy = new CandidateRankingPolicy();
 
         var result = policy.Select([currentV1, newV2], IndependentConfig(), CurrentItemId);
@@ -237,11 +237,11 @@ public sealed class CandidateRankingPolicyTests
     {
         // 同优先级兜底桶内：现任 Zulu v1、候选 Zulu v2、候选 Alpha v1。
         // 若现任保留进入排序链会形成 v2>v1、现任>Alpha、Alpha>Zulu v2 的循环，导致结果随输入顺序变化。
-        var currentZuluV1 = Candidate("Zulu", EnumLanguage.Sc, version: 1,
-                                      stableId: "guid:zulu-v1", itemId: CurrentItemId);
-        var zuluV2 = Candidate("Zulu", EnumLanguage.Sc, version: 2, stableId: "guid:zulu-v2");
-        var alphaV1 = Candidate("Alpha", EnumLanguage.Sc, version: 1, stableId: "guid:alpha-v1");
-        var policy = new CandidateRankingPolicy();
+        var currentZuluV1 = Candidate("Zulu", EnumLanguage.Sc, 1,
+                                      stableId : "guid:zulu-v1", itemId : CurrentItemId);
+        var zuluV2  = Candidate("Zulu", EnumLanguage.Sc, 2, stableId : "guid:zulu-v2");
+        var alphaV1 = Candidate("Alpha", EnumLanguage.Sc, 1, stableId : "guid:alpha-v1");
+        var policy  = new CandidateRankingPolicy();
 
         var orders = new[]
         {
@@ -260,14 +260,14 @@ public sealed class CandidateRankingPolicyTests
     [Fact]
     public void Select_SamePriorityWithoutCurrent_DecidesByPublicationThenStableId()
     {
-        var later = Candidate("LoliHouse", EnumLanguage.JpSc, stableId: "guid:b-later",
-                              publishedAtUtc: new DateTimeOffset(2026, 9, 2, 0, 0, 0, TimeSpan.Zero));
-        var earlier = Candidate("LoliHouse", EnumLanguage.JpSc, stableId: "guid:a-earlier",
-                                publishedAtUtc: new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
+        var later = Candidate("LoliHouse", EnumLanguage.JpSc, stableId : "guid:b-later",
+                              publishedAtUtc : new DateTimeOffset(2026, 9, 2, 0, 0, 0, TimeSpan.Zero));
+        var earlier = Candidate("LoliHouse", EnumLanguage.JpSc, stableId : "guid:a-earlier",
+                                publishedAtUtc : new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
         var sameTime = new CandidateRankingPolicy().Select(
         [
-            Candidate("LoliHouse", EnumLanguage.JpSc, stableId: "guid:zzz"),
-            Candidate("LoliHouse", EnumLanguage.JpSc, stableId: "guid:aaa")
+            Candidate("LoliHouse", EnumLanguage.JpSc, stableId : "guid:zzz"),
+            Candidate("LoliHouse", EnumLanguage.JpSc, stableId : "guid:aaa")
         ], IndependentConfig());
         var policy = new CandidateRankingPolicy();
 
@@ -280,15 +280,15 @@ public sealed class CandidateRankingPolicyTests
     [Fact]
     public void Select_VersionUpgradesOnlyWithinSameGroup()
     {
-        var aniV9     = Candidate("ANi", EnumLanguage.JpSc, version: 9);
-        var loliHouse = Candidate("LoliHouse", EnumLanguage.JpSc, version: 1);
+        var aniV9     = Candidate("ANi", EnumLanguage.JpSc, 9);
+        var loliHouse = Candidate("LoliHouse", EnumLanguage.JpSc, 1);
         var policy    = new CandidateRankingPolicy();
 
         var crossGroup = policy.Select([aniV9, loliHouse], IndependentConfig());
-        var sameGroup  = policy.Select(
+        var sameGroup = policy.Select(
         [
-            Candidate("LoliHouse", EnumLanguage.JpSc, version: 1),
-            Candidate("LoliHouse", EnumLanguage.JpSc, version: 2)
+            Candidate("LoliHouse", EnumLanguage.JpSc, 1),
+            Candidate("LoliHouse", EnumLanguage.JpSc, 2)
         ], IndependentConfig());
 
         Assert.Equal("LoliHouse", crossGroup.Winner!.Group);
@@ -299,7 +299,7 @@ public sealed class CandidateRankingPolicyTests
     public void Select_EmptyCandidates_Throws()
     {
         Assert.Throws<ArgumentException>(() =>
-            new CandidateRankingPolicy().Select([], IndependentConfig()));
+                                             new CandidateRankingPolicy().Select([], IndependentConfig()));
     }
 
     [Fact]
@@ -307,6 +307,7 @@ public sealed class CandidateRankingPolicyTests
     {
         var config = CombinedConfig([]);
         Assert.Throws<ArgumentException>(() =>
-            new CandidateRankingPolicy().Select([Candidate("ANi", EnumLanguage.Sc)], config));
+                                             new CandidateRankingPolicy().Select([Candidate("ANi", EnumLanguage.Sc)],
+                                                 config));
     }
 }

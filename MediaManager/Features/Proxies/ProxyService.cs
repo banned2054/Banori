@@ -66,8 +66,8 @@ public sealed class ProxyService(
     }
 
     /// <summary>保存代理；password 为 null 或空白表示不修改已保存密码（新建时表示无密码）。</summary>
-    public async Task SaveAsync(SaveProxyRequest request, string? password = null,
-                                CancellationToken   cancellationToken = default)
+    public async Task SaveAsync(SaveProxyRequest  request, string? password = null,
+                                CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -83,23 +83,23 @@ public sealed class ProxyService(
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var entity = request.Id is { } id
             ? await db.ProxyServers.SingleOrDefaultAsync(item => item.Id == id, cancellationToken)
-              ?? throw new KeyNotFoundException("找不到指定代理。")
+           ?? throw new KeyNotFoundException("找不到指定代理。")
             : new ProxyServer
-              {
-                  Id           = Guid.NewGuid(),
-                  CreatedAtUtc = timeProvider.GetUtcNow()
-              };
+            {
+                Id           = Guid.NewGuid(),
+                CreatedAtUtc = timeProvider.GetUtcNow()
+            };
 
         var nameConflict = await db.ProxyServers.AsNoTracking()
-                                .AnyAsync(item => item.Id != entity.Id &&
-                                                  item.Name == name, cancellationToken);
+                                   .AnyAsync(item => item.Id   != entity.Id &&
+                                                     item.Name == name, cancellationToken);
         if (nameConflict) throw new ArgumentException("已存在同名代理，请更换名称。", nameof(request));
 
-        entity.Name     = name;
-        entity.Protocol = request.Protocol;
-        entity.Host     = host;
-        entity.Port     = request.Port;
-        entity.Username = string.IsNullOrEmpty(username) ? null : username;
+        entity.Name         = name;
+        entity.Protocol     = request.Protocol;
+        entity.Host         = host;
+        entity.Port         = request.Port;
+        entity.Username     = string.IsNullOrEmpty(username) ? null : username;
         entity.UpdatedAtUtc = timeProvider.GetUtcNow();
         if (!string.IsNullOrWhiteSpace(password))
             entity.PasswordProtected = _protector.Protect(password);
@@ -111,8 +111,8 @@ public sealed class ProxyService(
 
     public async Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var entity = await db.ProxyServers.SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
+        await using var db     = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var             entity = await db.ProxyServers.SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
         if (entity is null) return;
 
         // 订阅引用由外键 SetNull 自动置空；设置键中的失效引用在解析时回退直连。
@@ -143,6 +143,8 @@ public sealed class ProxyService(
         if (entity is null) return null;
 
         return new ResolvedProxy(entity.Name, entity.Protocol, entity.Host, entity.Port, entity.Username,
-                                 entity.PasswordProtected is null ? null : _protector.Unprotect(entity.PasswordProtected));
+                                 entity.PasswordProtected is null
+                                     ? null
+                                     : _protector.Unprotect(entity.PasswordProtected));
     }
 }

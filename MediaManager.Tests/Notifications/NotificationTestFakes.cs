@@ -35,7 +35,7 @@ public sealed class FakeGotifySender : IGotifySender
 
     public int CallCount => Calls.Count;
 
-    public Task SendAsync(string baseUrl, string appToken, string? proxyUrl, string title, string message,
+    public Task SendAsync(string            baseUrl, string appToken, string? proxyUrl, string title, string message,
                           CancellationToken cancellationToken = default)
     {
         if (SendException is not null) throw SendException;
@@ -44,8 +44,10 @@ public sealed class FakeGotifySender : IGotifySender
     }
 }
 
-/// <summary>通知渠道测试的 DI 注册：替身发送器 + 渠道设置管理 + 入队与投递服务。
-/// 投递服务依赖 ProxyService，调用方需在此之前注册 DbContextFactory、DataProtection 与 TimeProvider。</summary>
+/// <summary>
+///     通知渠道测试的 DI 注册：替身发送器 + 渠道设置管理 + 入队与投递服务。
+///     投递服务依赖 ProxyService，调用方需在此之前注册 DbContextFactory、DataProtection 与 TimeProvider。
+/// </summary>
 public static class NotificationTestRegistrations
 {
     public static IServiceCollection AddNotificationTestFakes(this IServiceCollection services)

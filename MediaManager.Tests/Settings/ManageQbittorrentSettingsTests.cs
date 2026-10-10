@@ -46,7 +46,7 @@ public sealed class ManageQbittorrentSettingsTests
         var settings = CreateService(new MemoryApplicationSettingStore());
         await Assert.ThrowsAsync<ArgumentException>(() =>
                                                         settings.SaveAsync(new QbittorrentSettings(baseUrl, "admin",
-                                                                               "/downloads", true)));
+                                                                                    "/downloads", true)));
     }
 
     [Fact]
@@ -55,7 +55,7 @@ public sealed class ManageQbittorrentSettingsTests
         var settings = CreateService(new MemoryApplicationSettingStore());
         await Assert.ThrowsAsync<ArgumentException>(() =>
                                                         settings.SaveAsync(new QbittorrentSettings("http://qb.test",
-                                                                               "admin", string.Empty, true)));
+                                                                                    "admin", string.Empty, true)));
     }
 
     [Fact]
@@ -66,7 +66,7 @@ public sealed class ManageQbittorrentSettingsTests
 
         var (succeeded, message) = await settings.TestConnectionAsync(
                                                                       new QbittorrentSettings("http://qb.test", "admin",
-                                                                          "/downloads", true), "pw");
+                                                                               "/downloads", true), "pw");
 
         Assert.True(succeeded);
         Assert.Contains("v5.0.0-fake", message);
@@ -74,7 +74,7 @@ public sealed class ManageQbittorrentSettingsTests
         factory.ThrowOnCreate = true;
         var (failed, failure) = await settings.TestConnectionAsync(
                                                                    new QbittorrentSettings("http://qb.test", "admin",
-                                                                       "/downloads", true), "pw");
+                                                                            "/downloads", true), "pw");
         Assert.False(failed);
         Assert.Contains("模拟下载器不可达", failure);
     }

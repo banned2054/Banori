@@ -47,18 +47,18 @@ public sealed class FeedItemQueries(IDbContextFactory<ApplicationDbContext> dbCo
                                        })
                                       .ToListAsync(cancellationToken);
         // SQLite 不支持 DateTimeOffset 服务端排序，取回后内存取最近一条。
-        var download = downloadHistory.OrderByDescending(task => task.CreatedAtUtc).FirstOrDefault();
+        var     download             = downloadHistory.OrderByDescending(task => task.CreatedAtUtc).FirstOrDefault();
         int?    selectionRuleVersion = null;
         string? selectionBasis       = null;
         if (item.SubjectId is not null && item.MediaType is not null && item.Episode is not null)
         {
             // 详情页展示所在同集组的选择依据与规则版本；列表页不查，保持列表轻量。
             var selection = await db.CandidateSelections.AsNoTracking()
-                                  .Where(selected => selected.SubjectId == item.SubjectId &&
-                                                     selected.MediaType == item.MediaType &&
-                                                     selected.Episode   == item.Episode)
-                                  .Select(selected => new { selected.RuleVersion, selected.RankingBasis })
-                                  .SingleOrDefaultAsync(cancellationToken);
+                                    .Where(selected => selected.SubjectId == item.SubjectId &&
+                                                       selected.MediaType == item.MediaType &&
+                                                       selected.Episode   == item.Episode)
+                                    .Select(selected => new { selected.RuleVersion, selected.RankingBasis })
+                                    .SingleOrDefaultAsync(cancellationToken);
             if (selection is not null)
             {
                 selectionRuleVersion = selection.RuleVersion;
@@ -83,7 +83,7 @@ public sealed class FeedItemQueries(IDbContextFactory<ApplicationDbContext> dbCo
     }
 
     private static FeedItemView ToView(FeedItem           item, int? originalSubjectId = null,
-                                       DownloadTaskBrief? download = null,
+                                       DownloadTaskBrief? download             = null,
                                        int?               selectionRuleVersion = null,
                                        string?            selectionBasis       = null)
     {
@@ -109,12 +109,12 @@ public sealed class FeedItemQueries(IDbContextFactory<ApplicationDbContext> dbCo
             OriginalSubjectId = originalSubjectId,
             SubjectName = item.Subject is null                 ? null :
                 string.IsNullOrWhiteSpace(item.Subject.NameCn) ? item.Subject.Name : item.Subject.NameCn,
-            DecisionStatus    = item.DecisionStatus,
-            Preference        = item.Preference,
-            Reason            = item.Reason,
-            NamingPreview     = item.NamingPreview,
-            SelectionOutcome  = item.SelectionOutcome,
-            Download          = download,
+            DecisionStatus   = item.DecisionStatus,
+            Preference       = item.Preference,
+            Reason           = item.Reason,
+            NamingPreview    = item.NamingPreview,
+            SelectionOutcome = item.SelectionOutcome,
+            Download         = download,
 
             SelectionRuleVersion = selectionRuleVersion,
             SelectionBasis       = selectionBasis

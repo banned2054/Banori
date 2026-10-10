@@ -60,7 +60,8 @@ public sealed class ProxyServiceTests
         using var harness = new Harness();
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            harness.Service.SaveAsync(new SaveProxyRequest(null, name, ProxyProtocol.Http, host, port, null)));
+                                                        harness.Service.SaveAsync(new SaveProxyRequest(null, name,
+                                                            ProxyProtocol.Http, host, port, null)));
     }
 
     [Fact]
@@ -70,8 +71,9 @@ public sealed class ProxyServiceTests
         await harness.Service.SaveAsync(new SaveProxyRequest(null, "重名", ProxyProtocol.Http, "10.0.0.1", 8080, null));
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            harness.Service.SaveAsync(new SaveProxyRequest(null, "重名", ProxyProtocol.Socks5, "10.0.0.2", 1080,
-                                                           null)));
+                                                        harness.Service.SaveAsync(new SaveProxyRequest(null, "重名",
+                                                            ProxyProtocol.Socks5, "10.0.0.2", 1080,
+                                                            null)));
     }
 
     [Fact]
@@ -92,29 +94,37 @@ public sealed class ProxyServiceTests
     /// <summary>独立临时目录 + 真实 SQLite 与 Data Protection 的完整环境。</summary>
     private sealed class Harness : IDisposable
     {
-        private readonly DirectoryInfo           _directory = Directory.CreateTempSubdirectory("MediaManager.Proxy.Tests.");
-        private readonly ServiceProvider         _provider;
+        private readonly DirectoryInfo _directory = Directory.CreateTempSubdirectory("MediaManager.Proxy.Tests.");
         private readonly IDataProtectionProvider _protection;
-
-        public ProxyService Service { get; }
+        private readonly ServiceProvider _provider;
 
         public Harness()
         {
             var services = new ServiceCollection();
-            services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(_directory.FullName, "keys")));
+            services.AddDataProtection()
+                    .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(_directory.FullName, "keys")));
             services.AddSingleton(TimeProvider.System);
             services.AddDbContextFactory<ApplicationDbContext>(options =>
-                                                                   options.UseSqlite($"Data Source={Path.Combine(_directory.FullName, "proxy.db")};Pooling=False"));
+                                                                   options
+                                                                      .UseSqlite($"Data Source={Path.Combine(_directory.FullName, "proxy.db")};Pooling=False"));
             services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion =
-                                                                            IdentitySchemaVersions.Version3)
+                                                          IdentitySchemaVersions.Version3)
                     .AddEntityFrameworkStores<ApplicationDbContext>();
             _provider   = services.BuildServiceProvider();
             _protection = _provider.GetRequiredService<IDataProtectionProvider>();
-            Service     = new ProxyService(_provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>(),
-                                           _protection, _provider.GetRequiredService<TimeProvider>());
+            Service = new ProxyService(_provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>(),
+                                       _protection, _provider.GetRequiredService<TimeProvider>());
             // 与应用一致的 Identity 模型配置后建库，避免模型缓存顺序依赖。
             using var db = _provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>().CreateDbContext();
             db.Database.EnsureCreatedAsync().GetAwaiter().GetResult();
+        }
+
+        public ProxyService Service { get; }
+
+        public void Dispose()
+        {
+            _provider.Dispose();
+            _directory.Delete(true);
         }
 
         /// <summary>读取落库的密码密文原样（未解密）。</summary>
@@ -132,12 +142,6 @@ public sealed class ProxyServiceTests
         private ApplicationDbContext CreateDb()
         {
             return _provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>().CreateDbContext();
-        }
-
-        public void Dispose()
-        {
-            _provider.Dispose();
-            _directory.Delete(true);
         }
     }
 }

@@ -1,7 +1,6 @@
 using MediaManager.Features.Downloads;
 using MediaManager.Features.Settings;
 using MediaManager.Integrations.Qbittorrent;
-using MediaManager.Tests.Downloads;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace MediaManager.Tests.Downloads;
@@ -12,6 +11,8 @@ namespace MediaManager.Tests.Downloads;
 /// </summary>
 public sealed class QbittorrentHookServiceTests
 {
+    private const string InfoHash = "eb7d7d0cfdc65f4d8dfcb1723f640cac05d060e5";
+
     [Fact]
     public async Task Handle_WithoutGeneratedToken_RejectsEverything()
     {
@@ -56,12 +57,12 @@ public sealed class QbittorrentHookServiceTests
 
     [Theory]
     [InlineData("not-a-hash")]
-    [InlineData("eb7d7d0cfdc65f4d8dfcb1723f640cac05d060e")]   // 39 位
-    [InlineData("zz7d7d0cfdc65f4d8dfcb1723f640cac05d060e5")]  // 非十六进制
+    [InlineData("eb7d7d0cfdc65f4d8dfcb1723f640cac05d060e")]  // 39 位
+    [InlineData("zz7d7d0cfdc65f4d8dfcb1723f640cac05d060e5")] // 非十六进制
     public async Task Handle_WithInvalidHash_ReturnsInvalidHashWithoutPulsing(string hash)
     {
         var (service, pulse, settings) = CreateService();
-        var token = await settings.GenerateHookTokenAsync();
+        var token    = await settings.GenerateHookTokenAsync();
         var waitTask = pulse.WaitAsync(CancellationToken.None);
 
         var result = await service.HandleAsync(token, hash, "completed");
@@ -86,14 +87,12 @@ public sealed class QbittorrentHookServiceTests
     public async Task Handle_WithMissingHash_AcceptsAndPulses()
     {
         var (service, pulse, settings) = CreateService();
-        var token = await settings.GenerateHookTokenAsync();
+        var token    = await settings.GenerateHookTokenAsync();
         var waitTask = pulse.WaitAsync(CancellationToken.None);
 
         Assert.Equal(QbittorrentHookResult.Accepted, await service.HandleAsync(token, null, "completed"));
         Assert.True(waitTask.IsCompleted);
     }
-
-    private const string InfoHash = "eb7d7d0cfdc65f4d8dfcb1723f640cac05d060e5";
 
     private static (QbittorrentHookService Service, ReconcilePulse Pulse, ManageQbittorrentSettings Settings)
         CreateService()

@@ -26,7 +26,7 @@ public sealed class ManageSelectionRuleSettingsTests
     [Fact]
     public async Task Get_CorruptedContent_ReturnsDefaultRule()
     {
-        var (service, store) = CreateService();
+        var (service, store)                                 = CreateService();
         store.Values[ManageSelectionRuleSettings.SettingKey] = ("{ 不是合法的 JSON", false);
 
         var config = await service.GetAsync();
@@ -69,13 +69,13 @@ public sealed class ManageSelectionRuleSettingsTests
         Assert.Equal(2, same.Config.Version);
 
         // 仅字幕组大小写不同（匹配不区分大小写，语义相同）。
-        var caseOnly = draft with { GroupOrder = ["ani", "lolihouse"] };
+        var caseOnly   = draft with { GroupOrder = ["ani", "lolihouse"] };
         var caseResult = await service.SaveAsync(caseOnly);
         Assert.False(caseResult.Changed);
         Assert.Equal(2, caseResult.Config.Version);
 
         // 仅 Version 不同（内容比较忽略版本）。
-        var versionOnly = draft with { Version = 9 };
+        var versionOnly   = draft with { Version = 9 };
         var versionResult = await service.SaveAsync(versionOnly);
         Assert.False(versionResult.Changed);
         Assert.Equal(2, versionResult.Config.Version);

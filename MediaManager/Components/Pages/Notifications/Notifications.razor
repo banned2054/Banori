@@ -5,7 +5,7 @@
 @using MediaManager.Features.Notifications
 @implements IDisposable
 
-@inject NotificationDeliveryService           DeliveryService
+@inject NotificationDeliveryService         DeliveryService
 @inject ILogger<NotificationsPageViewModel> Logger
 
 <PageTitle>通知投递 - MediaManager</PageTitle>
@@ -86,8 +86,8 @@ else
 
 @code {
 
-	private readonly CancellationTokenSource _cts = new();
-	private          NotificationsPageViewModel _vm = null!;
+	private readonly CancellationTokenSource    _cts = new();
+	private          NotificationsPageViewModel _vm  = null!;
 
 	protected override void OnInitialized()
 	{
@@ -133,7 +133,7 @@ else
 	{
 		return delivery.Status switch
 		{
-			NotificationDeliveryStatus.Pending   => delivery.NextAttemptAtUtc is { } next
+			NotificationDeliveryStatus.Pending => delivery.NextAttemptAtUtc is { } next
 				? $"待重试（{next.ToLocalTime().ToString("HH:mm")}）"
 				: "待发送",
 			NotificationDeliveryStatus.Delivered => "已送达",

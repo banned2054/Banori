@@ -82,36 +82,36 @@ public sealed class NotificationDeliveryService(
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var delivery = await db.NotificationDeliveries
                                .SingleOrDefaultAsync(item => item.Id == id, cancellationToken)
-            ?? throw new KeyNotFoundException("找不到指定投递记录。");
+                    ?? throw new KeyNotFoundException("找不到指定投递记录。");
         if (delivery.Status != NotificationDeliveryStatus.Failed)
             throw new InvalidOperationException("只有重试用尽的失败记录可以人工重试。");
 
-        delivery.Status          = NotificationDeliveryStatus.Pending;
-        delivery.AttemptCount    = 0;
+        delivery.Status           = NotificationDeliveryStatus.Pending;
+        delivery.AttemptCount     = 0;
         delivery.NextAttemptAtUtc = null;
-        delivery.LastError       = null;
+        delivery.LastError        = null;
         await db.SaveChangesAsync(cancellationToken);
         logger.LogInformation("投递 {DeliveryId} 已重新进入待发队列。", id);
     }
 
-    public async Task<IReadOnlyList<NotificationDelivery>> ListAsync(int take = 100,
+    public async Task<IReadOnlyList<NotificationDelivery>> ListAsync(int               take              = 100,
                                                                      CancellationToken cancellationToken = default)
     {
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var deliveries = await db.NotificationDeliveries.AsNoTracking().ToListAsync(cancellationToken);
+        await using var db         = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var             deliveries = await db.NotificationDeliveries.AsNoTracking().ToListAsync(cancellationToken);
         // SQLite 不支持 DateTimeOffset 服务端排序，取回后内存排序并截取。
         return deliveries.OrderByDescending(item => item.CreatedAtUtc)
                          .Take(Math.Clamp(take, 1, 500))
                          .ToList();
     }
 
-    private async Task DeliverOneAsync(NotificationDelivery delivery, TelegramSettings telegram,
-                                       GotifySettings   gotify,    string?           telegramProxyUrl,
-                                       string?          gotifyProxyUrl, CancellationToken cancellationToken)
+    private async Task DeliverOneAsync(NotificationDelivery delivery,       TelegramSettings  telegram,
+                                       GotifySettings       gotify,         string?           telegramProxyUrl,
+                                       string?              gotifyProxyUrl, CancellationToken cancellationToken)
     {
         switch (delivery.Channel)
         {
-            case NotificationChannel.Telegram:
+            case NotificationChannel.Telegram :
                 // 渠道关闭或未配置属于配置问题而非发送失败：跳过并保留 Pending，重新启用后自动续投。
                 if (!telegram.Enabled || !telegram.IsConfigured) return;
                 var botToken = await telegramSettings.GetBotTokenAsync(cancellationToken);
@@ -125,7 +125,7 @@ public sealed class NotificationDeliveryService(
                                                FormatText(delivery), cancellationToken);
                 break;
 
-            case NotificationChannel.Gotify:
+            case NotificationChannel.Gotify :
                 if (!gotify.Enabled || !gotify.IsConfigured) return;
                 var appToken = await gotifySettings.GetAppTokenAsync(cancellationToken);
                 if (string.IsNullOrWhiteSpace(appToken))
@@ -138,7 +138,7 @@ public sealed class NotificationDeliveryService(
                                              delivery.Message, cancellationToken);
                 break;
 
-            default:
+            default :
                 await RecordFailureAsync(delivery.Id, "未知的通知渠道。", cancellationToken);
                 return;
         }
@@ -153,9 +153,9 @@ public sealed class NotificationDeliveryService(
                                .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
         if (delivery is null || delivery.Status != NotificationDeliveryStatus.Pending) return;
 
-        delivery.AttemptCount    += 1;
-        delivery.Status          =  NotificationDeliveryStatus.Delivered;
-        delivery.DeliveredAtUtc  =  timeProvider.GetUtcNow();
+        delivery.AttemptCount   += 1;
+        delivery.Status         =  NotificationDeliveryStatus.Delivered;
+        delivery.DeliveredAtUtc =  timeProvider.GetUtcNow();
         await db.SaveChangesAsync(cancellationToken);
     }
 
@@ -167,10 +167,10 @@ public sealed class NotificationDeliveryService(
         if (delivery is null || delivery.Status != NotificationDeliveryStatus.Pending) return;
 
         delivery.AttemptCount += 1;
-        delivery.LastError    = error.Length > 1000 ? error[..1000] : error;
+        delivery.LastError    =  error.Length > 1000 ? error[..1000] : error;
         if (delivery.AttemptCount >= MaxAttempts)
         {
-            delivery.Status          = NotificationDeliveryStatus.Failed;
+            delivery.Status           = NotificationDeliveryStatus.Failed;
             delivery.NextAttemptAtUtc = null;
         }
         else

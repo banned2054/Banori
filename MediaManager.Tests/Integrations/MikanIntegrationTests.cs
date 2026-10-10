@@ -70,11 +70,11 @@ public sealed class MikanIntegrationTests
             var html = request.RequestUri!.AbsolutePath.Contains("Episode", StringComparison.Ordinal)
                 ? "<p class='bangumi-title'><a href='/Home/Bangumi/abcd'>Example</a></p>"
                 : """
-                  <p class="bangumi-info">放送日期：星期日</p>
-                  <p class="bangumi-info">总集数：12</p>
-                  <p class="bangumi-info">官方网站：<a href="https://example-anime.com/">https://example-anime.com/</a></p>
-                  <p class="bangumi-info">Bangumi番组计划链接：<a href="https://bgm.tv/subject/123456">Bangumi</a></p>
-                  """;
+                <p class="bangumi-info">放送日期：星期日</p>
+                <p class="bangumi-info">总集数：12</p>
+                <p class="bangumi-info">官方网站：<a href="https://example-anime.com/">https://example-anime.com/</a></p>
+                <p class="bangumi-info">Bangumi番组计划链接：<a href="https://bgm.tv/subject/123456">Bangumi</a></p>
+                """;
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(html) };
         });
         var resolver = new MikanSubjectLinkResolver(factory);
@@ -87,8 +87,8 @@ public sealed class MikanIntegrationTests
     private sealed class FakeHttpClientSource(Func<HttpRequestMessage, HttpResponseMessage> responseFactory)
         : IProxiedHttpClientSource
     {
-        public Task<HttpClient> CreateClientAsync(string clientName, Guid? proxyId,
-                                                  CancellationToken   cancellationToken = default)
+        public Task<HttpClient> CreateClientAsync(string            clientName, Guid? proxyId,
+                                                  CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new HttpClient(new StubHandler(responseFactory)));
         }

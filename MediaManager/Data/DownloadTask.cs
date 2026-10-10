@@ -8,10 +8,12 @@ namespace MediaManager.Data;
 /// </summary>
 public sealed class DownloadTask
 {
-    public Guid     Id         { get; set; }
+    public Guid Id { get; set; }
+
     /// <summary>来源 RSS 条目；本地上传种子没有 RSS 来源，创建任务后保持为空。</summary>
-    public Guid?    FeedItemId { get; set; }
-    public FeedItem? FeedItem  { get; set; }
+    public Guid? FeedItemId { get; set; }
+
+    public FeedItem? FeedItem { get; set; }
 
     /// <summary>决策时的 Subject 快照，仅用于查询与展示；Subject 被删除后置空，快照字段不受影响。</summary>
     public int? SubjectId { get; set; }

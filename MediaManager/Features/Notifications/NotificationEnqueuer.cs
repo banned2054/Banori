@@ -9,17 +9,17 @@ namespace MediaManager.Features.Notifications;
 ///     入队自身的任何异常都只记日志，绝不外泄，绝不影响下载主流程。
 /// </summary>
 public sealed class NotificationEnqueuer(
-    ManageTelegramSettings       telegramSettings,
-    ManageGotifySettings         gotifySettings,
-    TimeProvider                 timeProvider,
+    ManageTelegramSettings        telegramSettings,
+    ManageGotifySettings          gotifySettings,
+    TimeProvider                  timeProvider,
     ILogger<NotificationEnqueuer> logger)
 {
     public const int TitleMaxLength   = 200;
     public const int MessageMaxLength = 2000;
 
-    public async Task TryEnqueueAsync(ApplicationDbContext db, NotificationEventType eventType,
-                                      string title, string message,
-                                      CancellationToken cancellationToken = default)
+    public async Task TryEnqueueAsync(ApplicationDbContext db,    NotificationEventType eventType,
+                                      string               title, string                message,
+                                      CancellationToken    cancellationToken = default)
     {
         try
         {
@@ -44,16 +44,16 @@ public sealed class NotificationEnqueuer(
     }
 
     private NotificationDelivery CreateDelivery(NotificationChannel channel, NotificationEventType eventType,
-                                                string title, string message)
+                                                string              title,   string                message)
     {
         return new NotificationDelivery
         {
-            Id         = Guid.NewGuid(),
-            Channel    = channel,
-            EventType  = eventType,
-            Title      = Truncate(title, TitleMaxLength),
-            Message    = Truncate(message, MessageMaxLength),
-            Status     = NotificationDeliveryStatus.Pending,
+            Id           = Guid.NewGuid(),
+            Channel      = channel,
+            EventType    = eventType,
+            Title        = Truncate(title, TitleMaxLength),
+            Message      = Truncate(message, MessageMaxLength),
+            Status       = NotificationDeliveryStatus.Pending,
             CreatedAtUtc = timeProvider.GetUtcNow()
         };
     }

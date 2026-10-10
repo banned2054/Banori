@@ -10,7 +10,7 @@ public sealed class RefreshPulseTests
         var pulse = new RefreshPulse();
         pulse.Pulse();
 
-        var wait = pulse.WaitAsync(CancellationToken.None);
+        var wait      = pulse.WaitAsync(CancellationToken.None);
         var completed = await Task.WhenAny(wait, Task.Delay(TimeSpan.FromSeconds(2)));
 
         Assert.Same(wait, completed);
@@ -51,8 +51,8 @@ public sealed class RefreshPulseTests
     [Fact]
     public async Task NoPulse_WaitStaysPending()
     {
-        var pulse = new RefreshPulse();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        var       pulse = new RefreshPulse();
+        using var cts   = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pulse.WaitAsync(cts.Token));
     }

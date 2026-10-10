@@ -95,7 +95,7 @@ public sealed class FeedItemEvaluator(
 
         // 人工重评触发的重选视为人工动作，允许重试同一优胜已失败的种子登记。
         if (keys.Count > 0)
-            await selectionService.SelectAndRegisterAsync(keys, resetFailedIntent: true, cancellationToken);
+            await selectionService.SelectAndRegisterAsync(keys, true, cancellationToken);
     }
 
     private async Task EvaluateWithSubjectAsync(Guid   itemId,          ParseResult       parsed, int subjectId,
@@ -176,7 +176,7 @@ public sealed class FeedItemEvaluator(
             _                            => ReleaseDecisionStatus.NeedsReview
         };
         // 命名后缀优先用字幕组名；同一规则下优胜确定时的命名快照与该预览一致。
-        var preference = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
+        var preference       = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
         var correctionReason = correction.Reason == "未应用集数修正规则。" ? string.Empty : $" {correction.Reason}";
         var namingPreview = namingPolicy.Create(subject.DisplayName, correction.Episode, parsed.Version,
                                                 preference);
@@ -383,7 +383,14 @@ public sealed class FeedItemEvaluator(
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    private sealed record ItemSnapshot(Guid Id, string Title, string? Link, int? SubjectId, string? MediaType,
-                                       decimal? Episode, DateTimeOffset? PublishedAtUtc, string StableId,
-                                       Guid? SubscriptionProxyId);
+    private sealed record ItemSnapshot(
+        Guid            Id,
+        string          Title,
+        string?         Link,
+        int?            SubjectId,
+        string?         MediaType,
+        decimal?        Episode,
+        DateTimeOffset? PublishedAtUtc,
+        string          StableId,
+        Guid?           SubscriptionProxyId);
 }

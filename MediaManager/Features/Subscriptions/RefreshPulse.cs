@@ -7,9 +7,9 @@ namespace MediaManager.Features.Subscriptions;
 /// </summary>
 public sealed class RefreshPulse
 {
-    private readonly object                  _lock = new();
-    private TaskCompletionSource<bool>?      _waiter;
-    private bool                             _signaled;
+    private readonly object                      _lock = new();
+    private          bool                        _signaled;
+    private          TaskCompletionSource<bool>? _waiter;
 
     public void Pulse()
     {

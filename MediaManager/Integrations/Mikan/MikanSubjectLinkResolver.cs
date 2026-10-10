@@ -7,8 +7,8 @@ public sealed partial class MikanSubjectLinkResolver(IProxiedHttpClientSource ht
 {
     private const int MaximumHtmlLength = 2 * 1024 * 1024;
 
-    public async Task<int?> ResolveSubjectIdAsync(Uri episodeUri, Guid? proxyId = null,
-                                                  CancellationToken   cancellationToken = default)
+    public async Task<int?> ResolveSubjectIdAsync(Uri               episodeUri, Guid? proxyId = null,
+                                                  CancellationToken cancellationToken = default)
     {
         if (!IsMikanUri(episodeUri)) return null;
 
@@ -30,9 +30,7 @@ public sealed partial class MikanSubjectLinkResolver(IProxiedHttpClientSource ht
             var candidateSubjectMatch = BangumiSubjectRegex().Match(candidateHref);
             if (candidateSubjectMatch.Success &&
                 int.TryParse(candidateSubjectMatch.Groups[1].Value, out var subjectId))
-            {
                 return subjectId;
-            }
         }
 
         return null;

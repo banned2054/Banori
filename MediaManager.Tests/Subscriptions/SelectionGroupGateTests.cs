@@ -59,8 +59,7 @@ public sealed class SelectionGroupGateTests
         await gate.WaitAsync(Key);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
         // 被取消的等待者必须归还引用：计数只剩持有者，不能遗留空计数条目。
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => gate.WaitAsync(Key, cancellation.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => gate.WaitAsync(Key, cancellation.Token));
 
         Assert.Equal(1, gate.TrackedGroupCount);
         gate.Release(Key);

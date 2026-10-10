@@ -1,5 +1,5 @@
-@using MediaManager.Features.Proxies
 @using MediaManager.Data
+@using MediaManager.Features.Proxies
 @implements IDisposable
 
 @inject ProxyService                  ProxyService
@@ -81,7 +81,9 @@
 						<tr>
 							<td>@proxy.Name</td>
 							<td>@ProtocolLabel(proxy.Protocol)</td>
-							<td><code>@(proxy.Host):@(proxy.Port)</code></td>
+							<td>
+								<code>@(proxy.Host):@(proxy.Port)</code>
+							</td>
 							<td>@(proxy.HasPassword ? "账号密码" : proxy.Username is null ? "无" : "仅用户名")</td>
 							<td class="text-end">
 								<button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => _vm.BeginEdit(proxy)">编辑</button>

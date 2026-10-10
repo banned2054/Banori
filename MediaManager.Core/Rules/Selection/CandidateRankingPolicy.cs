@@ -9,8 +9,11 @@ public sealed record CandidateRank(EpisodeCandidate Candidate, int Priority, str
 }
 
 public sealed record GroupSelectionResult(
-    int SubjectId, string MediaType, decimal Episode,
-    EpisodeCandidate? Winner, string WinnerBasis,
+    int                          SubjectId,
+    string                       MediaType,
+    decimal                      Episode,
+    EpisodeCandidate?            Winner,
+    string                       WinnerBasis,
     IReadOnlyList<CandidateRank> Ranking)
 {
     public bool HasWinner => Winner is not null;
@@ -45,7 +48,7 @@ public sealed class CandidateRankingPolicy
             ranked.Add(new CandidateRank(candidate, priority, basis, excludedReason));
         }
 
-        var contenders = ranked.Where(rank => !rank.IsExcluded).ToList();
+        var               contenders  = ranked.Where(rank => !rank.IsExcluded).ToList();
         EpisodeCandidate? winner      = null;
         var               winnerBasis = string.Empty;
         if (contenders.Count > 0)
@@ -73,27 +76,25 @@ public sealed class CandidateRankingPolicy
             ? null
             : topTier.FirstOrDefault(rank => rank.Candidate.FeedItemId == currentWinnerFeedItemId);
         if (current is null)
-        {
             return topTier
-                   .OrderBy(rank => rank.Candidate.Group, StringComparer.Ordinal)
-                   .ThenByDescending(rank => rank.Candidate.Version)
-                   .ThenBy(rank => rank.Candidate.PublishedAtUtc ?? DateTimeOffset.MaxValue)
-                   .ThenBy(rank => rank.Candidate.StableId, StringComparer.Ordinal)
-                   .ThenBy(rank => rank.Candidate.FeedItemId)
-                   .First();
-        }
+                  .OrderBy(rank => rank.Candidate.Group, StringComparer.Ordinal)
+                  .ThenByDescending(rank => rank.Candidate.Version)
+                  .ThenBy(rank => rank.Candidate.PublishedAtUtc ?? DateTimeOffset.MaxValue)
+                  .ThenBy(rank => rank.Candidate.StableId, StringComparer.Ordinal)
+                  .ThenBy(rank => rank.Candidate.FeedItemId)
+                  .First();
 
         // 同字幕组判断与规则匹配（FindGroupRank / MatchesGroup）一致不区分大小写：
         // 现任 ANi 与新候选 ani 是同组修订升级，不得视为跨组而保留现任。
         var upgrade = topTier
-                      .Where(rank => string.Equals(rank.Candidate.Group, current.Candidate.Group,
-                                                   StringComparison.OrdinalIgnoreCase) &&
-                                     rank.Candidate.Version > current.Candidate.Version)
-                      .OrderByDescending(rank => rank.Candidate.Version)
-                      .ThenBy(rank => rank.Candidate.PublishedAtUtc ?? DateTimeOffset.MaxValue)
-                      .ThenBy(rank => rank.Candidate.StableId, StringComparer.Ordinal)
-                      .ThenBy(rank => rank.Candidate.FeedItemId)
-                      .FirstOrDefault();
+                     .Where(rank => string.Equals(rank.Candidate.Group, current.Candidate.Group,
+                                                  StringComparison.OrdinalIgnoreCase) &&
+                                    rank.Candidate.Version > current.Candidate.Version)
+                     .OrderByDescending(rank => rank.Candidate.Version)
+                     .ThenBy(rank => rank.Candidate.PublishedAtUtc ?? DateTimeOffset.MaxValue)
+                     .ThenBy(rank => rank.Candidate.StableId, StringComparer.Ordinal)
+                     .ThenBy(rank => rank.Candidate.FeedItemId)
+                     .FirstOrDefault();
         return upgrade ?? current;
     }
 
@@ -107,7 +108,7 @@ public sealed class CandidateRankingPolicy
 
     private static (int, string, string?) RankIndependent(EpisodeCandidate candidate, SelectionRuleConfig config)
     {
-        var groupRank = FindGroupRank(candidate.Group, config);
+        var groupRank    = FindGroupRank(candidate.Group, config);
         var languageRank = FindLanguageRank(candidate.Language, config);
 
         if (groupRank is null && languageRank is null)
@@ -120,7 +121,7 @@ public sealed class CandidateRankingPolicy
             return DescribeUnmatched(config, $"语言 {candidate.Language} 未列入规则");
 
         var priority = config.DimensionOrder == SelectionDimensionOrder.GroupFirst
-            ? groupRank.Value * 1000 + languageRank.Value
+            ? groupRank.Value    * 1000 + languageRank.Value
             : languageRank.Value * 1000 + groupRank.Value;
         var basis =
             $"{(config.DimensionOrder == SelectionDimensionOrder.GroupFirst ? "先字幕组" : "先语言")}" +

@@ -15,14 +15,14 @@ public sealed class SettingsPageViewModel(
 {
     private readonly List<ProxyView> _proxies = [];
 
+    private string? _hookToken;
+
     public QbittorrentSettingsDraft Downloader { get; } = new();
     public TelegramSettingsDraft    Telegram   { get; } = new();
     public GotifySettingsDraft      Gotify     { get; } = new();
 
     /// <summary>命名代理列表，供各卡片的代理下拉展示；代理变动后由 ReloadProxiesAsync 刷新。</summary>
     public IReadOnlyList<ProxyView> Proxies => _proxies;
-
-    private string? _hookToken;
 
     /// <summary>粘贴到 qBittorrent“运行外部程序”的两条命令；尚未生成令牌时为 null。</summary>
     public (string Added, string Completed)? HookCommands { get; private set; }
@@ -50,16 +50,16 @@ public sealed class SettingsPageViewModel(
         HookCommands           = BuildHookCommands(hookBaseUrl, _hookToken);
 
         var telegram = await telegramSettings.GetAsync(cancellationToken);
-        Telegram.ChatId   = telegram.ChatId;
-        Telegram.ProxyId  = telegram.ProxyId?.ToString();
-        Telegram.Enabled  = telegram.Enabled;
+        Telegram.ChatId                = telegram.ChatId;
+        Telegram.ProxyId               = telegram.ProxyId?.ToString();
+        Telegram.Enabled               = telegram.Enabled;
         Telegram.NotifyDownloadStarted = telegram.Events.Contains(NotificationEventType.DownloadStarted);
         Telegram.NotifyDownloadFailed  = telegram.Events.Contains(NotificationEventType.DownloadFailed);
 
         var gotify = await gotifySettings.GetAsync(cancellationToken);
-        Gotify.BaseUrl = gotify.BaseUrl;
-        Gotify.ProxyId = gotify.ProxyId?.ToString();
-        Gotify.Enabled = gotify.Enabled;
+        Gotify.BaseUrl               = gotify.BaseUrl;
+        Gotify.ProxyId               = gotify.ProxyId?.ToString();
+        Gotify.Enabled               = gotify.Enabled;
         Gotify.NotifyDownloadStarted = gotify.Events.Contains(NotificationEventType.DownloadStarted);
         Gotify.NotifyDownloadFailed  = gotify.Events.Contains(NotificationEventType.DownloadFailed);
 
@@ -155,11 +155,11 @@ public sealed class SettingsPageViewModel(
         try
         {
             var (succeeded, message) = await qbittorrentSettings.TestConnectionAsync(
-                 new QbittorrentSettings(Downloader.BaseUrl  ?? string.Empty, Downloader.Username ?? string.Empty,
-                                         Downloader.SavePath ?? string.Empty, true,
-                                         Downloader.ParseProxyId()),
-                 string.IsNullOrWhiteSpace(Downloader.Password) ? null : Downloader.Password,
-                 cancellationToken);
+             new QbittorrentSettings(Downloader.BaseUrl  ?? string.Empty, Downloader.Username ?? string.Empty,
+                                     Downloader.SavePath ?? string.Empty, true,
+                                     Downloader.ParseProxyId()),
+             string.IsNullOrWhiteSpace(Downloader.Password) ? null : Downloader.Password,
+             cancellationToken);
             TestSucceeded = succeeded;
             TestMessage   = message;
         }
@@ -182,10 +182,12 @@ public sealed class SettingsPageViewModel(
         {
             var proxyUrl = await proxyService.ResolveProxyUrlAsync(Telegram.ParseProxyId(), cancellationToken);
             var (succeeded, message) = await telegramSettings.TestSendAsync(
-                Telegram.ToSettings(),
-                string.IsNullOrWhiteSpace(Telegram.BotToken) ? null : Telegram.BotToken,
-                proxyUrl,
-                cancellationToken);
+                                                                            Telegram.ToSettings(),
+                                                                            string.IsNullOrWhiteSpace(Telegram.BotToken)
+                                                                                ? null
+                                                                                : Telegram.BotToken,
+                                                                            proxyUrl,
+                                                                            cancellationToken);
             TestSucceeded = succeeded;
             TestMessage   = message;
         }
@@ -208,10 +210,12 @@ public sealed class SettingsPageViewModel(
         {
             var proxyUrl = await proxyService.ResolveProxyUrlAsync(Gotify.ParseProxyId(), cancellationToken);
             var (succeeded, message) = await gotifySettings.TestSendAsync(
-                Gotify.ToSettings(),
-                string.IsNullOrWhiteSpace(Gotify.AppToken) ? null : Gotify.AppToken,
-                proxyUrl,
-                cancellationToken);
+                                                                          Gotify.ToSettings(),
+                                                                          string.IsNullOrWhiteSpace(Gotify.AppToken)
+                                                                              ? null
+                                                                              : Gotify.AppToken,
+                                                                          proxyUrl,
+                                                                          cancellationToken);
             TestSucceeded = succeeded;
             TestMessage   = message;
         }

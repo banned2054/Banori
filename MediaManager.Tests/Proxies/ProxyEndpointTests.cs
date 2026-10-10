@@ -47,7 +47,7 @@ public sealed class ProxyEndpointTests
     public void ToWebProxy_WithCredentials_WrapsNetworkCredential()
     {
         var proxy = ProxyEndpoint.ToWebProxy(new ResolvedProxy("代理", ProxyProtocol.Http, "10.0.0.5", 8080,
-                                                        "alice", "secret"));
+                                                               "alice", "secret"));
 
         var credentials = Assert.IsType<NetworkCredential>(proxy.Credentials);
         Assert.Equal("alice", credentials.UserName);
@@ -58,7 +58,7 @@ public sealed class ProxyEndpointTests
     public void ToWebProxy_WithoutUsername_SetsNoCredentials()
     {
         var proxy = ProxyEndpoint.ToWebProxy(new ResolvedProxy("代理", ProxyProtocol.Socks5, "10.0.0.5", 1080,
-                                                        null, null));
+                                                               null, null));
 
         Assert.Null(proxy.Credentials);
     }

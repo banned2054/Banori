@@ -6,7 +6,7 @@ namespace MediaManager.Components.Pages.Settings;
 
 /// <summary>代理设置页状态：代理列表、编辑草稿与增删改操作。随页面组件创建和释放。</summary>
 public sealed class ProxiesPageViewModel(
-    ProxyService                 proxyService,
+    ProxyService                  proxyService,
     ILogger<ProxiesPageViewModel> logger)
 {
     private readonly List<ProxyView> _proxies = [];

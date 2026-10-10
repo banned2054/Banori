@@ -20,10 +20,11 @@ public sealed class QbittorrentSessionFactory(
         var username = await settingStore.GetAsync(ManageQbittorrentSettings.UsernameKey, cancellationToken);
         var password = await settingStore.GetAsync(ManageQbittorrentSettings.PasswordKey, cancellationToken);
         var savePath = await settingStore.GetAsync(ManageQbittorrentSettings.SavePathKey, cancellationToken);
-        var proxyId  = Guid.TryParse(await settingStore.GetAsync(ManageQbittorrentSettings.ProxyIdKey, cancellationToken),
-                                     out var parsed)
-            ? (Guid?)parsed
-            : null;
+        var proxyId =
+            Guid.TryParse(await settingStore.GetAsync(ManageQbittorrentSettings.ProxyIdKey, cancellationToken),
+                          out var parsed)
+                ? (Guid?)parsed
+                : null;
         return await CreateAsync(new QbittorrentSettings(baseUrl  ?? string.Empty, username ?? string.Empty,
                                                          savePath ?? string.Empty, true, proxyId), password,
                                  cancellationToken);
@@ -43,20 +44,20 @@ public sealed class QbittorrentSessionFactory(
         var proxy = await proxyService.ResolveWebProxyAsync(settings.ProxyId, cancellationToken);
         var options = proxy is null
             ? new QBittorrentClientOptions
-              {
-                  MaxRetries = 2,
-                  Timeout    = TimeSpan.FromSeconds(20)
-              }
+            {
+                MaxRetries = 2,
+                Timeout    = TimeSpan.FromSeconds(20)
+            }
             : new QBittorrentClientOptions
-              {
-                  MaxRetries = 2,
-                  Timeout    = TimeSpan.FromSeconds(20),
-                  // 注入的 HttpClient 由包内部使用；会话释放时 QbittorrentSession 会连带释放 client。
-                  HttpClient = new HttpClient(new SocketsHttpHandler { Proxy = proxy })
-                               {
-                                   Timeout = TimeSpan.FromSeconds(20)
-                               }
-              };
+            {
+                MaxRetries = 2,
+                Timeout    = TimeSpan.FromSeconds(20),
+                // 注入的 HttpClient 由包内部使用；会话释放时 QbittorrentSession 会连带释放 client。
+                HttpClient = new HttpClient(new SocketsHttpHandler { Proxy = proxy })
+                {
+                    Timeout = TimeSpan.FromSeconds(20)
+                }
+            };
 
         var client = await QBittorrentClient.Create(settings.BaseUrl, settings.Username, effectivePassword,
                                                     options, cancellationToken);

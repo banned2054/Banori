@@ -1,5 +1,6 @@
-using System.Security.Cryptography;
 using MediaManager.Features.Settings;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace MediaManager.Features.Downloads;
 
@@ -21,8 +22,8 @@ public enum QbittorrentHookResult
 ///     因此钩子幂等且可丢——15 秒轮询始终是兜底。
 /// </summary>
 public sealed class QbittorrentHookService(
-    ManageQbittorrentSettings settings,
-    ReconcilePulse            reconcilePulse,
+    ManageQbittorrentSettings       settings,
+    ReconcilePulse                  reconcilePulse,
     ILogger<QbittorrentHookService> logger)
 {
     public async Task<QbittorrentHookResult> HandleAsync(
@@ -46,8 +47,8 @@ public sealed class QbittorrentHookService(
     {
         if (string.IsNullOrEmpty(actual)) return false;
 
-        var expectedBytes = System.Text.Encoding.UTF8.GetBytes(expected);
-        var actualBytes   = System.Text.Encoding.UTF8.GetBytes(actual);
+        var expectedBytes = Encoding.UTF8.GetBytes(expected);
+        var actualBytes   = Encoding.UTF8.GetBytes(actual);
         return CryptographicOperations.FixedTimeEquals(expectedBytes, actualBytes);
     }
 

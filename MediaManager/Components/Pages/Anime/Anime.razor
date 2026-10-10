@@ -1,9 +1,9 @@
 @page "/anime"
 @rendermode InteractiveServer
 @attribute [Authorize]
+@using System.Globalization
 @using MediaManager.Features.Anime
 @using MediaManager.Features.Subscriptions
-@using System.Globalization
 @implements IDisposable
 
 @inject AnimeQueries Queries
@@ -27,8 +27,8 @@ else
 	<div class="anime-grid">
 		@for (var i = 0; i < _vm.Animes.Count; i++)
 		{
-			var anime = _vm.Animes[i];
-			var expanded = _vm.ExpandedSubjectId == anime.SubjectId;
+			var anime                   = _vm.Animes[i];
+			var expanded                = _vm.ExpandedSubjectId == anime.SubjectId;
 			if (expanded) expandedIndex = i;
 			<div class="card anime-card @(expanded ? "anime-card-active" : null)" style="order: @(i * 2)" role="button"
 			     tabindex="0" aria-expanded="@expanded" @onclick="() => Toggle(anime.SubjectId)">
@@ -40,45 +40,47 @@ else
 					}
 					else
 					{
-						<div class="poster-img poster-placeholder"><span class="bi bi-film-fill"></span></div>
+						<div class="poster-img poster-placeholder">
+							<span class="bi bi-film-fill"></span>
+						</div>
 					}
 				</div>
 				<div class="anime-name" title="@anime.DisplayName">@anime.DisplayName</div>
 			</div>
 		}
-			@if (expandedIndex >= 0)
-			{
-				var expandedAnime = _vm.Animes[expandedIndex];
-				<div class="anime-panel" style="order: @(expandedIndex * 2 + 1); --i: @expandedIndex">
-					<div class="anime-panel-box">
-						<div class="anime-episodes">
-							@foreach (var episode in expandedAnime.Episodes)
-							{
-								var final = episode.Final;
-								<div class="anime-episode @(final.Outcome == SelectionOutcome.Winner ? "is-winner" : null)">
-									<span class="anime-episode-status">
-										@if (final.Outcome == SelectionOutcome.Winner)
-										{
-											<span class="bi bi-check-circle-fill" title="当前优胜"></span>
-										}
-									</span>
-									<span class="anime-episode-no">E@(FormatEpisode(episode.Episode))</span>
-									<span>@(final.Group)</span>
-									@if (!string.IsNullOrWhiteSpace(final.Language))
+		@if (expandedIndex >= 0)
+		{
+			var expandedAnime = _vm.Animes[expandedIndex];
+			<div class="anime-panel" style="order: @(expandedIndex * 2 + 1); --i: @expandedIndex">
+				<div class="anime-panel-box">
+					<div class="anime-episodes">
+						@foreach (var episode in expandedAnime.Episodes)
+						{
+							var final = episode.Final;
+							<div class="anime-episode @(final.Outcome == SelectionOutcome.Winner ? "is-winner" : null)">
+								<span class="anime-episode-status">
+									@if (final.Outcome == SelectionOutcome.Winner)
 									{
-										<span>@(final.Language)</span>
+										<span class="bi bi-check-circle-fill" title="当前优胜"></span>
 									}
-									@if (final.Version > 1)
-									{
-										<span>v@(final.Version)</span>
-									}
-									<span class="anime-episode-date">@(final.PublishedAtUtc?.ToLocalTime().ToString("MM-dd HH:mm") ?? "—")</span>
-								</div>
-							}
-						</div>
+								</span>
+								<span class="anime-episode-no">E@(FormatEpisode(episode.Episode))</span>
+								<span>@(final.Group)</span>
+								@if (!string.IsNullOrWhiteSpace(final.Language))
+								{
+									<span>@(final.Language)</span>
+								}
+								@if (final.Version > 1)
+								{
+									<span>v@(final.Version)</span>
+								}
+								<span class="anime-episode-date">@(final.PublishedAtUtc?.ToLocalTime().ToString("MM-dd HH:mm") ?? "—")</span>
+							</div>
+						}
 					</div>
 				</div>
-			}
+			</div>
+		}
 	</div>
 }
 
@@ -125,4 +127,5 @@ else
 		_cts.Cancel();
 		_cts.Dispose();
 	}
+
 }

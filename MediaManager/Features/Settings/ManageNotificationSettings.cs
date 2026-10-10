@@ -20,7 +20,8 @@ public sealed class ManageTelegramSettings(IApplicationSettingStore settingStore
         var enabledText = await settingStore.GetAsync(EnabledKey, cancellationToken);
         var chatId      = await settingStore.GetAsync(ChatIdKey, cancellationToken) ?? string.Empty;
         var events      = NotificationEvents.Parse(await settingStore.GetAsync(EventsKey, cancellationToken));
-        return new TelegramSettings(chatId.Trim(), ParseProxyId(await settingStore.GetAsync(ProxyIdKey, cancellationToken)),
+        return new TelegramSettings(chatId.Trim(),
+                                    ParseProxyId(await settingStore.GetAsync(ProxyIdKey, cancellationToken)),
                                     string.Equals(enabledText, "true", StringComparison.OrdinalIgnoreCase), events);
     }
 
@@ -68,8 +69,8 @@ public sealed class ManageTelegramSettings(IApplicationSettingStore settingStore
     ///     （ProxyService.ResolveProxyUrlAsync），成功与否都返回可直接展示的文本。
     /// </summary>
     public async Task<(bool Succeeded, string Message)> TestSendAsync(
-        TelegramSettings settings, string? botToken = null, string? proxyUrl = null,
-        CancellationToken   cancellationToken = default)
+        TelegramSettings  settings, string? botToken = null, string? proxyUrl = null,
+        CancellationToken cancellationToken = default)
     {
         try
         {
@@ -102,23 +103,24 @@ public sealed class ManageTelegramSettings(IApplicationSettingStore settingStore
 /// </summary>
 public sealed class ManageGotifySettings(IApplicationSettingStore settingStore, IGotifySender sender)
 {
-    private static Guid? ParseProxyId(string? stored)
-    {
-        return Guid.TryParse(stored, out var proxyId) ? proxyId : null;
-    }
-
     public const string EnabledKey  = "Notification.Gotify.Enabled";
     public const string BaseUrlKey  = "Notification.Gotify.BaseUrl";
     public const string AppTokenKey = "Notification.Gotify.AppToken";
     public const string ProxyIdKey  = "Notification.Gotify.ProxyId";
     public const string EventsKey   = "Notification.Gotify.Events";
 
+    private static Guid? ParseProxyId(string? stored)
+    {
+        return Guid.TryParse(stored, out var proxyId) ? proxyId : null;
+    }
+
     public async Task<GotifySettings> GetAsync(CancellationToken cancellationToken = default)
     {
         var enabledText = await settingStore.GetAsync(EnabledKey, cancellationToken);
         var baseUrl     = await settingStore.GetAsync(BaseUrlKey, cancellationToken) ?? string.Empty;
         var events      = NotificationEvents.Parse(await settingStore.GetAsync(EventsKey, cancellationToken));
-        return new GotifySettings(baseUrl.Trim(), ParseProxyId(await settingStore.GetAsync(ProxyIdKey, cancellationToken)),
+        return new GotifySettings(baseUrl.Trim(),
+                                  ParseProxyId(await settingStore.GetAsync(ProxyIdKey, cancellationToken)),
                                   string.Equals(enabledText, "true", StringComparison.OrdinalIgnoreCase), events);
     }
 
@@ -169,8 +171,8 @@ public sealed class ManageGotifySettings(IApplicationSettingStore settingStore, 
     ///     （ProxyService.ResolveProxyUrlAsync），成功与否都返回可直接展示的文本。
     /// </summary>
     public async Task<(bool Succeeded, string Message)> TestSendAsync(
-        GotifySettings settings, string? appToken = null, string? proxyUrl = null,
-        CancellationToken   cancellationToken = default)
+        GotifySettings    settings, string? appToken = null, string? proxyUrl = null,
+        CancellationToken cancellationToken = default)
     {
         try
         {

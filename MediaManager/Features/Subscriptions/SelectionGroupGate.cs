@@ -11,16 +11,18 @@ namespace MediaManager.Features.Subscriptions;
 /// </summary>
 public sealed class SelectionGroupGate
 {
-    private readonly object _sync = new();
-
     private readonly Dictionary<SelectionGroupKey, GatedGroup> _groups = [];
+    private readonly object                                    _sync   = new();
 
     /// <summary>当前仍在字典中登记（被持有、被等待或待回收）的组数；供测试与观测。</summary>
     public int TrackedGroupCount
     {
         get
         {
-            lock (_sync) return _groups.Count;
+            lock (_sync)
+            {
+                return _groups.Count;
+            }
         }
     }
 

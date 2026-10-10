@@ -50,10 +50,10 @@ public sealed class DownloadReconcileWorker(
     /// <summary>等待下一轮：被对账脉冲立即唤醒，或空闲间隔到期；进程停止时返回。</summary>
     private async Task WaitForNextTickAsync(CancellationToken cancellationToken)
     {
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var delay     = Task.Delay(IdlePollInterval, timeProvider, linked.Token);
-        var pulseTask = reconcilePulse.WaitAsync(cancellationToken);
-        var completed = await Task.WhenAny(delay, pulseTask);
+        using var linked    = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var       delay     = Task.Delay(IdlePollInterval, timeProvider, linked.Token);
+        var       pulseTask = reconcilePulse.WaitAsync(cancellationToken);
+        var       completed = await Task.WhenAny(delay, pulseTask);
         if (completed == pulseTask) await linked.CancelAsync();
         await completed;
     }

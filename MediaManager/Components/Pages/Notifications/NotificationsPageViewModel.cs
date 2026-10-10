@@ -8,14 +8,14 @@ public sealed class NotificationsPageViewModel(NotificationDeliveryService deliv
 {
     public IReadOnlyList<NotificationDelivery> Deliveries { get; private set; } = [];
 
-    public bool    Loaded        { get; private set; }
-    public bool    Retrying      { get; private set; }
-    public bool    Succeeded     { get; private set; }
-    public string? Message       { get; private set; }
+    public bool    Loaded    { get; private set; }
+    public bool    Retrying  { get; private set; }
+    public bool    Succeeded { get; private set; }
+    public string? Message   { get; private set; }
 
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
-        Deliveries = await deliveryService.ListAsync(cancellationToken: cancellationToken);
+        Deliveries = await deliveryService.ListAsync(cancellationToken : cancellationToken);
         Loaded     = true;
     }
 

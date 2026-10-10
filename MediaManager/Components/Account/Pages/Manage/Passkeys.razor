@@ -105,7 +105,7 @@ else
 
 		if (string.IsNullOrEmpty(Input.CredentialJson))
 		{
-			RedirectManager.RedirectToCurrentPageWithStatus($"错误：浏览器未提供通行密钥。", HttpContext);
+			RedirectManager.RedirectToCurrentPageWithStatus("错误：浏览器未提供通行密钥。", HttpContext);
 			return;
 		}
 

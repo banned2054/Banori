@@ -99,7 +99,7 @@ else
 						<dd class="col-7">
 							@(_vm.Item.SelectionOutcome switch
 							{
-								SelectionOutcome.Winner  => "当前优胜候选",
+								SelectionOutcome.Winner   => "当前优胜候选",
 								SelectionOutcome.RunnerUp => "组内落选（保留候选，规则变化后可重新参与）",
 								_                         => "尚未参与择优"
 							})
@@ -107,8 +107,8 @@ else
 							{
 								<div class="small text-body-secondary">
 									择优规则版本 v@ruleVersion@(string.IsNullOrWhiteSpace(_vm.Item.SelectionBasis)
-										                            ? ""
-										                            : $"；组内优胜依据：{_vm.Item.SelectionBasis}")
+										                    ? ""
+										                    : $"；组内优胜依据：{_vm.Item.SelectionBasis}")
 								</div>
 							}
 						</dd>

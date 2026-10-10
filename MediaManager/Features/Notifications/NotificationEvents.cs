@@ -15,8 +15,8 @@ public static class NotificationEvents
         // 统一按枚举声明顺序去重输出，保证存储格式稳定；无法识别的名称如实忽略。
         var parsed = stored.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                            .Select(name => Enum.TryParse<NotificationEventType>(name, true, out var value)
-                                               ? value
-                                               : (NotificationEventType?)null)
+                                       ? value
+                                       : (NotificationEventType?)null)
                            .Where(value => value is not null)
                            .Select(value => value!.Value)
                            .ToHashSet();
@@ -36,7 +36,7 @@ public static class NotificationEvents
     {
         var events = new List<NotificationEventType>();
         if (downloadStarted) events.Add(NotificationEventType.DownloadStarted);
-        if (downloadFailed)  events.Add(NotificationEventType.DownloadFailed);
+        if (downloadFailed) events.Add(NotificationEventType.DownloadFailed);
         return events;
     }
 }

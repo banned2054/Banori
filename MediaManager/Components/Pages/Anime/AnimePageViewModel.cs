@@ -7,8 +7,8 @@ public sealed class AnimePageViewModel(AnimeQueries queries)
 {
     private readonly List<AnimeCard> _animes = [];
 
-    public IReadOnlyList<AnimeCard> Animes => _animes;
-    public bool                     Loaded { get; private set; }
+    public IReadOnlyList<AnimeCard> Animes            => _animes;
+    public bool                     Loaded            { get; private set; }
     public int?                     ExpandedSubjectId { get; private set; }
 
     public async Task LoadAsync(CancellationToken cancellationToken = default)

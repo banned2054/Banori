@@ -11,7 +11,7 @@ public sealed record SelectionRuleSaveResult(bool Changed, SelectionRuleConfig C
 ///     内容未变化时不写存储、版本不变；内容变化时版本在当前值基础上递增。
 /// </summary>
 public sealed class ManageSelectionRuleSettings(
-    IApplicationSettingStore store,
+    IApplicationSettingStore             store,
     ILogger<ManageSelectionRuleSettings> logger)
 {
     public const string SettingKey = "Selection.RuleConfig";
@@ -31,12 +31,12 @@ public sealed class ManageSelectionRuleSettings(
 
     /// <summary>保存草拟规则：规范化后与已保存内容比较，内容不变则短路，变化则版本递增后落库。</summary>
     public async Task<SelectionRuleSaveResult> SaveAsync(SelectionRuleConfig draft,
-                                                         CancellationToken cancellationToken = default)
+                                                         CancellationToken   cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(draft);
 
         var draftNormalized = SelectionRuleConfigSerialization.Normalize(draft);
-        var current = await GetAsync(cancellationToken);
+        var current         = await GetAsync(cancellationToken);
         if (SelectionRuleConfigSerialization.ContentEquals(draftNormalized, current))
             return new SelectionRuleSaveResult(false, current);
 

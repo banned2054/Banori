@@ -12,6 +12,9 @@ public sealed class RssFeedSourceReader(IProxiedHttpClientSource httpClientSourc
 {
     private const long MaximumFeedCharacters = 5 * 1024 * 1024;
 
+    /// <summary>Mikan torrent 扩展元素的裸时间为源站东八区本地时间。</summary>
+    private static readonly TimeSpan SourceLocalZone = new(8, 0, 0);
+
     public async Task<IReadOnlyList<FeedSourceItem>> ReadAsync(
         Uri feedUri, Guid? proxyId = null, CancellationToken cancellationToken = default)
     {
@@ -47,7 +50,7 @@ public sealed class RssFeedSourceReader(IProxiedHttpClientSource httpClientSourc
 
         var guid = ChildValue(element, "guid")?.Trim() ?? ChildValue(element, "id")?.Trim();
         // 扩展命名空间也可能定义 link 元素（如 AniBT 的 torrent:link），优先取无命名空间的主链接。
-        var linkElement = element.Elements().FirstOrDefault(value => value.Name.LocalName == "link" &&
+        var linkElement = element.Elements().FirstOrDefault(value => value.Name.LocalName            == "link" &&
                                                                      value.Name.NamespaceName.Length == 0) ??
                           element.Elements().FirstOrDefault(value => value.Name.LocalName == "link");
         var linkText = linkElement?.Attribute("href")?.Value ?? linkElement?.Value;
@@ -82,20 +85,17 @@ public sealed class RssFeedSourceReader(IProxiedHttpClientSource httpClientSourc
         return element.Elements().FirstOrDefault(value => value.Name.LocalName == localName)?.Value;
     }
 
-    /// <summary>Mikan torrent 扩展元素的裸时间为源站东八区本地时间。</summary>
-    private static readonly TimeSpan SourceLocalZone = new(8, 0, 0);
-
     private static DateTimeOffset? ParseTimestamp(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
         var trimmed = text.Trim();
         // 带时区标记（Z/GMT/UTC 或末尾 ±hh:mm、±hhmm）按原偏移解析；裸时间按东八区解释。
-        var hasZone = trimmed.EndsWith('Z') ||
+        var hasZone = trimmed.EndsWith('Z')                                       ||
                       trimmed.EndsWith("GMT", StringComparison.OrdinalIgnoreCase) ||
                       trimmed.EndsWith("UTC", StringComparison.OrdinalIgnoreCase) ||
-                      trimmed.EndsWith("UT", StringComparison.OrdinalIgnoreCase) ||
+                      trimmed.EndsWith("UT", StringComparison.OrdinalIgnoreCase)  ||
                       (trimmed.Length >= 5 && (trimmed[^5] is '+' or '-' ||
-                                               trimmed.Length >= 6 && trimmed[^6] is '+' or '-'));
+                                               (trimmed.Length >= 6 && trimmed[^6] is '+' or '-')));
         if (hasZone)
             return DateTimeOffset.TryParse(trimmed, CultureInfo.InvariantCulture,
                                            DateTimeStyles.AllowWhiteSpaces, out var zoned)
@@ -103,7 +103,7 @@ public sealed class RssFeedSourceReader(IProxiedHttpClientSource httpClientSourc
                 : null;
         return DateTime.TryParse(trimmed, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var bare)
             ? new DateTimeOffset(DateTime.SpecifyKind(bare, DateTimeKind.Unspecified), SourceLocalZone)
-                .ToUniversalTime()
+               .ToUniversalTime()
             : null;
     }
 

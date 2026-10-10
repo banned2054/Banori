@@ -103,8 +103,8 @@ public sealed class AnibtIntegrationTests
     private sealed class FakeHttpClientSource(Func<HttpRequestMessage, HttpResponseMessage> responseFactory)
         : IProxiedHttpClientSource
     {
-        public Task<HttpClient> CreateClientAsync(string clientName, Guid? proxyId,
-                                                  CancellationToken   cancellationToken = default)
+        public Task<HttpClient> CreateClientAsync(string            clientName, Guid? proxyId,
+                                                  CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new HttpClient(new StubHandler(responseFactory)));
         }

@@ -32,7 +32,7 @@ public static class LanguageComposition
     {
         if (candidate is null) return false;
         if (candidate.Value == configured) return true;
-        if (mode == LanguageMatchMode.Exact) return false;
+        if (mode            == LanguageMatchMode.Exact) return false;
 
         return Expand(configured).IsSubsetOf(Expand(candidate.Value));
     }

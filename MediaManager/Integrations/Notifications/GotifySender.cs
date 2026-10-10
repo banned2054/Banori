@@ -28,7 +28,7 @@ public sealed class GotifySender : IGotifySender
         // Proxy = null 仍会回落系统默认代理（UseProxy 默认 true），必须显式关闭才是自托管直连。
         var handler = string.IsNullOrWhiteSpace(proxyUrl)
             ? new SocketsHttpHandler { UseProxy = false }
-            : new SocketsHttpHandler { Proxy = ProxyUrlParser.Parse(proxyUrl) };
+            : new SocketsHttpHandler { Proxy    = ProxyUrlParser.Parse(proxyUrl) };
         using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
 
         var payload = new Dictionary<string, string> { ["message"] = message };
@@ -36,12 +36,12 @@ public sealed class GotifySender : IGotifySender
         using var content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions),
                                               Encoding.UTF8, "application/json");
         using var response = await client
-                           .PostAsync($"{normalized}/message?token={Uri.EscapeDataString(appToken.Trim())}",
-                                      content, cancellationToken);
+           .PostAsync($"{normalized}/message?token={Uri.EscapeDataString(appToken.Trim())}",
+                      content, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new NotificationSendException(
-                $"Gotify 返回 {(int)response.StatusCode}：{Truncate(body)}");
+                                                $"Gotify 返回 {(int)response.StatusCode}：{Truncate(body)}");
     }
 
     private static string Truncate(string text)

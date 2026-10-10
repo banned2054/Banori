@@ -7,13 +7,13 @@ public sealed class NotificationSendException(string message, Exception? innerEx
 /// <summary>Telegram Bot API 发送边界；实现按次携带代理配置，测试可用 TCP 桩或替身。</summary>
 public interface ITelegramSender
 {
-    Task SendAsync(string botToken, string chatId, string? proxyUrl, string text,
+    Task SendAsync(string            botToken, string chatId, string? proxyUrl, string text,
                    CancellationToken cancellationToken = default);
 }
 
 /// <summary>Gotify 发送边界；测试可用 TCP 桩或替身。proxyUrl 为 null 时直连（自托管默认语义）。</summary>
 public interface IGotifySender
 {
-    Task SendAsync(string baseUrl, string appToken, string? proxyUrl, string title, string message,
+    Task SendAsync(string            baseUrl, string appToken, string? proxyUrl, string title, string message,
                    CancellationToken cancellationToken = default);
 }

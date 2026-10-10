@@ -10,13 +10,16 @@ public sealed class SelectionRuleConfigSerializationTests
     {
         var config = new SelectionRuleConfig
         {
-            Mode               = SelectionMode.Combined,
-            GroupOrder         = ["LoliHouse", "ANi"],
-            LanguageOrder      = [EnumLanguage.JpSc, EnumLanguage.Sc],
-            DimensionOrder     = SelectionDimensionOrder.LanguageFirst,
-            CombinedEntries    = [new CombinedRuleEntry("LoliHouse", EnumLanguage.JpSc),
-                                  new CombinedRuleEntry(null, EnumLanguage.Sc),
-                                  new CombinedRuleEntry("ANi", null)],
+            Mode           = SelectionMode.Combined,
+            GroupOrder     = ["LoliHouse", "ANi"],
+            LanguageOrder  = [EnumLanguage.JpSc, EnumLanguage.Sc],
+            DimensionOrder = SelectionDimensionOrder.LanguageFirst,
+            CombinedEntries =
+            [
+                new CombinedRuleEntry("LoliHouse", EnumLanguage.JpSc),
+                new CombinedRuleEntry(null, EnumLanguage.Sc),
+                new CombinedRuleEntry("ANi", null)
+            ],
             LanguageMatch      = LanguageMatchMode.Contains,
             Unmatched          = UnmatchedPolicy.NeedsReview,
             AllowedResolutions = [EnumResolution.R1080P, EnumResolution.R720P],
@@ -24,7 +27,8 @@ public sealed class SelectionRuleConfigSerializationTests
         };
 
         var restored = SelectionRuleConfigSerialization.TryDeserialize(
-            SelectionRuleConfigSerialization.Serialize(config));
+                                                                       SelectionRuleConfigSerialization
+                                                                          .Serialize(config));
 
         Assert.NotNull(restored);
         Assert.Equal(config.Mode, restored.Mode);
@@ -73,7 +77,7 @@ public sealed class SelectionRuleConfigSerializationTests
     {
         // 组合模式空条件无法匹配任何候选，等同损坏配置，必须回退默认。
         var json = SelectionRuleConfigSerialization.Serialize(SelectionRuleConfig.CreateDefault())
-                                                           .Replace("\"Mode\":\"Independent\"", "\"Mode\":\"Combined\"");
+                                                   .Replace("\"Mode\":\"Independent\"", "\"Mode\":\"Combined\"");
 
         Assert.Null(SelectionRuleConfigSerialization.TryDeserialize(json));
     }
@@ -92,7 +96,7 @@ public sealed class SelectionRuleConfigSerializationTests
         foreach (var (valid, corrupt) in unknownCases)
         {
             var json = SelectionRuleConfigSerialization.Serialize(SelectionRuleConfig.CreateDefault())
-                                                      .Replace(valid, corrupt);
+                                                       .Replace(valid, corrupt);
             Assert.Null(SelectionRuleConfigSerialization.TryDeserialize(json));
         }
     }
@@ -102,7 +106,7 @@ public sealed class SelectionRuleConfigSerializationTests
     {
         // 已定义的数字枚举值语义无歧义，保持可读入。
         var json = SelectionRuleConfigSerialization.Serialize(SelectionRuleConfig.CreateDefault())
-                                                  .Replace("\"Mode\":\"Independent\"", "\"Mode\":0");
+                                                   .Replace("\"Mode\":\"Independent\"", "\"Mode\":0");
 
         var restored = SelectionRuleConfigSerialization.TryDeserialize(json);
 
@@ -124,7 +128,7 @@ public sealed class SelectionRuleConfigSerializationTests
         var config = SelectionRuleConfig.CreateDefault();
 
         Assert.True(SelectionRuleConfigSerialization.ContentEquals(config,
-            config with { GroupOrder = ["lolihouse", "ani"] }));
+                                                                   config with { GroupOrder = ["lolihouse", "ani"] }));
     }
 
     [Fact]
@@ -136,7 +140,11 @@ public sealed class SelectionRuleConfigSerializationTests
         };
 
         Assert.True(SelectionRuleConfigSerialization.ContentEquals(config,
-            config with { AllowedResolutions = [EnumResolution.R720P, EnumResolution.R1080P] }));
+                                                                   config with
+                                                                   {
+                                                                       AllowedResolutions =
+                                                                       [EnumResolution.R720P, EnumResolution.R1080P]
+                                                                   }));
     }
 
     [Fact]
@@ -145,7 +153,7 @@ public sealed class SelectionRuleConfigSerializationTests
         var config = SelectionRuleConfig.CreateDefault();
 
         Assert.False(SelectionRuleConfigSerialization.ContentEquals(config,
-            config with { GroupOrder = ["ANi", "LoliHouse"] }));
+                                                                    config with { GroupOrder = ["ANi", "LoliHouse"] }));
     }
 
     [Fact]
@@ -157,7 +165,11 @@ public sealed class SelectionRuleConfigSerializationTests
         };
 
         Assert.False(SelectionRuleConfigSerialization.ContentEquals(config,
-            config with { CombinedEntries = [new CombinedRuleEntry(null, null)] }));
+                                                                    config with
+                                                                    {
+                                                                        CombinedEntries =
+                                                                        [new CombinedRuleEntry(null, null)]
+                                                                    }));
     }
 
     [Fact]
@@ -165,7 +177,7 @@ public sealed class SelectionRuleConfigSerializationTests
     {
         var normalized = SelectionRuleConfigSerialization.Normalize(SelectionRuleConfig.CreateDefault() with
         {
-            GroupOrder      = ["  ANi  ", "", "LoliHouse"],
+            GroupOrder = ["  ANi  ", "", "LoliHouse"],
             CombinedEntries = [new CombinedRuleEntry(" ANi ", EnumLanguage.Sc)]
         });
 

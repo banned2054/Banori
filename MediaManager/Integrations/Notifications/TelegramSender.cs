@@ -27,7 +27,7 @@ public sealed class TelegramSender : ITelegramSender
 
     private string ApiBaseUrl { get; }
 
-    public async Task SendAsync(string botToken, string chatId, string? proxyUrl, string text,
+    public async Task SendAsync(string            botToken, string chatId, string? proxyUrl, string text,
                                 CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(botToken);
@@ -36,17 +36,18 @@ public sealed class TelegramSender : ITelegramSender
 
         using var handler = new SocketsHttpHandler
         {
-            Proxy         = ParseProxy(proxyUrl),
+            Proxy          = ParseProxy(proxyUrl),
             ConnectTimeout = TimeSpan.FromSeconds(15)
         };
         using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
 
         using var content = new StringContent(
-            JsonSerializer.Serialize(new { chat_id = chatId.Trim(), text }, JsonOptions),
-            Encoding.UTF8, "application/json");
+                                              JsonSerializer.Serialize(new { chat_id = chatId.Trim(), text },
+                                                                       JsonOptions),
+                                              Encoding.UTF8, "application/json");
         using var response = await client
-                           .PostAsync($"{ApiBaseUrl}/bot{botToken.Trim()}/sendMessage", content,
-                                      cancellationToken);
+           .PostAsync($"{ApiBaseUrl}/bot{botToken.Trim()}/sendMessage", content,
+                      cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new NotificationSendException($"Telegram 返回 {(int)response.StatusCode}：{Truncate(body)}");
@@ -56,7 +57,7 @@ public sealed class TelegramSender : ITelegramSender
         {
             using var document = JsonDocument.Parse(body);
             if (document.RootElement.ValueKind == JsonValueKind.Object &&
-                document.RootElement.TryGetProperty("ok", out var ok) &&
+                document.RootElement.TryGetProperty("ok", out var ok)  &&
                 ok.ValueKind == JsonValueKind.False)
             {
                 var description = document.RootElement.TryGetProperty("description", out var value)

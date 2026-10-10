@@ -5,9 +5,9 @@ namespace MediaManager.Tests.Rules.Selection;
 
 public sealed class CandidateEligibilityPolicyTests
 {
-    private static EpisodeCandidate Candidate(string mediaType = "SingleEpisode",
+    private static EpisodeCandidate Candidate(string         mediaType  = "SingleEpisode",
                                               EnumResolution resolution = EnumResolution.R1080P,
-                                              decimal episode = 3)
+                                              decimal        episode    = 3)
     {
         return new EpisodeCandidate
         {
@@ -24,7 +24,7 @@ public sealed class CandidateEligibilityPolicyTests
 
     private static SelectionRuleConfig Config(params EnumResolution[] allowed)
     {
-        var config = MediaManager.Core.Rules.Selection.SelectionRuleConfig.CreateDefault();
+        var config = SelectionRuleConfig.CreateDefault();
         return config with { AllowedResolutions = allowed };
     }
 
@@ -32,7 +32,7 @@ public sealed class CandidateEligibilityPolicyTests
     public void Evaluate_MultipleEpisode_NeedsReview()
     {
         var decision = new CandidateEligibilityPolicy()
-                      .Evaluate(Candidate(mediaType: "MultipleEpisode"), Config(EnumResolution.R1080P));
+           .Evaluate(Candidate("MultipleEpisode"), Config(EnumResolution.R1080P));
 
         Assert.Equal(EligibilityStatus.NeedsReview, decision.Status);
     }
@@ -40,7 +40,7 @@ public sealed class CandidateEligibilityPolicyTests
     [Fact]
     public void Evaluate_ResolutionOutsideAllowList_Ineligible()
     {
-        var decision = new CandidateEligibilityPolicy().Evaluate(Candidate(resolution: EnumResolution.R720P),
+        var decision = new CandidateEligibilityPolicy().Evaluate(Candidate(resolution : EnumResolution.R720P),
                                                                  Config(EnumResolution.R1080P));
 
         Assert.Equal(EligibilityStatus.Ineligible, decision.Status);
@@ -50,7 +50,7 @@ public sealed class CandidateEligibilityPolicyTests
     [Fact]
     public void Evaluate_EmptyAllowList_DoesNotRestrictResolution()
     {
-        var decision = new CandidateEligibilityPolicy().Evaluate(Candidate(resolution: EnumResolution.R4K),
+        var decision = new CandidateEligibilityPolicy().Evaluate(Candidate(resolution : EnumResolution.R4K),
                                                                  Config());
 
         Assert.Equal(EligibilityStatus.Eligible, decision.Status);
@@ -60,9 +60,9 @@ public sealed class CandidateEligibilityPolicyTests
     public void Evaluate_UnknownResolution_TreatedLikeAnyOtherValue()
     {
         var allowed = new CandidateEligibilityPolicy()
-                     .Evaluate(Candidate(resolution: EnumResolution.Unknown), Config(EnumResolution.R1080P));
+           .Evaluate(Candidate(resolution : EnumResolution.Unknown), Config(EnumResolution.R1080P));
         var permitted = new CandidateEligibilityPolicy()
-                       .Evaluate(Candidate(resolution: EnumResolution.Unknown), Config(EnumResolution.Unknown));
+           .Evaluate(Candidate(resolution : EnumResolution.Unknown), Config(EnumResolution.Unknown));
 
         Assert.Equal(EligibilityStatus.Ineligible, allowed.Status);
         Assert.Equal(EligibilityStatus.Eligible, permitted.Status);

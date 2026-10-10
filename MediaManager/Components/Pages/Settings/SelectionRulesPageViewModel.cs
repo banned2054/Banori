@@ -52,9 +52,9 @@ public sealed class SelectionRulesPageViewModel(
 {
     public SelectionRuleDraft Draft { get; } = new();
 
-    public bool Loaded        { get; private set; }
-    public bool Saving        { get; private set; }
-    public bool HasError      { get; private set; }
+    public bool    Loaded        { get; private set; }
+    public bool    Saving        { get; private set; }
+    public bool    HasError      { get; private set; }
     public string? StatusMessage { get; private set; }
 
     public int CurrentVersion { get; private set; }
@@ -97,7 +97,6 @@ public sealed class SelectionRulesPageViewModel(
             var result = await ruleSettings.SaveAsync(config, cancellationToken);
             ApplyConfig(result.Config);
             if (result.Changed)
-            {
                 // 重选挂应用停机令牌而非页面令牌：规则已落库，页面离开不应中断重选留下
                 // 半新半旧的选择结果；只有应用停机能打断，中断部分由恢复扫描按新版本补齐。
                 try
@@ -110,11 +109,8 @@ public sealed class SelectionRulesPageViewModel(
                     StatusMessage =
                         $"规则已保存为版本 {result.Config.Version}，重选因应用停机中断，已处理部分生效，剩余由恢复扫描补齐。";
                 }
-            }
             else
-            {
                 StatusMessage = $"规则内容未变化，版本保持 {result.Config.Version}";
-            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -195,7 +191,7 @@ public sealed class SelectionRulesPageViewModel(
 
     public void AddCombinedEntry()
     {
-        var group = Draft.NewEntryGroup?.Trim();
+        var group                              = Draft.NewEntryGroup?.Trim();
         if (string.IsNullOrEmpty(group)) group = null;
 
         Draft.CombinedEntries.Add(new CombinedRuleDraftEntry(group, Draft.NewEntryLanguage));
@@ -222,22 +218,22 @@ public sealed class SelectionRulesPageViewModel(
     /// <summary>把已保存配置同步进草稿；保存成功后也用它刷新，保证草稿与落库值一致。</summary>
     private void ApplyConfig(SelectionRuleConfig config)
     {
-        Draft.Mode              = config.Mode;
-        Draft.GroupOrder        = [.. config.GroupOrder];
-        Draft.LanguageOrder     = [.. config.LanguageOrder];
-        Draft.DimensionOrder    = config.DimensionOrder;
-        Draft.CombinedEntries   = config.CombinedEntries
-                                       .Select(entry => new CombinedRuleDraftEntry(entry.Group, entry.Language))
-                                       .ToList();
-        Draft.LanguageMatch       = config.LanguageMatch;
-        Draft.Unmatched           = config.Unmatched;
-        Draft.AllowedResolutions  = [.. config.AllowedResolutions];
-        Draft.NewGroupName        = null;
-        Draft.NewLanguage         = null;
-        Draft.NewEntryGroup       = null;
-        Draft.NewEntryLanguage    = null;
-        CurrentVersion            = config.Version;
-        Preview                   = null;
+        Draft.Mode           = config.Mode;
+        Draft.GroupOrder     = [.. config.GroupOrder];
+        Draft.LanguageOrder  = [.. config.LanguageOrder];
+        Draft.DimensionOrder = config.DimensionOrder;
+        Draft.CombinedEntries = config.CombinedEntries
+                                      .Select(entry => new CombinedRuleDraftEntry(entry.Group, entry.Language))
+                                      .ToList();
+        Draft.LanguageMatch      = config.LanguageMatch;
+        Draft.Unmatched          = config.Unmatched;
+        Draft.AllowedResolutions = [.. config.AllowedResolutions];
+        Draft.NewGroupName       = null;
+        Draft.NewLanguage        = null;
+        Draft.NewEntryGroup      = null;
+        Draft.NewEntryLanguage   = null;
+        CurrentVersion           = config.Version;
+        Preview                  = null;
     }
 
     /// <summary>把草稿转换为规则配置；拒绝空白字幕组名与组合模式空条件，未列出项走未命中策略是合法语义。</summary>
@@ -259,17 +255,17 @@ public sealed class SelectionRulesPageViewModel(
 
         return new SelectionRuleConfig
         {
-            Mode               = Draft.Mode,
-            GroupOrder         = Draft.GroupOrder.Select(group => group.Trim()).ToList(),
-            LanguageOrder      = [.. Draft.LanguageOrder],
-            DimensionOrder     = Draft.DimensionOrder,
-            CombinedEntries    = Draft.CombinedEntries
-                                     .Select(entry => new CombinedRuleEntry(
-                                                 string.IsNullOrWhiteSpace(entry.Group)
-                                                     ? null
-                                                     : entry.Group.Trim(),
-                                                 entry.Language))
-                                     .ToList(),
+            Mode           = Draft.Mode,
+            GroupOrder     = Draft.GroupOrder.Select(group => group.Trim()).ToList(),
+            LanguageOrder  = [.. Draft.LanguageOrder],
+            DimensionOrder = Draft.DimensionOrder,
+            CombinedEntries = Draft.CombinedEntries
+                                   .Select(entry => new CombinedRuleEntry(
+                                                                          string.IsNullOrWhiteSpace(entry.Group)
+                                                                              ? null
+                                                                              : entry.Group.Trim(),
+                                                                          entry.Language))
+                                   .ToList(),
             LanguageMatch      = Draft.LanguageMatch,
             Unmatched          = Draft.Unmatched,
             AllowedResolutions = [.. Draft.AllowedResolutions],

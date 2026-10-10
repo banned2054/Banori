@@ -22,5 +22,7 @@ public sealed class DefaultSelectionRuleProvider : ISelectionRuleProvider
 public sealed class SettingsSelectionRuleProvider(ManageSelectionRuleSettings ruleSettings) : ISelectionRuleProvider
 {
     public async ValueTask<SelectionRuleConfig> GetAsync(CancellationToken cancellationToken = default)
-        => await ruleSettings.GetAsync(cancellationToken);
+    {
+        return await ruleSettings.GetAsync(cancellationToken);
+    }
 }
