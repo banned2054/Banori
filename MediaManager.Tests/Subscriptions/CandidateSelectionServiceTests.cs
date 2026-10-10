@@ -1,3 +1,4 @@
+using Banned.AniParser;
 using Banned.AniParser.Models.Enums;
 using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
@@ -86,7 +87,7 @@ public sealed class CandidateSelectionServiceTests
 
         await using var db = await harness.CreateDbContextAsync();
         Assert.Equal(2, await db.DownloadTasks.CountAsync());
-        // 旧任务不是已完成状态，新任务创建时不声明替换；旧任务与资源保持原样等待完成时统一判定。
+        // 候选选择服务自身重选只更新选择意图；订阅 DownloadService 登记优胜时才依据跨路径裁决终止旧任务。
         var oldTask = await db.DownloadTasks.SingleAsync(task => task.Id == firstTaskId);
         Assert.Equal(DownloadTaskStatus.PendingSubmit, oldTask.Status);
         Assert.Null(oldTask.ReplacedByTaskId);
@@ -848,6 +849,7 @@ public sealed class CandidateSelectionServiceTests
         services.AddScoped<ManageQbittorrentSettings>();
         services.AddNotificationTestFakes();
         services.AddScoped<NamingTemplateStore>();
+        services.AddSingleton<DownloadCoordinationGate>();
         services.AddScoped<DownloadService>();
         // 与应用及订阅/设置测试保持一致的 Identity 模型配置：Identity 服务注册影响
         // ApplicationDbContext 模型缓存的行为，缺注册会与先构建模型的测试产生顺序依赖。
@@ -859,13 +861,7 @@ public sealed class CandidateSelectionServiceTests
         var dbFactory = provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
         var qbSettings = new ManageQbittorrentSettings(provider.GetRequiredService<IApplicationSettingStore>(),
                                                        sessionFactory);
-        var downloadService = new DownloadService(dbFactory,
-                                                  provider.GetRequiredService<ITorrentFileSource>(),
-                                                  new FakeFeedSourceReader(),
-                                                  sessionFactory, qbSettings,
-                                                  provider.GetRequiredService<NotificationEnqueuer>(),
-                                                  provider.GetRequiredService<TimeProvider>(),
-                                                  NullLogger<DownloadService>.Instance);
+        var settingsStore = provider.GetRequiredService<IApplicationSettingStore>();
         // 与应用注册一致：默认走设置存储提供者（未保存规则时回退内置默认规则），行为与
         // 旧的 DefaultSelectionRuleProvider 相同，同时支撑规则保存 / 预览 / 整库重选的回归。
         var ruleSettings = new ManageSelectionRuleSettings(provider.GetRequiredService<IApplicationSettingStore>(),
@@ -874,6 +870,22 @@ public sealed class CandidateSelectionServiceTests
                                     (ISelectionRuleProvider)(ruleConfig is null
                                         ? new SettingsSelectionRuleProvider(ruleSettings)
                                         : new FixedRuleProvider(ruleConfig));
+        var downloadService = new DownloadService(dbFactory,
+                                                  provider.GetRequiredService<DownloadCoordinationGate>(),
+                                                  provider.GetRequiredService<ITorrentFileSource>(),
+                                                  new FakeFeedSourceReader(),
+                                                  sessionFactory, qbSettings,
+                                                  provider.GetRequiredService<NotificationEnqueuer>(),
+                                                  new AniParser(), new NamingTemplateStore(settingsStore),
+                                                  new ReleaseNamePreviewPolicy(),
+                                                  new CandidateEligibilityPolicy(),
+                                                  new CandidateRankingPolicy(),
+                                                  selectionRuleProvider,
+                                                  UnusedSubjectProvider.Instance,
+                                                  UnusedSubjectLinkResolver.Instance,
+                                                  provider.GetRequiredService<TimeProvider>(),
+                                                  NullLogger<DownloadService>.Instance,
+                                                  new MediaManager.Core.Subjects.SubjectEpisodeCorrectionPolicy());
         // 门闸必须进程级共享：与应用的单例注册一致，两个服务实例（模拟刷新 worker 与
         // Blazor 电路各自的 Scoped 实例）通过同一门闸互斥同组并发。
         var gate      = new SelectionGroupGate();
@@ -882,6 +894,7 @@ public sealed class CandidateSelectionServiceTests
         CandidateSelectionService CreateService()
         {
             return new CandidateSelectionService(dbFactory, selectionRuleProvider, gate,
+                                                 provider.GetRequiredService<DownloadCoordinationGate>(),
                                                  new CandidateEligibilityPolicy(), new CandidateRankingPolicy(),
                                                  qbSettings, downloadService, fixedTime,
                                                  NullLogger<CandidateSelectionService>.Instance);
@@ -1183,6 +1196,28 @@ public sealed class CandidateSelectionServiceTests
             db.MediaSubscriptions.Add(subscription);
             await db.SaveChangesAsync();
             return subscription.Id;
+        }
+    }
+
+    /// <summary>订阅登记路径不触达 Subject 绑定解析，这两个替身只满足 DownloadService 构造签名。</summary>
+    private sealed class UnusedSubjectProvider : ISubjectMetadataProvider
+    {
+        public static readonly UnusedSubjectProvider Instance = new();
+
+        public Task<SubjectMetadata> GetAsync(int subjectId, CancellationToken cancellationToken = default)
+        {
+            throw new InvalidOperationException("订阅路径不应读取 Bangumi 元数据。");
+        }
+    }
+
+    private sealed class UnusedSubjectLinkResolver : ISubjectLinkResolver
+    {
+        public static readonly UnusedSubjectLinkResolver Instance = new();
+
+        public Task<int?> ResolveSubjectIdAsync(Uri               episodeUri, Guid? proxyId = null,
+                                                CancellationToken cancellationToken = default)
+        {
+            throw new InvalidOperationException("订阅路径不应解析条目链接。");
         }
     }
 }

@@ -58,14 +58,15 @@ public sealed class FakeTorrentStore
     public HashSet<string>                     Paused   { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public List<(byte[] Bytes, string SavePath, IReadOnlyList<string> Tags, string? Rename)> AddCalls { get; } = [];
-    public List<(string Hash, string Name)>                    RenameCalls       { get; } = [];
-    public List<(string Hash, string OldPath, string NewPath)> RenameFileCalls   { get; } = [];
+    public List<(string Hash, string Name)> RenameCalls { get; } = [];
+    public List<(string Hash, string OldPath, string NewPath)> RenameFileCalls { get; } = [];
     public List<(string Hash, string OldPath, string NewPath)> RenameFolderCalls { get; } = [];
-    public List<(string Hash, string Tag)>                     AddTagCalls       { get; } = [];
-    public List<string>                                        ResumeCalls       { get; } = [];
-    public List<string>                                        PauseCalls        { get; } = [];
+    public List<(string Hash, string Tag)> AddTagCalls { get; } = [];
+    public List<string> ResumeCalls { get; } = [];
+    public List<string> PauseCalls { get; } = [];
+    public List<(string Hash, bool DeleteFiles)> DeleteCalls { get; } = [];
 
-    public void AddTorrent(string hash,     string name, QbittorrentTorrentCategory category, double progress,
+    public void AddTorrent(string hash, string name, QbittorrentTorrentCategory category, double progress,
                            string savePath, IReadOnlyList<string>? fileNames = null,
                            IReadOnlyList<string>? tags = null)
     {
@@ -95,10 +96,16 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     /// <summary>AddTorrent 发出前回调，用于断言请求发出时本地已持久化的状态。</summary>
     public Func<Task>? BeforeAddTorrentAsync { get; set; }
 
+    /// <summary>AddTorrent 完成后回调：可确定性模拟服务端已接收、客户端尚未收到结果。</summary>
+    public Func<Task>? AfterAddTorrentAsync { get; set; }
+
+    /// <summary>FindTorrents 前回调：确定性挂起预检/查询，用于测试迟到结果处理。</summary>
+    public Func<IReadOnlyCollection<string>, Task>? BeforeFindTorrentsAsync { get; set; }
+
     public string ServerVersion => "v5.0.0-fake";
 
     public async Task<string> AddTorrentAsync(
-        byte[] torrentBytes, string savePath, IReadOnlyList<string> tags, string? rename,
+        byte[]            torrentBytes, string savePath, IReadOnlyList<string> tags, string? rename,
         CancellationToken cancellationToken = default)
     {
         if (BeforeAddTorrentAsync is not null) await BeforeAddTorrentAsync();
@@ -129,16 +136,18 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
                                                    QbittorrentTorrentCategory.Downloading, 0, 1024, savePath,
                                                    tags.ToList());
         store.Files.TryAdd(hash, ["原文件名.mkv"]);
+        if (AfterAddTorrentAsync is not null) await AfterAddTorrentAsync();
         return "Ok.";
     }
 
-    public Task<IReadOnlyList<TorrentSnapshot>> FindTorrentsAsync(
+    public async Task<IReadOnlyList<TorrentSnapshot>> FindTorrentsAsync(
         IReadOnlyCollection<string> infoHashes, CancellationToken cancellationToken = default)
     {
-        return Task.FromResult<IReadOnlyList<TorrentSnapshot>>(infoHashes
-                                                              .Where(hash => store.Torrents.ContainsKey(hash))
-                                                              .Select(SnapshotFor)
-                                                              .ToList());
+        if (BeforeFindTorrentsAsync is not null) await BeforeFindTorrentsAsync(infoHashes);
+        return infoHashes
+               .Where(hash => store.Torrents.ContainsKey(hash))
+               .Select(SnapshotFor)
+               .ToList();
     }
 
 
@@ -147,10 +156,10 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     {
         return Task.FromResult<IReadOnlyList<TorrentSnapshot>>(store.Torrents.Values
                                                                     .Where(snapshot => tag is null ||
-                                                                          SnapshotFor(snapshot.Hash)
-                                                                             .Tags.Contains(tag,
-                                                                                 StringComparer
-                                                                                    .OrdinalIgnoreCase))
+                                                                               SnapshotFor(snapshot.Hash)
+                                                                                  .Tags.Contains(tag,
+                                                                                            StringComparer
+                                                                                               .OrdinalIgnoreCase))
                                                                     .Select(snapshot => SnapshotFor(snapshot.Hash))
                                                                     .ToList());
     }
@@ -217,6 +226,22 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
                                                : name)
                                    .ToList();
 
+        return Task.CompletedTask;
+    }
+
+    public Task DeleteTorrentAsync(string infoHash, bool deleteFiles, CancellationToken cancellationToken = default)
+    {
+        store.DeleteCalls.Add((infoHash, deleteFiles));
+        store.Torrents.Remove(infoHash);
+        store.Files.Remove(infoHash);
+        store.Paused.Remove(infoHash);
+        return Task.CompletedTask;
+    }
+
+    public Task DeleteTorrentsAsync(IReadOnlyCollection<string> infoHashes, bool deleteFiles,
+                                    CancellationToken           cancellationToken = default)
+    {
+        foreach (var infoHash in infoHashes) DeleteTorrentAsync(infoHash, deleteFiles, cancellationToken);
         return Task.CompletedTask;
     }
 
@@ -312,9 +337,9 @@ public static class TestTorrentBytes
         var announceText = announce ?? "http://tracker.example/announce";
         return Encoding.UTF8.GetBytes(
                                       $"d8:announce{Encoding.UTF8.GetByteCount(announceText)}:{announceText}" +
-                                      "4:infod6:lengthi1024e"                         +
-                                      $"4:name{Encode(name)}"                         +
-                                      "12:piece lengthi16384e"                        +
+                                      "4:infod6:lengthi1024e"                                                 +
+                                      $"4:name{Encode(name)}"                                                 +
+                                      "12:piece lengthi16384e"                                                +
                                       "ee");
     }
 
@@ -328,5 +353,27 @@ public static class TestTorrentBytes
     private static string Encode(string value)
     {
         return $"{Encoding.UTF8.GetByteCount(value)}:{value}";
+    }
+}
+
+/// <summary>Subject 绑定解析的空实现替身：不触达绑定链路的测试 harness 只为满足 DownloadService 构造签名。</summary>
+public sealed class NullSubjectMetadataProvider : ISubjectMetadataProvider
+{
+    public static readonly NullSubjectMetadataProvider Instance = new();
+
+    public Task<SubjectMetadata> GetAsync(int subjectId, CancellationToken cancellationToken = default)
+    {
+        throw new InvalidOperationException("该测试不应读取 Bangumi 元数据。");
+    }
+}
+
+public sealed class NullSubjectLinkResolver : ISubjectLinkResolver
+{
+    public static readonly NullSubjectLinkResolver Instance = new();
+
+    public Task<int?> ResolveSubjectIdAsync(Uri               episodeUri, Guid? proxyId = null,
+                                            CancellationToken cancellationToken = default)
+    {
+        throw new InvalidOperationException("该测试不应解析条目链接。");
     }
 }

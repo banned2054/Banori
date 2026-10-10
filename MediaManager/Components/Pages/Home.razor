@@ -16,7 +16,7 @@
 
 <h1>总览</h1>
 
-<p class="lead">RSS 抓取评估与下载闭环正在运行；已选择的条目可在详情页创建下载任务。</p>
+<p class="lead">RSS 抓取评估与下载闭环正在运行；优胜条目自动登记下载任务。</p>
 
 <div class="d-flex flex-wrap gap-2 mb-3">
 	<button type="button" class="btn btn-primary" aria-expanded="@_showTorrentForm" @onclick="ToggleTorrentForm">
@@ -32,7 +32,7 @@
 	<div class="card mb-3">
 		<div class="card-body">
 			<h2 class="h5">添加 Torrent 下载</h2>
-			<p class="text-body-secondary small">选择种子后确认加入；任务不关联订阅与条目，按种子内名称命名。</p>
+			<p class="text-body-secondary small">选择种子后确认加入；任务不关联订阅与条目。每个种子都必须绑定 Bangumi：标题映射未命中时需填写 Bangumi ID，绑定后按 Bangumi 作品名（中文名优先）命名。</p>
 			<div class="row g-3 align-items-end">
 				<div class="col-md-7">
 					<label class="form-label" for="dashboard-torrent-file">Torrent 文件</label>
@@ -52,7 +52,15 @@
 						}
 					</div>
 				</div>
-				<div class="col-md-5 d-flex gap-2">
+				<div class="col-md-5 d-flex gap-2 align-items-end">
+					<div class="flex-grow-1">
+						<label class="form-label" for="dashboard-torrent-subject">Bangumi ID（可选）</label>
+						<input id="dashboard-torrent-subject" class="form-control" type="number" min="1"
+						       placeholder="标题映射未命中时必填" disabled="@_busy" @bind="_torrentSubjectId"/>
+						<div class="form-text">bgm.tv/subject/ 后面的数字。</div>
+					</div>
+				</div>
+				<div class="col-md-12 d-flex gap-2">
 					<button type="button" class="btn btn-primary" disabled="@(_busy || _torrentFile is null)"
 					        @onclick="ConfirmTorrentDownload">
 						@(_busy ? "正在登记…" : "确认并加入下载")
@@ -71,7 +79,7 @@
 		<div class="card mb-3">
 			<div class="card-body">
 				<h2 class="h5">RSS 链接下载</h2>
-				<p class="text-body-secondary small">抓取 RSS 中的所有条目，每个条目登记为一个下载任务；不创建订阅，重复资源自动跳过。</p>
+				<p class="text-body-secondary small">抓取 RSS 中的所有条目，每个条目登记为一个下载任务；不创建订阅，重复资源自动跳过。每个条目都必须绑定 Bangumi：按标题映射、feed 自带信息或条目链接自动识别，全部未命中时需在下方补充 Bangumi ID 后重试。</p>
 				<div class="row g-3">
 					<div class="col-md-7">
 						<label class="form-label" for="dashboard-rss-url">RSS 地址</label>
@@ -89,6 +97,12 @@
 							}
 						</select>
 						<div class="form-text">RSS 抓取与种子下载都走此代理。代理可在<a href="settings#network-proxy">设置的「网络代理」</a>中维护。</div>
+					</div>
+					<div class="col-md-4">
+						<label class="form-label" for="dashboard-rss-subject">Bangumi ID（可选）</label>
+						<input id="dashboard-rss-subject" class="form-control" type="number" min="1"
+						       placeholder="自动识别失败时必填" disabled="@_busy" @bind="_rssDraft.SubjectId"/>
+						<div class="form-text">整份 feed 视为同一部作品时填写；bgm.tv/subject/ 后面的数字。</div>
 					</div>
 				</div>
 				<div class="mt-3 d-flex gap-2">
@@ -116,7 +130,12 @@
 					{
 						<li>
 							<span class="text-break">@item.Title</span>：
-							@(item.Outcome == RssDownloadItemOutcome.Duplicate ? "跳过（重复）" : "失败")
+							@(item.Outcome switch
+							{
+								RssDownloadItemOutcome.Duplicate  => "跳过（重复）",
+								RssDownloadItemOutcome.Superseded => "跳过（同集择优）",
+								_                                 => "失败"
+							})
 							@if (!string.IsNullOrWhiteSpace(item.Error) &&
 							     item.Error != "同一资源已有下载任务。")
 							{
@@ -145,7 +164,7 @@
 			<div class="card-body">
 				<h2 class="h5">已选择条目</h2>
 				<p class="display-6 mb-1">@(_snapshot?.AcceptedItems ?? 0)</p>
-				<p class="text-body-secondary mb-0">可在详情页创建下载</p>
+				<p class="text-body-secondary mb-0">评估通过的优胜候选</p>
 			</div>
 		</div>
 	</div>
@@ -179,6 +198,7 @@
 	private RssDownloadResult?       _rssResult;
 	private IReadOnlyList<ProxyView> _proxies = [];
 	private IBrowserFile?            _torrentFile;
+	private int?                     _torrentSubjectId;
 	private bool                     _showTorrentForm;
 	private bool                     _showRssForm;
 	private bool                     _busy;
@@ -228,10 +248,11 @@
 			                                                         DownloadTasksPageViewModel.MaxTorrentUploadBytes);
 			using var buffer = new MemoryStream();
 			await fileStream.CopyToAsync(buffer);
-			await DownloadService.CreateFromUploadAsync(buffer.ToArray());
+			await DownloadService.CreateFromUploadAsync(buffer.ToArray(), null, _torrentSubjectId);
 			_operationSucceeded = true;
 			_message            = "Torrent 已登记，等待提交下载器。";
 			_torrentFile        = null;
+			_torrentSubjectId   = null;
 			_showTorrentForm    = false;
 		}
 		catch (InvalidOperationException exception)
@@ -259,9 +280,9 @@
 		try
 		{
 			var proxyId = Guid.TryParse(_rssDraft.ProxyId, out var parsed) ? parsed : (Guid?)null;
-			var result  = await DownloadService.CreateFromRssFeedAsync(_rssDraft.FeedUrl, proxyId);
+			var result  = await DownloadService.CreateFromRssFeedAsync(_rssDraft.FeedUrl, proxyId, _rssDraft.SubjectId);
 			_rssResult = result;
-			if (result.CreatedCount == 0 && !result.HasChanges)
+			if (result.CreatedCount == 0 && !result.HasChanges && result.SupersededCount == 0)
 			{
 				_operationSucceeded = false;
 				_message            = "没有登记任何下载任务，请查看失败明细。";
@@ -269,9 +290,10 @@
 			else
 			{
 				_operationSucceeded = true;
-				_message = $"RSS 抓取完成：新建 {result.CreatedCount} 个下载任务"                                      +
-				           (result.DuplicateCount > 0 ? $"，跳过重复 {result.DuplicateCount} 个" : string.Empty) +
-				           (result.FailedCount    > 0 ? $"，失败 {result.FailedCount} 个" : string.Empty)      +
+				_message = $"RSS 抓取完成：新建 {result.CreatedCount} 个下载任务"                                        +
+				           (result.DuplicateCount  > 0 ? $"，跳过重复 {result.DuplicateCount} 个" : string.Empty)  +
+				           (result.SupersededCount > 0 ? $"，择优跳过 {result.SupersededCount} 个" : string.Empty) +
+				           (result.FailedCount     > 0 ? $"，失败 {result.FailedCount} 个" : string.Empty)       +
 				           "。任务列表见下载页。";
 				_rssDraft.Reset();
 				_showRssForm = false;
@@ -294,7 +316,7 @@
 		}
 	}
 
-	/// <summary>RSS 链接下载表单：RSS 地址必填，代理可选。</summary>
+	/// <summary>RSS 链接下载表单：RSS 地址必填，代理与 Bangumi ID 可选。</summary>
 	private sealed class RssDownloadDraft
 	{
 		[Required(ErrorMessage = "请填写 RSS 地址。")]
@@ -303,10 +325,14 @@
 		/// <summary>代理下拉的绑定值（代理 Id 的字符串形式）；空表示直连。</summary>
 		public string? ProxyId { get; set; }
 
+		/// <summary>整份 feed 统一绑定的 Bangumi Subject ID；自动识别失败时由用户显式提供。</summary>
+		public int? SubjectId { get; set; }
+
 		public void Reset()
 		{
-			FeedUrl = string.Empty;
-			ProxyId = null;
+			FeedUrl   = string.Empty;
+			ProxyId   = null;
+			SubjectId = null;
 		}
 	}
 

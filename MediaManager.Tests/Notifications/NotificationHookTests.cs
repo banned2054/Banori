@@ -1,4 +1,6 @@
+using Banned.AniParser;
 using MediaManager.Core.Rules;
+using MediaManager.Core.Rules.Selection;
 using MediaManager.Data;
 using MediaManager.Features.Downloads;
 using MediaManager.Features.Notifications;
@@ -151,7 +153,18 @@ public sealed class NotificationHookTests
         services.AddDataProtection();
         services.AddNotificationTestFakes();
         services.AddSingleton<IFeedSourceReader>(new FakeFeedSourceReader());
+        services.AddSingleton<AniParser>();
+        services.AddSingleton<ReleaseNamePreviewPolicy>();
+        services.AddSingleton<CandidateEligibilityPolicy>();
+        services.AddSingleton<CandidateRankingPolicy>();
+        services.AddScoped<ManageSelectionRuleSettings>();
+        services.AddScoped<ISelectionRuleProvider, SettingsSelectionRuleProvider>();
         services.AddScoped<NamingTemplateStore>();
+        // 通知链路不触达 Subject 绑定解析，空实现只满足 DownloadService 构造签名。
+        services.AddSingleton<ISubjectMetadataProvider>(NullSubjectMetadataProvider.Instance);
+        services.AddSingleton<ISubjectLinkResolver>(NullSubjectLinkResolver.Instance);
+        services.AddSingleton<MediaManager.Core.Subjects.SubjectEpisodeCorrectionPolicy>();
+        services.AddSingleton<DownloadCoordinationGate>();
         services.AddScoped<DownloadService>();
         // 与应用及下载/订阅测试保持一致的 Identity 模型配置，避免 ApplicationDbContext 模型缓存顺序依赖。
         services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion =

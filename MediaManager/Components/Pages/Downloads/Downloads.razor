@@ -14,13 +14,32 @@
 		<h1 class="mb-1">下载任务</h1>
 		<div class="text-body-secondary">提交、对账与完成状态每 15 秒自动刷新；替换只记录关系，旧任务与文件保留。</div>
 	</div>
+	<div class="d-flex gap-2 flex-shrink-0 ms-3">
+		@if (_vm.BatchMode)
+		{
+			<button type="button" class="btn btn-outline-danger" disabled="@(_vm.Busy || _vm.SelectedCount == 0)"
+			        @onclick="OpenBulkDeletePanelAsync">
+				删除所选（@_vm.SelectedCount）
+			</button>
+			<button type="button" class="btn btn-outline-secondary" disabled="@_vm.Busy" @onclick="_vm.ToggleBatchMode">
+				退出批量选择
+			</button>
+		}
+		else
+		{
+			<button type="button" class="btn btn-outline-secondary" disabled="@(_vm.Busy || _vm.Tasks.Count == 0)"
+			        @onclick="_vm.ToggleBatchMode">
+				批量选择
+			</button>
+		}
+	</div>
 </div>
 
 <div class="card mb-3">
 	<div class="card-body">
 		<h2 class="h5">上传种子</h2>
 		<div class="text-body-secondary small mb-2">
-			选择文件后会立即登记下载任务；不关联订阅与条目，按种子内名称命名并提交下载器。来源站点按种子内 tracker 自动识别，无法识别时才取下方手填值。
+			选择文件后会立即登记下载任务；不关联订阅与条目。每个种子都必须绑定 Bangumi：标题映射未命中时需填写 Bangumi ID，绑定后按 Bangumi 作品名（中文名优先）命名。来源站点按种子内 tracker 自动识别，无法识别时才取下方手填值。
 		</div>
 		<div class="row g-2 align-items-center">
 			<div class="col-auto">
@@ -32,7 +51,12 @@
 			<div class="col-auto">
 				<label for="torrent-upload-site" class="visually-hidden">来源站点</label>
 				<input id="torrent-upload-site" class="form-control" type="text" placeholder="来源站点（tracker 无法识别时使用）"
-					   maxlength="50" disabled="@_vm.Busy" @bind="_vm.UploadSiteSource"/>
+				       maxlength="50" disabled="@_vm.Busy" @bind="_vm.UploadSiteSource"/>
+			</div>
+			<div class="col-auto">
+				<label for="torrent-upload-subject" class="visually-hidden">Bangumi ID</label>
+				<input id="torrent-upload-subject" class="form-control" type="number" placeholder="Bangumi ID（映射未命中时必填）"
+				       min="1" disabled="@_vm.Busy" @bind="_vm.UploadSubjectId"/>
 			</div>
 			<div class="col-auto">
 				<span class="small text-body-secondary">最大 10 MB</span>
@@ -47,7 +71,7 @@
 }
 else if (_vm.Tasks.Count == 0)
 {
-	<p class="text-body-secondary">还没有下载任务。上传 .torrent 文件，或在条目详情页对已选择的条目创建下载任务。</p>
+	<p class="text-body-secondary">还没有下载任务。上传 .torrent 文件，或使用总览页的 RSS 链接下载。</p>
 }
 else
 {
@@ -55,6 +79,13 @@ else
 		<table class="table align-middle">
 			<thead>
 			<tr>
+				@if (_vm.BatchMode)
+				{
+					<th style="width: 1rem;">
+						<input type="checkbox" class="form-check-input mt-0" aria-label="全选"
+						       checked="@_vm.AllSelected" @onchange="_vm.ToggleSelectAll"/>
+					</th>
+				}
 				<th>任务</th>
 				<th>状态</th>
 				<th style="min-width: 140px;">进度</th>
@@ -67,12 +98,22 @@ else
 			@foreach (var task in _vm.Tasks)
 			{
 				<tr>
+					@if (_vm.BatchMode)
+					{
+						<td>
+							<input type="checkbox" class="form-check-input mt-0"
+							       aria-label="选择 @task.NamingSnapshot"
+							       checked="@_vm.IsSelected(task.Id)" @onchange="() => _vm.ToggleSelected(task.Id)"/>
+						</td>
+					}
 					<td>
 						<div class="fw-semibold">@DownloadStatusTitle(task)</div>
 						<code class="small">@task.NamingSnapshot</code>
 						@if (!string.IsNullOrEmpty(task.SiteSource))
 						{
-							<div><span class="badge text-bg-info">@task.SiteSource</span></div>
+							<div>
+								<span class="badge text-bg-info">@task.SiteSource</span>
+							</div>
 						}
 					</td>
 					<td>
@@ -113,17 +154,22 @@ else
 						}
 					</td>
 					<td class="text-end">
-						@if (task.Status == DownloadTaskStatus.Downloading)
+						@if (!_vm.BatchMode)
 						{
-							<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => PauseAsync(task.Id)">暂停</button>
-						}
-						else if (task.Status == DownloadTaskStatus.Paused && task.IsUserPaused)
-						{
-							<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => ResumeAsync(task.Id)">恢复</button>
-						}
-						else if (task.Status is DownloadTaskStatus.Failed or DownloadTaskStatus.Lost)
-						{
-							<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RetryAsync(task.Id)">重试</button>
+							@if (task.Status == DownloadTaskStatus.Downloading)
+							{
+								<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => PauseAsync(task.Id)">暂停</button>
+							}
+							else if (task.Status == DownloadTaskStatus.Paused && task.IsUserPaused)
+							{
+								<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => ResumeAsync(task.Id)">恢复</button>
+							}
+							else if (task.Status is DownloadTaskStatus.Failed or DownloadTaskStatus.Lost)
+							{
+								<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RetryAsync(task.Id)">重试</button>
+							}
+
+							<button class="btn btn-sm btn-outline-danger ms-1" disabled="@_vm.Busy" @onclick="() => OpenDeletePanelAsync(task)">删除</button>
 						}
 					</td>
 				</tr>
@@ -138,6 +184,113 @@ else
 	<div class="alert @(_vm.Succeeded ? "alert-success" : "alert-danger") mt-3" role="status">
 		@_vm.Message
 	</div>
+}
+
+@if (_vm.DeleteTarget is { } deleteTarget)
+{
+	<div class="modal d-block" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="delete-task-title">
+		<div class="modal-dialog modal-dialog-centered">
+			<div class="modal-content">
+				<div class="modal-header">
+					<h2 id="delete-task-title" class="modal-title h5">删除下载任务</h2>
+					<button type="button" class="btn-close" aria-label="关闭" disabled="@_vm.Busy" @onclick="_vm.CancelDelete"></button>
+				</div>
+				<div class="modal-body">
+					<p class="mb-2">将删除任务记录「@DownloadStatusTitle(deleteTarget)」。</p>
+					@if (_vm.TorrentInDownloader == false)
+					{
+						<p class="text-body-secondary small mb-0">下载器中没有该任务的种子，仅删除本应用中的记录。</p>
+					}
+					else
+					{
+						@if (_vm.TorrentInDownloader is null)
+						{
+							<p class="text-body-secondary small">暂时无法确认下载器状态，是否同时删除下载器中的种子由你决定。</p>
+						}
+
+						<div class="form-check">
+							<input id="delete-downloader-torrent" class="form-check-input" type="checkbox"
+							       disabled="@_vm.Busy" @bind="_vm.DeleteFromDownloader"/>
+							<label class="form-check-label" for="delete-downloader-torrent">同时删除 qBittorrent 中的种子</label>
+						</div>
+						@if (_vm.DeleteFromDownloader)
+						{
+							<div class="form-check mt-2">
+								<input id="delete-downloader-files" class="form-check-input" type="checkbox"
+								       disabled="@_vm.Busy" @bind="_vm.DeleteFiles"/>
+								<label class="form-check-label" for="delete-downloader-files">
+									同时删除已下载的文件<span class="text-danger">（从磁盘删除，不可恢复）</span>
+								</label>
+							</div>
+						}
+					}
+				</div>
+				<div class="modal-footer">
+					<button type="button" class="btn btn-outline-secondary" disabled="@_vm.Busy" @onclick="_vm.CancelDelete">取消</button>
+					<button type="button" class="btn btn-danger" disabled="@_vm.Busy" @onclick="() => DeleteAsync(deleteTarget.Id)">
+						@(_vm.Busy ? "正在删除…" : "删除")
+					</button>
+				</div>
+			</div>
+		</div>
+	</div>
+	<div class="modal-backdrop fade show"></div>
+}
+
+@if (_vm.BulkDeletePanelOpen && _vm.BulkPrecheck is { } precheck)
+{
+	var showDownloaderOptions = !precheck.DownloaderChecked || precheck.TorrentsInDownloader > 0;
+	<div class="modal d-block" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="bulk-delete-title">
+		<div class="modal-dialog modal-dialog-centered">
+			<div class="modal-content">
+				<div class="modal-header">
+					<h2 id="bulk-delete-title" class="modal-title h5">批量删除下载任务</h2>
+					<button type="button" class="btn-close" aria-label="关闭" disabled="@_vm.Busy" @onclick="_vm.CancelBulkDelete"></button>
+				</div>
+				<div class="modal-body">
+					<p class="mb-2">将删除 @precheck.TaskCount 个任务的记录。</p>
+					@if (showDownloaderOptions)
+					{
+						@if (!precheck.DownloaderChecked)
+						{
+							<p class="text-body-secondary small">暂时无法确认下载器状态，是否同时删除下载器中的种子由你决定。</p>
+						}
+						else if (precheck.TorrentsInDownloader < precheck.TaskCount)
+						{
+							<p class="text-body-secondary small">所选任务中有 @precheck.TorrentsInDownloader 个在下载器中存在种子。</p>
+						}
+
+						<div class="form-check">
+							<input id="bulk-delete-downloader-torrent" class="form-check-input" type="checkbox"
+							       disabled="@_vm.Busy" @bind="_vm.DeleteFromDownloader"/>
+							<label class="form-check-label" for="bulk-delete-downloader-torrent">同时删除 qBittorrent 中的种子</label>
+						</div>
+						@if (_vm.DeleteFromDownloader)
+						{
+							<div class="form-check mt-2">
+								<input id="bulk-delete-downloader-files" class="form-check-input" type="checkbox"
+								       disabled="@_vm.Busy" @bind="_vm.DeleteFiles"/>
+								<label class="form-check-label" for="bulk-delete-downloader-files">
+									同时删除已下载的文件<span class="text-danger">（从磁盘删除，不可恢复）</span>
+								</label>
+							</div>
+						}
+					}
+					else
+					{
+						<p class="text-body-secondary small mb-0">下载器中没有这些任务的种子，仅删除本应用中的记录。</p>
+					}
+				</div>
+				<div class="modal-footer">
+					<button type="button" class="btn btn-outline-secondary" disabled="@_vm.Busy" @onclick="_vm.CancelBulkDelete">取消</button>
+					<button type="button" class="btn btn-danger" disabled="@_vm.Busy" @onclick="ConfirmBulkDeleteAsync">
+						@(_vm.Busy ? "正在删除…" : $"删除 {precheck.TaskCount} 个任务")
+					</button>
+				</div>
+			</div>
+		</div>
+	</div>
+	<div class="modal-backdrop fade show"></div>
 }
 
 @code {
@@ -197,6 +350,44 @@ else
 		return RunOperationAsync(() => _vm.RetryAsync(taskId, _cts.Token));
 	}
 
+	private async Task OpenDeletePanelAsync(DownloadTaskView task)
+	{
+		try
+		{
+			await _vm.PrepareDeleteAsync(task, _cts.Token);
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+	}
+
+	private Task DeleteAsync(Guid taskId)
+	{
+		return RunOperationAsync(() => _vm.DeleteAsync(taskId, _cts.Token));
+	}
+
+	private async Task OpenBulkDeletePanelAsync()
+	{
+		try
+		{
+			await _vm.PrepareBulkDeleteAsync(_cts.Token);
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+	}
+
+	private async Task ConfirmBulkDeleteAsync()
+	{
+		try
+		{
+			await _vm.ConfirmBulkDeleteAsync(_cts.Token);
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+	}
+
 	private async Task UploadTorrentAsync(InputFileChangeEventArgs e)
 	{
 		var file = e.File;
@@ -230,10 +421,16 @@ else
 
 	private static string DownloadStatusTitle(DownloadTaskView task)
 	{
-		var subject = string.IsNullOrWhiteSpace(task.SubjectName) ? task.NamingSnapshot : task.SubjectName;
-		var episode = task.Episode is null ? string.Empty : $" 第{task.Episode:0.##}集";
+		var subject  = string.IsNullOrWhiteSpace(task.SubjectName) ? task.NamingSnapshot : task.SubjectName;
+		var episode  = task.Episode is null ? string.Empty : $" 第{task.Episode:0.##}集";
+		var language = string.IsNullOrWhiteSpace(task.SubtitleLanguage) ? string.Empty : $" {task.SubtitleLanguage}";
+		// 命名要素的 Group 在无字幕组名时回退存语言名，与语言相同只展示一个。
+		var group = string.IsNullOrWhiteSpace(task.SubtitleGroup) ||
+		            string.Equals(task.SubtitleGroup, task.SubtitleLanguage, StringComparison.OrdinalIgnoreCase)
+			? string.Empty
+			: $" {task.SubtitleGroup}";
 		var version = task.Version > 1 ? $" v{task.Version}" : string.Empty;
-		return $"{subject}{episode}{version}";
+		return $"{subject}{episode}{language}{group}{version}";
 	}
 
 	private static string StatusText(DownloadTaskView task)

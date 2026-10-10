@@ -10,7 +10,7 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
 {
     public string ServerVersion => client.QbittorrentVersion;
 
-    public async Task<string> AddTorrentAsync(byte[]                torrentBytes, string savePath,
+    public async Task<string> AddTorrentAsync(byte[]                torrentBytes, string  savePath,
                                               IReadOnlyList<string> tags,         string? rename,
                                               CancellationToken     cancellationToken = default)
     {
@@ -100,6 +100,18 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
         return client.Torrent.RenameTorrentFolder(NormalizeHash(infoHash), oldPath, newPath, cancellationToken);
     }
 
+    public Task DeleteTorrentAsync(string infoHash, bool deleteFiles, CancellationToken cancellationToken = default)
+    {
+        return client.Torrent.DeleteTorrent(NormalizeHash(infoHash), deleteFiles, cancellationToken);
+    }
+
+    public Task DeleteTorrentsAsync(IReadOnlyCollection<string> infoHashes, bool deleteFiles,
+                                    CancellationToken           cancellationToken = default)
+    {
+        return client.Torrent.DeleteTorrents(infoHashes.Select(NormalizeHash).ToList(), deleteFiles,
+                                             cancellationToken);
+    }
+
     public ValueTask DisposeAsync()
     {
         client.Dispose();
@@ -112,7 +124,7 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
                                    QbittorrentTorrentStateMapper.Map(info.State ?? EnumTorrentState.Unknown),
                                    info.Progress  ?? 0,
                                    info.TotalSize ?? 0, info.SavePath ?? string.Empty,
-                                   info.TagList ?? []);
+                                   info.TagList   ?? []);
     }
 
     private static string NormalizeHash(string hash)

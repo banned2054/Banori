@@ -50,6 +50,8 @@ public sealed record DownloadTaskView
     public          string?            SubjectName      { get; init; }
     public          decimal?           Episode          { get; init; }
     public          int                Version          { get; init; }
+    public          string?            SubtitleGroup    { get; init; }
+    public          string?            SubtitleLanguage { get; init; }
     public required DownloadTaskStatus Status           { get; init; }
     public          bool               IsUserPaused     { get; init; }
     public          double?            Progress         { get; init; }
@@ -76,6 +78,9 @@ public enum RssDownloadItemOutcome
     /// <summary>同 hash 任务已存在（进行中或已完成），跳过。</summary>
     Duplicate,
 
+    /// <summary>同集择优落选：批内同集分组未选中，或统一裁决输给既有更优任务。</summary>
+    Superseded,
+
     /// <summary>登记失败（种子下载失败、种子无效等）。</summary>
     Failed
 }
@@ -91,21 +96,15 @@ public sealed record RssDownloadItemResult(
 public sealed record RssDownloadResult(
     int                                  CreatedCount,
     int                                  DuplicateCount,
+    int                                  SupersededCount,
     int                                  FailedCount,
     IReadOnlyList<RssDownloadItemResult> Items)
 {
     public bool HasChanges => CreatedCount > 0 || DuplicateCount > 0;
 }
 
-/// <summary>条目详情页附带的下载任务摘要。</summary>
-public sealed record DownloadTaskBrief
-{
-    public required Guid               Id             { get; init; }
-    public required DownloadTaskStatus Status         { get; init; }
-    public          bool               IsUserPaused   { get; init; }
-    public          double?            Progress       { get; init; }
-    public          string?            NamingSnapshot { get; init; }
-    public          string?            FailedStep     { get; init; }
-    public          string?            Error          { get; init; }
-    public          DateTimeOffset     CreatedAtUtc   { get; init; }
-}
+/// <summary>批量删除面板预检结果：现存任务数、其中在下载器里能找到种子的数量、下载器状态是否成功确认。</summary>
+public sealed record BulkDeletePrecheck(
+    int  TaskCount,
+    int  TorrentsInDownloader,
+    bool DownloaderChecked);

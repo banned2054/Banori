@@ -208,7 +208,7 @@ public sealed class CandidateRankingPolicyTests
     public void Select_SameGroupRevisionUpgrade_OverridesCurrentWinner()
     {
         // 现任优胜是 v1 时，同字幕组的 v2 是严格升级，必须胜出；现任保留不得阻止版本升级。
-        var currentV1 = Candidate("LoliHouse", EnumLanguage.JpSc, 1,
+        var currentV1 = Candidate("LoliHouse", EnumLanguage.JpSc,
                                   stableId : "guid:current-v1", itemId : CurrentItemId);
         var newV2  = Candidate("LoliHouse", EnumLanguage.JpSc, 2, stableId : "guid:new-v2");
         var policy = new CandidateRankingPolicy();
@@ -222,7 +222,7 @@ public sealed class CandidateRankingPolicyTests
     public void Select_SameGroupUpgrade_IgnoresGroupCase()
     {
         // 字幕组匹配不区分大小写：现任 ANi v1 与新候选 ani v2 是同组修订升级，不得视为跨组保留现任。
-        var currentV1 = Candidate("ANi", EnumLanguage.JpSc, 1, stableId : "guid:current-ani-v1",
+        var currentV1 = Candidate("ANi", EnumLanguage.JpSc, stableId : "guid:current-ani-v1",
                                   itemId : CurrentItemId);
         var newV2  = Candidate("ani", EnumLanguage.JpSc, 2, stableId : "guid:ani-lower-v2");
         var policy = new CandidateRankingPolicy();
@@ -237,10 +237,10 @@ public sealed class CandidateRankingPolicyTests
     {
         // 同优先级兜底桶内：现任 Zulu v1、候选 Zulu v2、候选 Alpha v1。
         // 若现任保留进入排序链会形成 v2>v1、现任>Alpha、Alpha>Zulu v2 的循环，导致结果随输入顺序变化。
-        var currentZuluV1 = Candidate("Zulu", EnumLanguage.Sc, 1,
+        var currentZuluV1 = Candidate("Zulu", EnumLanguage.Sc,
                                       stableId : "guid:zulu-v1", itemId : CurrentItemId);
         var zuluV2  = Candidate("Zulu", EnumLanguage.Sc, 2, stableId : "guid:zulu-v2");
-        var alphaV1 = Candidate("Alpha", EnumLanguage.Sc, 1, stableId : "guid:alpha-v1");
+        var alphaV1 = Candidate("Alpha", EnumLanguage.Sc, stableId : "guid:alpha-v1");
         var policy  = new CandidateRankingPolicy();
 
         var orders = new[]
@@ -281,13 +281,13 @@ public sealed class CandidateRankingPolicyTests
     public void Select_VersionUpgradesOnlyWithinSameGroup()
     {
         var aniV9     = Candidate("ANi", EnumLanguage.JpSc, 9);
-        var loliHouse = Candidate("LoliHouse", EnumLanguage.JpSc, 1);
+        var loliHouse = Candidate("LoliHouse", EnumLanguage.JpSc);
         var policy    = new CandidateRankingPolicy();
 
         var crossGroup = policy.Select([aniV9, loliHouse], IndependentConfig());
         var sameGroup = policy.Select(
         [
-            Candidate("LoliHouse", EnumLanguage.JpSc, 1),
+            Candidate("LoliHouse", EnumLanguage.JpSc),
             Candidate("LoliHouse", EnumLanguage.JpSc, 2)
         ], IndependentConfig());
 
@@ -308,6 +308,6 @@ public sealed class CandidateRankingPolicyTests
         var config = CombinedConfig([]);
         Assert.Throws<ArgumentException>(() =>
                                              new CandidateRankingPolicy().Select([Candidate("ANi", EnumLanguage.Sc)],
-                                                 config));
+                                                      config));
     }
 }

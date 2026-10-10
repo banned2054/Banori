@@ -1,3 +1,4 @@
+using Banned.AniParser;
 using Banned.AniParser.Models.Enums;
 using MediaManager.Components.Pages.Settings;
 using MediaManager.Core.Rules;
@@ -247,7 +248,14 @@ public sealed class SelectionRulesPageViewModelTests
         services.AddScoped<ManageQbittorrentSettings>();
         services.AddNotificationTestFakes();
         services.AddSingleton<IFeedSourceReader>(new FakeFeedSourceReader());
+        services.AddSingleton<AniParser>();
+        services.AddSingleton<ReleaseNamePreviewPolicy>();
         services.AddScoped<NamingTemplateStore>();
+        // 规则页链路不触达 Subject 绑定解析，空实现只满足 DownloadService 构造签名。
+        services.AddSingleton<ISubjectMetadataProvider>(NullSubjectMetadataProvider.Instance);
+        services.AddSingleton<ISubjectLinkResolver>(NullSubjectLinkResolver.Instance);
+        services.AddSingleton<MediaManager.Core.Subjects.SubjectEpisodeCorrectionPolicy>();
+        services.AddSingleton<DownloadCoordinationGate>();
         services.AddScoped<DownloadService>();
         services.AddSingleton<CandidateEligibilityPolicy>();
         services.AddSingleton<CandidateRankingPolicy>();

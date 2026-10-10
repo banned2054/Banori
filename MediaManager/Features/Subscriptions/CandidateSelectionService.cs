@@ -46,6 +46,7 @@ public sealed class CandidateSelectionService(
     IDbContextFactory<ApplicationDbContext> dbContextFactory,
     ISelectionRuleProvider                  ruleProvider,
     SelectionGroupGate                      groupGate,
+    MediaManager.Features.Downloads.DownloadCoordinationGate downloadGate,
     CandidateEligibilityPolicy              eligibilityPolicy,
     CandidateRankingPolicy                  rankingPolicy,
     ManageQbittorrentSettings               qbittorrentSettings,
@@ -97,7 +98,9 @@ public sealed class CandidateSelectionService(
                 if (plan is null) continue;
 
                 plans.Add(plan);
-                await CommitSelectionAsync(plan, resetFailedIntent, cancellationToken);
+                // 登记事务与 qB 提交/删除共用同一进程门禁，防止跨 scope 竞态。
+                using (await downloadGate.EnterAsync(cancellationToken))
+                    await CommitSelectionAsync(plan, resetFailedIntent, cancellationToken);
             }
             finally
             {
@@ -593,7 +596,7 @@ public sealed class CandidateSelectionService(
                         else
                         {
                             selection.IntentTaskId = await downloadService.CreateTaskWithinContextAsync(
-                             db, winnerItem, torrentBytes!, infoHash!, cancellationToken);
+                                 db, winnerItem, torrentBytes!, infoHash!, cancellationToken);
                             selection.IntentFailedReason = null;
                         }
                     }

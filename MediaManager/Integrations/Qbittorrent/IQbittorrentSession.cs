@@ -31,9 +31,9 @@ public interface IQbittorrentSession : IAsyncDisposable
     string ServerVersion { get; }
 
     /// <summary>提交种子文件字节，同时设置隔离保存路径、来源 tag 与种子名（rename）。返回下载器原始响应文本（"Ok." / "Fails."），由调用方解释；协议错误抛 QbittorrentException。</summary>
-    Task<string> AddTorrentAsync(byte[]                   torrentBytes, string savePath,
-                                 IReadOnlyList<string>    tags,         string? rename,
-                                 CancellationToken cancellationToken = default);
+    Task<string> AddTorrentAsync(byte[]                torrentBytes, string  savePath,
+                                 IReadOnlyList<string> tags,         string? rename,
+                                 CancellationToken     cancellationToken = default);
 
     /// <summary>按规范化 Hash 批量查询任务；不存在的 Hash 不出现在结果中。</summary>
     Task<IReadOnlyList<TorrentSnapshot>> FindTorrentsAsync(IReadOnlyCollection<string> infoHashes,
@@ -62,6 +62,13 @@ public interface IQbittorrentSession : IAsyncDisposable
     /// <summary>按相对路径重命名种子内文件夹（qBittorrent renameFolder）。</summary>
     Task RenameTorrentFolderAsync(string            infoHash, string oldPath, string newPath,
                                   CancellationToken cancellationToken = default);
+
+    /// <summary>从下载器删除种子；deleteFiles 为 true 时连同已下载的文件一起删除。</summary>
+    Task DeleteTorrentAsync(string infoHash, bool deleteFiles, CancellationToken cancellationToken = default);
+
+    /// <summary>从下载器批量删除种子；deleteFiles 为 true 时连同已下载的文件一起删除。</summary>
+    Task DeleteTorrentsAsync(IReadOnlyCollection<string> infoHashes, bool deleteFiles,
+                             CancellationToken           cancellationToken = default);
 }
 
 /// <summary>会话工厂：每次创建独立登录的会话。未配置或禁用时 CreateAsync 抛 InvalidOperationException。</summary>
