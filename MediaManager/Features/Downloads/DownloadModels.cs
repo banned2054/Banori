@@ -55,6 +55,7 @@ public sealed record DownloadTaskView
     public          double?            Progress         { get; init; }
     public          long?              TotalSize        { get; init; }
     public          string?            NamingSnapshot   { get; init; }
+    public          string?            SiteSource       { get; init; }
     public          string?            FailedStep       { get; init; }
     public          string?            Error            { get; init; }
     public required DateTimeOffset     CreatedAtUtc     { get; init; }

@@ -3,7 +3,9 @@ using Banned.AniParser.Models;
 using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
 using MediaManager.Core.Subjects;
+using MediaManager.Core.Torrents;
 using MediaManager.Data;
+using MediaManager.Features.Downloads;
 using MediaManager.Integrations;
 using Microsoft.EntityFrameworkCore;
 
@@ -23,6 +25,7 @@ public sealed class FeedItemEvaluator(
     CandidateEligibilityPolicy              eligibilityPolicy,
     SubjectEpisodeCorrectionPolicy          correctionPolicy,
     ReleaseNamePreviewPolicy                namingPolicy,
+    NamingTemplateStore                     namingTemplateStore,
     CandidateSelectionService               selectionService,
     TimeProvider                            timeProvider)
 {
@@ -72,7 +75,7 @@ public sealed class FeedItemEvaluator(
         }
 
         await EvaluateWithSubjectAsync(itemId, parsed, subjectId.Value, normalizedTitle,
-                                       item.PublishedAtUtc, item.StableId, cancellationToken);
+                                       item.PublishedAtUtc, item.StableId, item.FeedHost, cancellationToken);
     }
 
     /// <summary>
@@ -100,7 +103,8 @@ public sealed class FeedItemEvaluator(
 
     private async Task EvaluateWithSubjectAsync(Guid   itemId,          ParseResult       parsed, int subjectId,
                                                 string normalizedTitle, DateTimeOffset?   publishedAtUtc,
-                                                string stableId,        CancellationToken cancellationToken)
+                                                string stableId,        string?           feedHost,
+                                                CancellationToken cancellationToken)
     {
         if (parsed.MediaType.ToString() == "MultipleEpisode" || parsed.Episode is null)
         {
@@ -178,8 +182,11 @@ public sealed class FeedItemEvaluator(
         // 命名后缀优先用字幕组名；同一规则下优胜确定时的命名快照与该预览一致。
         var preference       = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
         var correctionReason = correction.Reason == "未应用集数修正规则。" ? string.Empty : $" {correction.Reason}";
+        // 命名模板的 {source} 令牌取订阅 feed 的来源站点（mikan/anibt 等）。
+        var siteSource     = TorrentSiteSource.FromHost(feedHost);
+        var namingTemplate = await namingTemplateStore.GetAsync(cancellationToken);
         var namingPreview = namingPolicy.Create(subject.DisplayName, correction.Episode, parsed.Version,
-                                                preference);
+                                                preference, siteSource, namingTemplate);
 
         await SaveAnalysisAsync(itemId,
                                 CreateAnalysis(parsed, status, subject.Id, subject.DisplayName,
@@ -196,7 +203,8 @@ public sealed class FeedItemEvaluator(
                        .Where(value => value.Id == itemId)
                        .Select(value => new ItemSnapshot(value.Id, value.Title, value.Link, value.SubjectId,
                                                          value.MediaType, value.Episode, value.PublishedAtUtc,
-                                                         value.StableId, value.Subscription.ProxyId))
+                                                         value.StableId, value.Subscription.ProxyId,
+                                                         value.Subscription.FeedUrlProtected))
                        .SingleOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException("找不到指定条目。");
     }
@@ -392,5 +400,6 @@ public sealed class FeedItemEvaluator(
         decimal?        Episode,
         DateTimeOffset? PublishedAtUtc,
         string          StableId,
-        Guid?           SubscriptionProxyId);
+        Guid?           SubscriptionProxyId,
+        string?         FeedHost);
 }

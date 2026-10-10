@@ -10,8 +10,9 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
 {
     public string ServerVersion => client.QbittorrentVersion;
 
-    public async Task<string> AddTorrentAsync(byte[]            torrentBytes, string savePath, string category,
-                                              CancellationToken cancellationToken = default)
+    public async Task<string> AddTorrentAsync(byte[]                torrentBytes, string savePath,
+                                              IReadOnlyList<string> tags,         string? rename,
+                                              CancellationToken     cancellationToken = default)
     {
         var temporaryPath = Path.Combine(Path.GetTempPath(), $"MediaManager-{Guid.NewGuid():N}.torrent");
         try
@@ -21,7 +22,8 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
             {
                 FilePaths      = [temporaryPath],
                 SavePath       = savePath,
-                Category       = category,
+                Tags           = string.Join(',', tags),
+                Rename         = string.IsNullOrWhiteSpace(rename) ? null : rename,
                 PausedEnabled  = false,
                 StoppedEnabled = false
             };
@@ -50,12 +52,16 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
         return infos.Select(ToSnapshot).ToList();
     }
 
-    public async Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(string            category,
+    public async Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(string?           tag,
                                                                         CancellationToken cancellationToken = default)
     {
-        var infos = await client.Torrent.GetTorrentInfos(category : category,
-                                                         cancellationToken : cancellationToken);
+        var infos = await client.Torrent.GetTorrentInfos(tag : tag, cancellationToken : cancellationToken);
         return infos.Select(ToSnapshot).ToList();
+    }
+
+    public Task AddTagAsync(string infoHash, string tag, CancellationToken cancellationToken = default)
+    {
+        return client.Torrent.AddTorrentTag(NormalizeHash(infoHash), tag, cancellationToken);
     }
 
     public async Task<IReadOnlyList<string>> ListFileNamesAsync(string            infoHash,
@@ -105,7 +111,8 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
         return new TorrentSnapshot(NormalizeHash(info.Hash ?? string.Empty), info.Name ?? string.Empty,
                                    QbittorrentTorrentStateMapper.Map(info.State ?? EnumTorrentState.Unknown),
                                    info.Progress  ?? 0,
-                                   info.TotalSize ?? 0, info.SavePath ?? string.Empty);
+                                   info.TotalSize ?? 0, info.SavePath ?? string.Empty,
+                                   info.TagList ?? []);
     }
 
     private static string NormalizeHash(string hash)

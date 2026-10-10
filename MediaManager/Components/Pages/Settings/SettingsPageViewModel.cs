@@ -1,3 +1,5 @@
+using MediaManager.Core.Rules;
+using MediaManager.Features.Downloads;
 using MediaManager.Features.Notifications;
 using MediaManager.Features.Proxies;
 using MediaManager.Features.Settings;
@@ -8,6 +10,7 @@ namespace MediaManager.Components.Pages.Settings;
 /// <summary>设置页状态：下载器与通知渠道设置草稿及保存操作。随页面组件创建和释放。</summary>
 public sealed class SettingsPageViewModel(
     ManageQbittorrentSettings      qbittorrentSettings,
+    NamingTemplateStore            namingTemplateStore,
     ManageTelegramSettings         telegramSettings,
     ManageGotifySettings           gotifySettings,
     ProxyService                   proxyService,
@@ -20,6 +23,9 @@ public sealed class SettingsPageViewModel(
     public QbittorrentSettingsDraft Downloader { get; } = new();
     public TelegramSettingsDraft    Telegram   { get; } = new();
     public GotifySettingsDraft      Gotify     { get; } = new();
+
+    /// <summary>默认命名模板，供输入框占位与“恢复默认”提示展示。</summary>
+    public string DefaultNamingTemplate => ReleaseNamePreviewPolicy.DefaultTemplate;
 
     /// <summary>命名代理列表，供各卡片的代理下拉展示；代理变动后由 ReloadProxiesAsync 刷新。</summary>
     public IReadOnlyList<ProxyView> Proxies => _proxies;
@@ -43,6 +49,7 @@ public sealed class SettingsPageViewModel(
         Downloader.SavePath = downloader.SavePath;
         Downloader.Enabled  = downloader.Enabled;
         Downloader.ProxyId  = downloader.ProxyId?.ToString();
+        Downloader.NamingTemplate = await namingTemplateStore.GetAsync(cancellationToken);
 
         var hookBaseUrl = await qbittorrentSettings.GetHookBaseUrlAsync(cancellationToken);
         Downloader.HookBaseUrl = hookBaseUrl;
@@ -87,6 +94,7 @@ public sealed class SettingsPageViewModel(
             await qbittorrentSettings.SaveHookBaseUrlAsync(Downloader.HookBaseUrl, cancellationToken);
             HookCommands = BuildHookCommands(await qbittorrentSettings.GetHookBaseUrlAsync(cancellationToken),
                                              _hookToken);
+            await namingTemplateStore.SaveAsync(Downloader.NamingTemplate, cancellationToken);
             await telegramSettings.SaveAsync(Telegram.ToSettings(),
                                              string.IsNullOrWhiteSpace(Telegram.BotToken)
                                                  ? null
@@ -250,6 +258,10 @@ public sealed class QbittorrentSettingsDraft
 
     /// <summary>钩子回调的对外可达基础地址；空表示未配置。</summary>
     public string? HookBaseUrl { get; set; }
+
+    /// <summary>订阅条目的命名模板；留空表示恢复默认模板。</summary>
+    [StringLength(200, ErrorMessage = "命名模板不能超过 200 个字符。")]
+    public string? NamingTemplate { get; set; }
 
     public bool Enabled { get; set; }
 

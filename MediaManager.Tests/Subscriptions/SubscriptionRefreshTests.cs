@@ -881,6 +881,7 @@ public sealed class SubscriptionRefreshTests
                                                                                 throw new
                                                                                     InvalidOperationException("刷新测试不应下载种子。")));
         services.AddSingleton<IQbittorrentSessionFactory>(new FakeQbittorrentSessionFactory(new FakeTorrentStore()));
+        services.AddScoped<NamingTemplateStore>();
         services.AddScoped<DownloadService>();
         services.AddSingleton<SelectionGroupGate>();
         services.AddScoped<CandidateSelectionService>();

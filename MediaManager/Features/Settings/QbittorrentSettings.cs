@@ -8,7 +8,5 @@ public sealed record QbittorrentSettings(
     bool   Enabled,
     Guid?  ProxyId = null)
 {
-    public const string DefaultCategory = "MediaManager";
-
     public bool IsConfigured => !string.IsNullOrWhiteSpace(BaseUrl) && !string.IsNullOrWhiteSpace(SavePath);
 }

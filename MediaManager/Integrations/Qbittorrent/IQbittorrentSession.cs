@@ -19,7 +19,8 @@ public sealed record TorrentSnapshot(
     QbittorrentTorrentCategory Category,
     double                     Progress,
     long                       TotalSize,
-    string                     SavePath);
+    string                     SavePath,
+    IReadOnlyList<string>      Tags);
 
 /// <summary>
 ///     一个已登录的 qBittorrent 会话。实现负责协议细节（临时文件上传、Hash 规范化、异常翻译）；
@@ -29,16 +30,21 @@ public interface IQbittorrentSession : IAsyncDisposable
 {
     string ServerVersion { get; }
 
-    /// <summary>提交种子文件字节。返回下载器原始响应文本（"Ok." / "Fails."），由调用方解释；协议错误抛 QbittorrentException。</summary>
-    Task<string> AddTorrentAsync(byte[]            torrentBytes, string savePath, string category,
+    /// <summary>提交种子文件字节，同时设置隔离保存路径、来源 tag 与种子名（rename）。返回下载器原始响应文本（"Ok." / "Fails."），由调用方解释；协议错误抛 QbittorrentException。</summary>
+    Task<string> AddTorrentAsync(byte[]                   torrentBytes, string savePath,
+                                 IReadOnlyList<string>    tags,         string? rename,
                                  CancellationToken cancellationToken = default);
 
     /// <summary>按规范化 Hash 批量查询任务；不存在的 Hash 不出现在结果中。</summary>
     Task<IReadOnlyList<TorrentSnapshot>> FindTorrentsAsync(IReadOnlyCollection<string> infoHashes,
                                                            CancellationToken           cancellationToken = default);
 
-    Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(string            category,
+    /// <summary>按 tag 过滤列出种子；tag 为 null 时返回全部。</summary>
+    Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(string?           tag,
                                                            CancellationToken cancellationToken = default);
+
+    /// <summary>为已有种子追加 tag（接管外部预先添加的种子时使用）。</summary>
+    Task AddTagAsync(string infoHash, string tag, CancellationToken cancellationToken = default);
 
     /// <summary>列出种子内文件名，用于完成改名时保留原扩展名。</summary>
     Task<IReadOnlyList<string>> ListFileNamesAsync(string infoHash, CancellationToken cancellationToken = default);

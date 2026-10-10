@@ -2,11 +2,13 @@
 @rendermode InteractiveServer
 @attribute [Authorize]
 @using MediaManager.Data
+@using MediaManager.Features.Downloads
 @using MediaManager.Features.Proxies
 @using MediaManager.Features.Settings
 @implements IDisposable
 
 @inject ManageQbittorrentSettings      DownloaderSettings
+@inject NamingTemplateStore            NamingTemplates
 @inject ManageTelegramSettings         TelegramSettings
 @inject ManageGotifySettings           GotifySettings
 @inject ProxyService                   ProxyService
@@ -72,6 +74,15 @@ else
 						<label for="downloader-savepath" class="form-label">下载器保存路径</label>
 						<InputText id="downloader-savepath" class="form-control" placeholder="/downloads 或 D:\Downloads" @bind-Value="_vm.Downloader.SavePath"/>
 						<ValidationMessage For="() => _vm.Downloader.SavePath"/>
+					</div>
+
+					<div class="mb-3">
+						<label for="downloader-naming-template" class="form-label">命名模板</label>
+						<InputText id="downloader-naming-template" class="form-control" placeholder="@_vm.DefaultNamingTemplate" @bind-Value="_vm.Downloader.NamingTemplate"/>
+						<ValidationMessage For="() => _vm.Downloader.NamingTemplate"/>
+						<div class="form-text">
+							订阅条目的命名快照与种子名按此模板生成。可用令牌：{title} 动画名、{episode} 集数、{version} 版本（首版为空）、{group} 字幕组或语言、{source} 来源站点（mikan/anibt/u2/byrbt/tjupt 等）。留空恢复默认。
+						</div>
 					</div>
 
 					<div class="mb-3">
@@ -289,7 +300,7 @@ else
 
 	protected override void OnInitialized()
 	{
-		_vm = new SettingsPageViewModel(DownloaderSettings, TelegramSettings, GotifySettings,
+		_vm = new SettingsPageViewModel(DownloaderSettings, NamingTemplates, TelegramSettings, GotifySettings,
 		                                ProxyService, Logger);
 	}
 

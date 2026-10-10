@@ -76,7 +76,44 @@ public sealed class DownloadServiceTests
         Assert.Equal(DownloadTaskStatus.Downloading, submitted.Status);
         var add = Assert.Single(harness.Store.AddCalls);
         Assert.Equal(task.SavePath, add.SavePath);
-        Assert.Equal("MediaManager", add.Category);
+        Assert.Empty(add.Tags);
+        Assert.Equal("Uploaded Anime - 01", add.Rename);
+    }
+
+    [Fact]
+    public async Task CreateUpload_WithSiteSource_PersistsSourceAndSubmitsAsTag()
+    {
+        using var harness = await CreateHarnessAsync();
+        var       bytes   = TestTorrentBytes.Create("Uploaded Anime - 01");
+
+        var taskId = await harness.CreateUploadAsync(bytes, "byrbt");
+
+        var task = await harness.GetTaskAsync(taskId);
+        Assert.Equal("byrbt", task.SiteSource);
+
+        await harness.ReconcileAsync();
+        var add = Assert.Single(harness.Store.AddCalls);
+        Assert.Equal(["byrbt"], add.Tags);
+    }
+
+    [Fact]
+    public async Task CreateUpload_DetectsSiteSourceFromTorrentTracker()
+    {
+        using var harness = await CreateHarnessAsync();
+
+        // 不手填来源：tracker.byr.pt 命中 ByrTorrent 同源映射，自动识别为 byrbt。
+        var byrbtBytes = TestTorrentBytes.Create("Byrbt Anime - 01", "https://tracker.byr.pt:6969/announce");
+        var byrbtTask  = await harness.CreateUploadAsync(byrbtBytes);
+        Assert.Equal("byrbt", (await harness.GetTaskAsync(byrbtTask)).SiteSource);
+
+        // tracker 无法识别时回退手填值；tracker 判定结果优先于手填。
+        var unknownBytes = TestTorrentBytes.Create("Unknown Anime - 01");
+        var manualTask   = await harness.CreateUploadAsync(unknownBytes, "tjupt");
+        Assert.Equal("tjupt", (await harness.GetTaskAsync(manualTask)).SiteSource);
+
+        var knownBytes = TestTorrentBytes.Create("Known Anime - 01", "udp://daydream.dmhy.best:6969/announce");
+        var overrideTask = await harness.CreateUploadAsync(knownBytes, "tjupt");
+        Assert.Equal("U2", (await harness.GetTaskAsync(overrideTask)).SiteSource);
     }
 
     [Fact]
@@ -308,7 +345,8 @@ public sealed class DownloadServiceTests
         Assert.NotNull(task.SubmittedAtUtc);
         var add = Assert.Single(harness.Store.AddCalls);
         Assert.Equal(task.SavePath, add.SavePath);
-        Assert.Equal("MediaManager", add.Category);
+        Assert.Equal(["mikan"], add.Tags);
+        Assert.Equal(NamingV1, add.Rename);
         var snapshot = Assert.Single(harness.Store.Torrents.Values);
         Assert.StartsWith(task.SavePath, snapshot.SavePath);
     }
@@ -421,31 +459,65 @@ public sealed class DownloadServiceTests
     }
 
     [Fact]
-    public async Task Reconcile_SubmittingTaskWithMismatchedSavePath_FailsWithoutTakingOver()
+    public async Task Reconcile_PendingTaskWithPreExistingTorrent_AdoptsInPlace()
     {
         using var harness = await CreateHarnessAsync();
         var       itemId  = await SeedAcceptedItemAsync(harness, "item-1", "Test Anime - 01");
         var       taskId  = await harness.CreateDownloadAsync(itemId);
 
-        // 下载器中已有同 hash 任务，但位于其他目录：不得当作本次隔离下载接管。
-        harness.Store.AddTorrent(TestTorrentBytes.InfoHashOf("Test Anime - 01"), "其他目录的旧任务",
-                                 QbittorrentTorrentCategory.Downloading, 0.2, "/downloads/测试作品/其他");
-        await using (var db = await harness.CreateDbContextAsync())
-        {
-            var stored = await db.DownloadTasks.SingleAsync(value => value.Id == taskId);
-            stored.Status         = DownloadTaskStatus.Submitting;
-            stored.AttemptCount   = 1;
-            stored.SubmittedAtUtc = stored.CreatedAtUtc;
-            await db.SaveChangesAsync();
-        }
+        // 下载器中已有同 hash 种子（用户或其他工具预先添加，位于其自己的目录且已完成做种）。
+        var hash = TestTorrentBytes.InfoHashOf("Test Anime - 01");
+        harness.Store.AddTorrent(hash, "外部已有任务", QbittorrentTorrentCategory.Seeding, 1.0,
+                                 "/downloads/用户自己的目录", ["原文件名.mkv"]);
 
         await harness.ReconcileAsync();
 
-        var failed = await harness.GetTaskAsync(taskId);
-        Assert.Equal(DownloadTaskStatus.Failed, failed.Status);
-        Assert.Equal("提交", failed.FailedStep);
+        // 接管：不重复提交，本地路径对齐为真实位置，补打来源 tag，并按快照直接推进到完成改名。
+        var task = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Completed, task.Status);
         Assert.Empty(harness.Store.AddCalls);
-        Assert.Empty(harness.Store.RenameCalls);
+        Assert.Equal("/downloads/用户自己的目录", task.SavePath);
+        Assert.Contains((hash, "mikan"), harness.Store.AddTagCalls);
+        var rename = Assert.Single(harness.Store.RenameCalls);
+        Assert.Equal(NamingV1 + ".mkv", rename.Name);
+    }
+
+    [Fact]
+    public async Task Reconcile_FailsResponseWithExistingTorrent_AdoptsInsteadOfFailing()
+    {
+        using var harness = await CreateHarnessAsync();
+        var       itemId  = await SeedAcceptedItemAsync(harness, "item-1", "Test Anime - 01");
+        var       taskId  = await harness.CreateDownloadAsync(itemId);
+
+        // qB 对重复种子返回 "Fails." 但种子确实已存在：按 hash 确认后接管而不是标记失败。
+        var hash = TestTorrentBytes.InfoHashOf("Test Anime - 01");
+        harness.Store.AddTorrent(hash, "重复添加已存在的任务", QbittorrentTorrentCategory.Downloading, 0.5,
+                                 "/downloads/其他位置");
+        harness.Factory.SessionConfigurator = session => session.FailOnDuplicate = true;
+
+        await harness.ReconcileAsync();
+
+        var task = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Downloading, task.Status);
+        Assert.NotEqual(DownloadTaskStatus.Failed, task.Status);
+        Assert.Equal("/downloads/其他位置", task.SavePath);
+    }
+
+    [Fact]
+    public async Task Reconcile_FailsResponseWithoutExistingTorrent_MarksTaskFailed()
+    {
+        using var harness = await CreateHarnessAsync();
+        var       itemId  = await SeedAcceptedItemAsync(harness, "item-1", "Test Anime - 01");
+        var       taskId  = await harness.CreateDownloadAsync(itemId);
+
+        // 下载器拒绝且按 hash 确认不存在：如实失败，等待人工处理。
+        harness.Factory.SessionConfigurator = session => session.AddResponse = "Fails.";
+
+        await harness.ReconcileAsync();
+
+        var task = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Failed, task.Status);
+        Assert.Equal("提交", task.FailedStep);
     }
 
     [Fact]
@@ -990,6 +1062,7 @@ public sealed class DownloadServiceTests
         services.AddSingleton<ITorrentFileSource>(torrentFileSource);
         services.AddScoped<ManageQbittorrentSettings>();
         services.AddNotificationTestFakes();
+        services.AddScoped<NamingTemplateStore>();
         services.AddScoped<DownloadService>();
         // 与应用及订阅/设置测试保持一致的 Identity 模型配置：Identity 服务注册影响
         // ApplicationDbContext 模型缓存的行为，缺注册会与先构建模型的测试产生顺序依赖。
@@ -1063,9 +1136,9 @@ public sealed class DownloadServiceTests
             return Service.CreateForFeedItemAsync(itemId);
         }
 
-        public Task<Guid> CreateUploadAsync(byte[] torrentBytes)
+        public Task<Guid> CreateUploadAsync(byte[] torrentBytes, string? siteSource = null)
         {
-            return Service.CreateFromUploadAsync(torrentBytes);
+            return Service.CreateFromUploadAsync(torrentBytes, siteSource);
         }
 
         public Task<RssDownloadResult> CreateFromRssFeedAsync(string feedUrl, Guid? proxyId = null)

@@ -13,8 +13,9 @@ namespace MediaManager.Features.Downloads;
 
 /// <summary>
 ///     下载闭环：创建意图、提交下载器、对账至完成。
-///     首次提交请求发出前先持久化 Submitting；结果未确认或崩溃恢复时按 info-hash 对账后决定继续下载还是重试；
-///     数据库唯一约束与外部对账共同避免重复提交。单条任务失败不影响其他任务，更不影响既有资源。
+///     提交前后都按 info-hash 对账：下载器中已存在的同 hash 种子（自己上次提交未确认，或用户/外部工具预先添加）
+///     直接接管推进，不重复提交；接管时补打来源 tag 并把隔离路径对齐为种子真实位置。
+///     提交时随种子设置来源 tag 与命名快照名；数据库唯一约束兜底并发。单条任务失败不影响其他任务，更不影响既有资源。
 /// </summary>
 public sealed class DownloadService(
     IDbContextFactory<ApplicationDbContext> dbContextFactory,
@@ -67,8 +68,10 @@ public sealed class DownloadService(
     /// <summary>
     ///     一次性上传种子：创建即等待提交，不关联订阅、条目与 Subject。
     ///     命名快照取种子内 info.name（缺失时按 hash 派生）；来源记为 upload://hash 便于区分。
+    ///     来源站点优先按种子内 tracker 自动识别；siteSource 仅在 tracker 无法判定时作为兜底。
     /// </summary>
-    public async Task<Guid> CreateFromUploadAsync(byte[] torrentBytes, CancellationToken cancellationToken = default)
+    public async Task<Guid> CreateFromUploadAsync(byte[] torrentBytes, string? siteSource = null,
+                                                  CancellationToken cancellationToken = default)
     {
         if (torrentBytes.Length == 0) throw new InvalidOperationException("所选文件为空，请重新选择。");
 
@@ -98,6 +101,7 @@ public sealed class DownloadService(
             TorrentFile    = torrentBytes,
             TorrentUrl     = $"upload://{infoHash}",
             SavePath       = BuildSavePath(settings.SavePath, null, namingSnapshot, infoHash),
+            SiteSource     = ResolveSiteSource(torrentBytes, null, null, siteSource),
             NamingSnapshot = namingSnapshot,
             Status         = DownloadTaskStatus.PendingSubmit,
             CreatedAtUtc   = timeProvider.GetUtcNow()
@@ -135,6 +139,8 @@ public sealed class DownloadService(
         var feedItems = await feedSourceReader.ReadAsync(feedUri, proxyId, cancellationToken);
         if (feedItems.Count == 0) throw new InvalidOperationException("RSS 中没有条目。");
 
+        // 来源站点首选 .torrent 内 tracker 判定；feed 地址域名仅作种子无法判定时的回退。
+        var feedHost = feedUri.Host;
         var results = new List<RssDownloadItemResult>(feedItems.Count);
         foreach (var item in feedItems)
         {
@@ -147,7 +153,8 @@ public sealed class DownloadService(
 
             try
             {
-                var taskId = await RegisterRssItemAsync(item, settings.SavePath, proxyId, cancellationToken);
+                var taskId = await RegisterRssItemAsync(item, settings.SavePath, proxyId, feedHost,
+                                                        cancellationToken);
                 results.Add(taskId is null
                                 ? new RssDownloadItemResult(item.Title, RssDownloadItemOutcome.Duplicate, null,
                                                             "同一资源已有下载任务。")
@@ -183,7 +190,8 @@ public sealed class DownloadService(
 
     /// <summary>下载单条 RSS 条目的种子并在查重后登记任务；返回 null 表示同 hash 任务已存在。</summary>
     private async Task<Guid?> RegisterRssItemAsync(
-        FeedSourceItem item, string basePath, Guid? proxyId, CancellationToken cancellationToken)
+        FeedSourceItem item, string basePath, Guid? proxyId, string feedHost,
+        CancellationToken cancellationToken)
     {
         var (torrentBytes, infoHash) = await DownloadTorrentAsync(item.TorrentUri!.AbsoluteUri, proxyId,
                                                                   cancellationToken);
@@ -205,6 +213,7 @@ public sealed class DownloadService(
             TorrentFile    = torrentBytes,
             TorrentUrl     = item.TorrentUri.AbsoluteUri,
             SavePath       = BuildSavePath(basePath, null, namingSnapshot, infoHash),
+            SiteSource     = ResolveSiteSource(torrentBytes, item.TorrentUri.AbsoluteUri, feedHost, null),
             NamingSnapshot = namingSnapshot,
             Status         = DownloadTaskStatus.PendingSubmit,
             CreatedAtUtc   = timeProvider.GetUtcNow()
@@ -256,15 +265,17 @@ public sealed class DownloadService(
 
         var task = new DownloadTask
         {
-            Id          = Guid.NewGuid(),
-            FeedItemId  = item.Id,
-            SubjectId   = item.SubjectId,
-            InfoHash    = infoHash,
-            TorrentFile = torrentBytes,
-            TorrentUrl  = item.TorrentUrl!,
+            Id             = Guid.NewGuid(),
+            FeedItemId     = item.Id,
+            SubjectId      = item.SubjectId,
+            InfoHash       = infoHash,
+            TorrentFile    = torrentBytes,
+            TorrentUrl     = item.TorrentUrl!,
             SavePath = BuildSavePath((await qbittorrentSettings.GetAsync(cancellationToken)).SavePath,
                                      item.Subject?.NameCn ?? item.Subject?.Name,
                                      item.NamingPreview!, infoHash),
+            SiteSource     = ResolveSiteSource(torrentBytes, item.TorrentUrl,
+                                               item.Subscription.FeedUrlProtected, null),
             NamingSnapshot = item.NamingPreview!,
             Episode        = item.Episode,
             Version        = item.Version,
@@ -425,32 +436,22 @@ public sealed class DownloadService(
 
     private async Task SubmitAsync(IQbittorrentSession session, DownloadTask task, CancellationToken cancellationToken)
     {
-        if (task.Status == DownloadTaskStatus.Submitting)
+        // 提交前先按 hash 对账：下载器中已存在的同 hash 种子直接接管——既覆盖“自己上次提交已生效
+        // 但未收到确认”，也覆盖“用户或其他工具预先添加的种子”。数据库活动唯一索引保证同 hash
+        // 至多一个活动任务，接管不会与自身其他任务互相抢占。
+        var existing = (await session.FindTorrentsAsync([task.InfoHash], cancellationToken))
+           .FirstOrDefault();
+        if (existing is not null)
         {
-            // 响应丢失不等于提交失败：先按 Hash 对账，再决定是否重新提交。
-            var existing = (await session.FindTorrentsAsync([task.InfoHash], cancellationToken))
-               .FirstOrDefault();
-            if (existing is not null)
-            {
-                // 同 hash 不代表同一次提交：隔离路径不一致时不接管，避免误动其他目录里的同资源任务。
-                if (!MatchesIsolationPath(existing.SavePath, task.SavePath))
-                {
-                    await MarkFailedAsync(task.Id, task.Status, "提交",
-                                          "下载器中已存在同 hash 任务，但保存路径与本任务的隔离目录不一致，未接管，请人工检查下载器。",
-                                          cancellationToken);
-                    return;
-                }
+            await AdoptExistingAsync(task, existing, session, cancellationToken);
+            return;
+        }
 
-                await ApplySnapshotAsync(task.Id, task.Status, existing, session, cancellationToken);
-                return;
-            }
-
-            if (task.AttemptCount >= MaxAutoSubmitAttempts)
-            {
-                await MarkFailedAsync(task.Id, task.Status, "提交", "多次提交后仍未在下载器中发现该任务，请检查下载器后人工重试。",
-                                      cancellationToken);
-                return;
-            }
+        if (task.Status == DownloadTaskStatus.Submitting && task.AttemptCount >= MaxAutoSubmitAttempts)
+        {
+            await MarkFailedAsync(task.Id, task.Status, "提交", "多次提交后仍未在下载器中发现该任务，请检查下载器后人工重试。",
+                                  cancellationToken);
+            return;
         }
 
         // 请求发出前先落库 Submitting：下载器已接收而应用在保存结果前退出时，重启按 Hash 对账而不是重复提交。
@@ -465,7 +466,7 @@ public sealed class DownloadService(
         try
         {
             response = await session.AddTorrentAsync(task.TorrentFile, task.SavePath,
-                                                     QbittorrentSettings.DefaultCategory, cancellationToken);
+                                                     TagsFor(task), task.NamingSnapshot, cancellationToken);
         }
         catch (Exception exception) when (exception is QbittorrentLoginFailedException
                                                     or QbittorrentUnauthorizedException
@@ -491,6 +492,15 @@ public sealed class DownloadService(
         var responseText = (response ?? string.Empty).Trim();
         if (responseText.Contains("fail", StringComparison.OrdinalIgnoreCase))
         {
+            // "Fails." 也可能是种子已被下载器接收（如外部预先添加、响应语义差异）：再按 hash 确认一次，找到即接管。
+            var confirmed = (await session.FindTorrentsAsync([task.InfoHash], cancellationToken))
+               .FirstOrDefault();
+            if (confirmed is not null)
+            {
+                await AdoptExistingAsync(task, confirmed, session, cancellationToken);
+                return;
+            }
+
             await MarkFailedAsync(task.Id, DownloadTaskStatus.Submitting, "提交", $"下载器拒绝该种子：{responseText}",
                                   cancellationToken);
             return;
@@ -503,6 +513,48 @@ public sealed class DownloadService(
                                                                        "下载开始",
                                                                        $"{DescribeTask(updated)}：已提交到下载器开始下载。命名：{updated.NamingSnapshot}",
                                                                        cancellationToken));
+    }
+
+    /// <summary>接管下载器中已存在的同 hash 种子：补打来源 tag、把本地隔离路径对齐为种子真实位置，再按快照推进。</summary>
+    private async Task AdoptExistingAsync(DownloadTask task, TorrentSnapshot snapshot,
+                                          IQbittorrentSession session, CancellationToken cancellationToken)
+    {
+        var siteSource = task.SiteSource;
+        if (!string.IsNullOrWhiteSpace(siteSource) &&
+            !snapshot.Tags.Contains(siteSource, StringComparer.OrdinalIgnoreCase))
+            await session.AddTagAsync(task.InfoHash, siteSource, cancellationToken);
+
+        if (!MatchesIsolationPath(snapshot.SavePath, task.SavePath))
+        {
+            // 隔离路径让位于种子的真实位置：接管外部种子时它通常不在本应用约定的目录里，
+            // 后续对账与完成改名都以真实位置为准。
+            await UpdateTaskAsync(task.Id, task.Status,
+                                  update => { update.SavePath = NormalizePath(snapshot.SavePath); },
+                                  cancellationToken);
+        }
+
+        await ApplySnapshotAsync(task.Id, task.Status, snapshot, session, cancellationToken);
+    }
+
+    /// <summary>
+    ///     来源站点判定：优先读 .torrent 内 tracker（ByrTorrent 同源映射，上传种子也能自动识别），
+    ///     依次回退下载地址域名、订阅 feed 主机名、用户手填标注。
+    /// </summary>
+    private static string? ResolveSiteSource(byte[] torrentBytes, string? torrentUrl, string? fallbackHost,
+                                             string? manualSource)
+    {
+        List<string> trackers = [];
+        TorrentInfoHashExtractor.TryExtractTrackerUrls(torrentBytes, trackers);
+        return TorrentSiteSource.FromTrackers(trackers) ??
+               TorrentSiteSource.FromUrl(torrentUrl) ??
+               TorrentSiteSource.FromHost(fallbackHost) ??
+               TorrentSiteSource.Sanitize(manualSource);
+    }
+
+    /// <summary>提交时随种子设置的下载器 tag：即来源站点标签（mikan/anibt/u2/byrbt/tjupt 等）。</summary>
+    private static IReadOnlyList<string> TagsFor(DownloadTask task)
+    {
+        return string.IsNullOrWhiteSpace(task.SiteSource) ? [] : [task.SiteSource];
     }
 
     private async Task ReconcileTrackedAsync(IQbittorrentSession session, DownloadTask task, TorrentSnapshot? snapshot,
@@ -589,6 +641,7 @@ public sealed class DownloadService(
         string targetName;
         string namingSnapshot;
         string savePath;
+        string? siteSource;
 
         IReadOnlyList<string> fileNames;
         await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
@@ -600,6 +653,7 @@ public sealed class DownloadService(
             fileNames      = await session.ListFileNamesAsync(snapshot.Hash, cancellationToken);
             namingSnapshot = task.NamingSnapshot;
             savePath       = task.SavePath;
+            siteSource     = task.SiteSource;
             var extension = fileNames.Count == 1 ? Path.GetExtension(fileNames[0]) : string.Empty;
             targetName = namingSnapshot + extension;
         }
@@ -611,7 +665,7 @@ public sealed class DownloadService(
         }
 
         // 冲突按完整目标路径精确判断：不同隔离目录中的同名资源互不影响，只有同目录同名才算冲突。
-        var siblings   = await session.ListTorrentsAsync(QbittorrentSettings.DefaultCategory, cancellationToken);
+        var siblings   = await session.ListTorrentsAsync(siteSource, cancellationToken);
         var targetPath = JoinSavePath(savePath, targetName);
         if (siblings.Any(other => other.Hash != snapshot.Hash &&
                                   string.Equals(JoinSavePath(other.SavePath, other.Name), targetPath,
@@ -872,6 +926,7 @@ public sealed class DownloadService(
             Progress       = task.Progress,
             TotalSize      = task.TotalSize,
             NamingSnapshot = task.NamingSnapshot,
+            SiteSource     = task.SiteSource,
             FailedStep     = task.FailedStep,
             Error          = task.Error,
             CreatedAtUtc   = task.CreatedAtUtc,

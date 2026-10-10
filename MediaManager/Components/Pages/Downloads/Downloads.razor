@@ -20,14 +20,23 @@
 	<div class="card-body">
 		<h2 class="h5">上传种子</h2>
 		<div class="text-body-secondary small mb-2">
-			选择文件后会立即登记下载任务；不关联订阅与条目，按种子内名称命名并提交下载器。
+			选择文件后会立即登记下载任务；不关联订阅与条目，按种子内名称命名并提交下载器。来源站点按种子内 tracker 自动识别，无法识别时才取下方手填值。
 		</div>
-		<div class="d-flex align-items-center gap-2">
-			<InputFile id="torrent-file-upload" class="visually-hidden" accept=".torrent" disabled="@_vm.Busy" OnChange="UploadTorrentAsync"/>
-			<label for="torrent-file-upload" class="btn btn-primary mb-0 @(_vm.Busy ? "disabled" : string.Empty)">
-				<span class="bi bi-cloud-arrow-up me-1" aria-hidden="true"></span>选择并上传 .torrent
-			</label>
-			<span class="small text-body-secondary">最大 10 MB</span>
+		<div class="row g-2 align-items-center">
+			<div class="col-auto">
+				<InputFile id="torrent-file-upload" class="visually-hidden" accept=".torrent" disabled="@_vm.Busy" OnChange="UploadTorrentAsync"/>
+				<label for="torrent-file-upload" class="btn btn-primary mb-0 @(_vm.Busy ? "disabled" : string.Empty)">
+					<span class="bi bi-cloud-arrow-up me-1" aria-hidden="true"></span>选择并上传 .torrent
+				</label>
+			</div>
+			<div class="col-auto">
+				<label for="torrent-upload-site" class="visually-hidden">来源站点</label>
+				<input id="torrent-upload-site" class="form-control" type="text" placeholder="来源站点（tracker 无法识别时使用）"
+					   maxlength="50" disabled="@_vm.Busy" @bind="_vm.UploadSiteSource"/>
+			</div>
+			<div class="col-auto">
+				<span class="small text-body-secondary">最大 10 MB</span>
+			</div>
 		</div>
 	</div>
 </div>
@@ -61,6 +70,10 @@ else
 					<td>
 						<div class="fw-semibold">@DownloadStatusTitle(task)</div>
 						<code class="small">@task.NamingSnapshot</code>
+						@if (!string.IsNullOrEmpty(task.SiteSource))
+						{
+							<div><span class="badge text-bg-info">@task.SiteSource</span></div>
+						}
 					</td>
 					<td>
 						<span class="badge @StatusClass(task.Status)">@StatusText(task)</span>

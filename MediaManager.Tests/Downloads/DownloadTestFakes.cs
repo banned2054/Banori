@@ -57,17 +57,19 @@ public sealed class FakeTorrentStore
     public Dictionary<string, List<string>>    Files    { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string>                     Paused   { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-    public List<(byte[] Bytes, string SavePath, string Category)> AddCalls          { get; } = [];
-    public List<(string Hash, string Name)>                       RenameCalls       { get; } = [];
-    public List<(string Hash, string OldPath, string NewPath)>    RenameFileCalls   { get; } = [];
-    public List<(string Hash, string OldPath, string NewPath)>    RenameFolderCalls { get; } = [];
-    public List<string>                                           ResumeCalls       { get; } = [];
-    public List<string>                                           PauseCalls        { get; } = [];
+    public List<(byte[] Bytes, string SavePath, IReadOnlyList<string> Tags, string? Rename)> AddCalls { get; } = [];
+    public List<(string Hash, string Name)>                    RenameCalls       { get; } = [];
+    public List<(string Hash, string OldPath, string NewPath)> RenameFileCalls   { get; } = [];
+    public List<(string Hash, string OldPath, string NewPath)> RenameFolderCalls { get; } = [];
+    public List<(string Hash, string Tag)>                     AddTagCalls       { get; } = [];
+    public List<string>                                        ResumeCalls       { get; } = [];
+    public List<string>                                        PauseCalls        { get; } = [];
 
     public void AddTorrent(string hash,     string name, QbittorrentTorrentCategory category, double progress,
-                           string savePath, IReadOnlyList<string>? fileNames = null)
+                           string savePath, IReadOnlyList<string>? fileNames = null,
+                           IReadOnlyList<string>? tags = null)
     {
-        Torrents[hash] = new TorrentSnapshot(hash, name, category, progress, 1024, savePath);
+        Torrents[hash] = new TorrentSnapshot(hash, name, category, progress, 1024, savePath, tags ?? []);
         if (fileNames is not null) Files[hash] = [.. fileNames];
     }
 }
@@ -87,13 +89,17 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     /// <summary>设置后 AddTorrent 登记种子但返回 Fails 之前抛出传输异常，模拟“已生效但响应丢失”。</summary>
     public bool RegisterThenThrowTransport { get; set; }
 
+    /// <summary>设置后 AddTorrent 对已存在 hash 返回 "Fails."，模拟 qBittorrent 对重复种子的真实响应。</summary>
+    public bool FailOnDuplicate { get; set; }
+
     /// <summary>AddTorrent 发出前回调，用于断言请求发出时本地已持久化的状态。</summary>
     public Func<Task>? BeforeAddTorrentAsync { get; set; }
 
     public string ServerVersion => "v5.0.0-fake";
 
     public async Task<string> AddTorrentAsync(
-        byte[] torrentBytes, string savePath, string category, CancellationToken cancellationToken = default)
+        byte[] torrentBytes, string savePath, IReadOnlyList<string> tags, string? rename,
+        CancellationToken cancellationToken = default)
     {
         if (BeforeAddTorrentAsync is not null) await BeforeAddTorrentAsync();
 
@@ -103,22 +109,25 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
             ? infoHash
             : throw new InvalidOperationException("测试种子字节无效。");
 
+        if (FailOnDuplicate && store.Torrents.ContainsKey(hash)) return "Fails.";
+
         if (RegisterThenThrowTransport)
         {
-            store.AddCalls.Add((torrentBytes, savePath, category));
+            store.AddCalls.Add((torrentBytes, savePath, tags, rename));
             store.Torrents[hash] = new TorrentSnapshot(hash, $"torrent-{hash[..8]}",
-                                                       QbittorrentTorrentCategory.Downloading, 0, 1024, savePath);
+                                                       QbittorrentTorrentCategory.Downloading, 0, 1024, savePath, []);
             store.Files.TryAdd(hash, ["原文件名.mkv"]);
             throw new QbittorrentException("模拟响应丢失");
         }
 
-        store.AddCalls.Add((torrentBytes, savePath, category));
+        store.AddCalls.Add((torrentBytes, savePath, tags, rename));
         if (DropAdd) return "Ok.";
 
         if (AddResponse is not null) return AddResponse;
 
-        store.Torrents[hash] = new TorrentSnapshot(hash, $"torrent-{hash[..8]}",
-                                                   QbittorrentTorrentCategory.Downloading, 0, 1024, savePath);
+        store.Torrents[hash] = new TorrentSnapshot(hash, rename ?? $"torrent-{hash[..8]}",
+                                                   QbittorrentTorrentCategory.Downloading, 0, 1024, savePath,
+                                                   tags.ToList());
         store.Files.TryAdd(hash, ["原文件名.mkv"]);
         return "Ok.";
     }
@@ -134,11 +143,26 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
 
 
     public Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(
-        string category, CancellationToken cancellationToken = default)
+        string? tag, CancellationToken cancellationToken = default)
     {
         return Task.FromResult<IReadOnlyList<TorrentSnapshot>>(store.Torrents.Values
+                                                                    .Where(snapshot => tag is null ||
+                                                                          SnapshotFor(snapshot.Hash)
+                                                                             .Tags.Contains(tag,
+                                                                                 StringComparer
+                                                                                    .OrdinalIgnoreCase))
                                                                     .Select(snapshot => SnapshotFor(snapshot.Hash))
                                                                     .ToList());
+    }
+
+    public Task AddTagAsync(string infoHash, string tag, CancellationToken cancellationToken = default)
+    {
+        store.AddTagCalls.Add((infoHash, tag));
+        if (store.Torrents.TryGetValue(infoHash, out var snapshot) &&
+            !snapshot.Tags.Contains(tag, StringComparer.OrdinalIgnoreCase))
+            store.Torrents[infoHash] = snapshot with { Tags = [.. snapshot.Tags, tag] };
+
+        return Task.CompletedTask;
     }
 
 
@@ -280,13 +304,14 @@ public sealed class FakeFeedSourceReader : IFeedSourceReader
     }
 }
 
-/// <summary>构造确定性的最小 .torrent 字节；name 不同则 info-hash 不同。</summary>
+/// <summary>构造确定性的最小 .torrent 字节；name 不同则 info-hash 不同，announce 可注入 tracker 供站点判定测试。</summary>
 public static class TestTorrentBytes
 {
-    public static byte[] Create(string name = "Test Anime - 01")
+    public static byte[] Create(string name = "Test Anime - 01", string? announce = null)
     {
+        var announceText = announce ?? "http://tracker.example/announce";
         return Encoding.UTF8.GetBytes(
-                                      "d8:announce31:http://tracker.example/announce" +
+                                      $"d8:announce{Encoding.UTF8.GetByteCount(announceText)}:{announceText}" +
                                       "4:infod6:lengthi1024e"                         +
                                       $"4:name{Encode(name)}"                         +
                                       "12:piece lengthi16384e"                        +

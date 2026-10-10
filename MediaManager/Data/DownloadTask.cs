@@ -29,8 +29,11 @@ public sealed class DownloadTask
     /// <summary>远程种子地址；本地上传种子没有下载来源，保存为 upload://hash。</summary>
     public string? TorrentUrl { get; set; }
 
-    /// <summary>提交时使用的下载器隔离保存路径（含 hash 短码），创建后不变。</summary>
+    /// <summary>提交时使用的下载器隔离保存路径（含 hash 短码），创建后不变；接管外部种子时对齐为真实路径。</summary>
     public string SavePath { get; set; } = string.Empty;
+
+    /// <summary>来源站点标签（mikan/anibt/u2/byrbt/tjupt 等）：提交时作为下载器 tag 与命名 {source} 令牌；未知来源为空。</summary>
+    public string? SiteSource { get; set; }
 
     /// <summary>命名快照：完成后按此改名，重试沿用原值。</summary>
     public string NamingSnapshot { get; set; } = string.Empty;

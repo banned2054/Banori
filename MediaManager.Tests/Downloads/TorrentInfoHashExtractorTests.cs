@@ -56,4 +56,45 @@ public sealed class TorrentInfoHashExtractorTests
         Assert.False(TorrentInfoHashExtractor.TryExtractInfoHash(Encoding.UTF8.GetBytes(payload), out var hash));
         Assert.Equal(string.Empty, hash);
     }
+
+    [Fact]
+    public void ExtractTrackers_CollectsAnnounceAndNestedAnnounceList()
+    {
+        var torrent = Encoding.UTF8.GetBytes(
+                                              "d" + Str("announce", "udp://tracker.byr.pt:6969/announce") +
+                                              "13:announce-list" + "ll" + Str(null, "https://tr.bangumi.moe:6969/announce") +
+                                              Str(null, "udp://tracker-public.tjupt.org/announce") + "ee" +
+                                              "4:infod4:name3:abce" + "e");
+
+        List<string> trackers = [];
+        Assert.True(TorrentInfoHashExtractor.TryExtractTrackerUrls(torrent, trackers));
+        Assert.Equal(
+        [
+            "udp://tracker.byr.pt:6969/announce",
+            "https://tr.bangumi.moe:6969/announce",
+            "udp://tracker-public.tjupt.org/announce"
+        ], trackers);
+    }
+
+    [Fact]
+    public void ExtractTrackers_HandlesFlatAnnounceListAndReportsAbsence()
+    {
+        var flat = Encoding.UTF8.GetBytes(
+                                          "d13:announce-list" + "l" + Str(null, "udp://daydream.dmhy.best:6969") + "e" +
+                                          "4:infod4:name3:abce" + "e");
+        List<string> flatTrackers = [];
+        Assert.True(TorrentInfoHashExtractor.TryExtractTrackerUrls(flat, flatTrackers));
+        Assert.Equal(["udp://daydream.dmhy.best:6969"], flatTrackers);
+
+        var noTracker = Encoding.UTF8.GetBytes("d4:infod4:name3:abce" + "e");
+        List<string> empty = [];
+        Assert.False(TorrentInfoHashExtractor.TryExtractTrackerUrls(noTracker, empty));
+        Assert.Empty(empty);
+    }
+
+    private static string Str(string? key, string value)
+    {
+        var prefix = key is null ? string.Empty : $"{key.Length}:{key}";
+        return $"{prefix}{Encoding.UTF8.GetByteCount(value)}:{value}";
+    }
 }

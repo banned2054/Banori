@@ -57,6 +57,84 @@ public static class TorrentInfoHashExtractor
         return false;
     }
 
+    /// <summary>
+    ///     提取顶层 announce 与 announce-list 中的全部 tracker 地址（announce-list 允许嵌套列表与罕见扁平列表）。
+    ///     来源站点按 tracker 判定，比下载地址域名更权威；没有任何 tracker 时返回 false。
+    /// </summary>
+    public static bool TryExtractTrackerUrls(ReadOnlySpan<byte> torrentBytes, List<string> trackerUrls)
+    {
+        if (torrentBytes.Length < 2 || torrentBytes[0] != (byte)'d') return false;
+
+        var position = 1;
+        var found    = false;
+        while (position < torrentBytes.Length)
+        {
+            if (torrentBytes[position] == (byte)'e') return found;
+
+            if (!TryReadStringBytes(torrentBytes, ref position, out var key)) return false;
+
+            var valueStart = position;
+            if (!SkipValue(torrentBytes, ref position)) return false;
+
+            if (key.SequenceEqual("announce"u8))
+            {
+                var slice = torrentBytes[valueStart..position];
+                var inner = 0;
+                if (TryReadStringBytes(slice, ref inner, out var url) && url.Length > 0)
+                {
+                    trackerUrls.Add(Encoding.UTF8.GetString(url));
+                    found = true;
+                }
+            }
+            else if (key.SequenceEqual("announce-list"u8))
+            {
+                found |= CollectAnnounceList(torrentBytes[valueStart..position], trackerUrls);
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>遍历 announce-list：标准布局是字符串列表的列表，个别种子直接放扁平字符串列表。</summary>
+    private static bool CollectAnnounceList(ReadOnlySpan<byte> data, List<string> trackerUrls)
+    {
+        if (data.Length == 0 || data[0] != (byte)'l') return false;
+
+        var position = 1;
+        var found    = false;
+        while (position < data.Length && data[position] != (byte)'e')
+        {
+            if (data[position] == (byte)'l')
+            {
+                position++;
+                while (position < data.Length && data[position] != (byte)'e')
+                {
+                    if (!TryReadStringBytes(data, ref position, out var url)) return found;
+
+                    if (url.Length > 0)
+                    {
+                        trackerUrls.Add(Encoding.UTF8.GetString(url));
+                        found = true;
+                    }
+                }
+
+                position++;
+            }
+            else
+            {
+                if (!TryReadStringBytes(data, ref position, out var url)) return found;
+
+                if (url.Length > 0)
+                {
+                    trackerUrls.Add(Encoding.UTF8.GetString(url));
+                    found = true;
+                }
+            }
+        }
+
+        return found;
+    }
+
     private static bool TryReadInfoName(ReadOnlySpan<byte> data, ref int position, out string displayName)
     {
         displayName = string.Empty;

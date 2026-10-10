@@ -17,6 +17,9 @@ public sealed class DownloadTasksPageViewModel(
     public string? Message   { get; private set; }
     public bool    Succeeded { get; private set; }
 
+    /// <summary>上传表单的来源站点标注（u2/byrbt/tjupt 等），随下一次上传一起提交；可留空。</summary>
+    public string? UploadSiteSource { get; set; }
+
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
         Tasks  = await downloadService.ListAsync(cancellationToken : cancellationToken);
@@ -40,7 +43,9 @@ public sealed class DownloadTasksPageViewModel(
             return;
         }
 
-        await RunCoreAsync(() => downloadService.CreateFromUploadAsync(buffer.ToArray(), cancellationToken),
+        await RunCoreAsync(
+                           () => downloadService.CreateFromUploadAsync(buffer.ToArray(), UploadSiteSource,
+                                                                       cancellationToken),
                            "上传种子已登记，等待提交下载器。", cancellationToken,
                            exception => logger.LogWarning(exception, "上传种子登记失败。"));
     }

@@ -247,6 +247,7 @@ public sealed class SelectionRulesPageViewModelTests
         services.AddScoped<ManageQbittorrentSettings>();
         services.AddNotificationTestFakes();
         services.AddSingleton<IFeedSourceReader>(new FakeFeedSourceReader());
+        services.AddScoped<NamingTemplateStore>();
         services.AddScoped<DownloadService>();
         services.AddSingleton<CandidateEligibilityPolicy>();
         services.AddSingleton<CandidateRankingPolicy>();
