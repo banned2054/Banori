@@ -1,13 +1,13 @@
 # MediaManager
 
-MediaManager 是面向个人或家庭媒体库的动漫 RSS 管理面板。当前已完成 P0、P1、P2、P2R 和 P3：可以管理 Mikan 订阅、持久化刷新任务、去重保存条目、关联 Bangumi Subject，展示筛选理由与命名预览，并在条目详情页把已选择的条目登记为下载任务，由后台提交 qBittorrent、按 info-hash 对账直至完成改名。
+MediaManager 是面向个人或家庭媒体库的动漫 RSS 管理面板。当前已完成 P0、P1、P2、P2R 和 P3：可以管理 Mikan 订阅、持久化刷新任务、去重保存条目、关联 Bangumi Subject，展示筛选理由与命名预览，评估优胜的条目自动登记为下载任务，由后台提交 qBittorrent、按 info-hash 对账直至完成改名。
 
 ## 项目结构
 
 ```text
 MediaManager.Core/        筛选、集数修正、命名预览、info-hash 提取、路径净化等纯规则，可独立测试
 MediaManager/
-  Components/Pages/       订阅、条目、下载任务、设置页面及页面 ViewModel
+  Components/Pages/       订阅、下载任务、设置页面及页面 ViewModel
   Features/               业务服务：订阅管理、Mikan 刷新、条目查询、总览、下载闭环、设置
   Data/                   EF Core 实体与双 provider 迁移（SQLite 默认 / MySQL）
   Integrations/           Mikan、Bangumi、qBittorrent 客户端与种子下载
@@ -15,9 +15,9 @@ MediaManager/
 MediaManager.Tests/       规则单元测试、SQLite 行为测试
 ```
 
-刷新链路：订阅页 / 到期调度 → `SubscriptionService` 入队 → `MikanRefreshService` 执行（读 RSS、去重入库、评估遗留条目）→ `FeedItemEvaluator`（AniParser 解析、Subject 关联、Core 规则决策、命名预览）→ 保存结果与下次刷新时间。
+刷新链路：订阅页 / 到期调度 → `SubscriptionService` 入队 → `MikanRefreshService` 执行（读 RSS、去重入库、评估遗留条目）→ `FeedItemEvaluator`（AniParser 解析、Subject 关联、Core 规则决策、命名预览与命名要素）→ 保存结果与下次刷新时间。
 
-下载链路：条目详情页创建下载意图（下载种子、提取 info-hash、登记 `DownloadTask`）→ `DownloadReconcileWorker` 周期对账 → 提交 qBittorrent（隔离子目录 + 分类）→ 响应丢失按 hash 对账确认 → 完成后按命名快照改名并记录替换关系。
+下载链路：优胜条目自动登记下载意图 / RSS 链接下载 / 本地上传种子（下载种子、提取 info-hash、登记 `DownloadTask`；命名统一按可配置模板渲染——订阅条目用评估生成的预览，RSS 与上传用 AniParser 解析标题，命名要素一并落库）→ `DownloadReconcileWorker` 周期对账 → 提交 qBittorrent（`rename` 参数直接设置种子名 + 来源 tag）→ 响应丢失按 hash 对账确认 → 完成后按命名要素改名并记录替换关系：种子名不带扩展名，单文件改文件名，多文件逐文件按各自集数改名、附属文件挪进 `Seed/`、有公共根目录时改根目录名（ByrTorrent 同源方法）；无命名要素的存量任务回退按命名快照改名。删除任务时先删下载器再删记录（幂等可重试），可选连带删除下载器种子与已下载文件；被删任务替换的旧任务回退为已完成。
 
 ## 本地启动
 
@@ -65,7 +65,7 @@ dotnet ef database update --project MediaManager --startup-project MediaManager 
 
 schema 变更需要同时为两个 provider 各加一个迁移（模型唯一，迁移集两份）；用 `dotnet ef migrations has-pending-model-changes`（加同样的 `--` 参数）可以只读校验某一 provider 的快照是否与模型一致。
 
-登录后可在“订阅”页面添加 Mikan RSS，在“条目”页面检查解析与决策；RSS 地址使用 Data Protection 加密保存，页面不会显示查询参数。下载前先在“设置”页面启用并配置 qBittorrent（地址、账号、下载器侧保存路径，密码加密保存），再在已选择条目的详情页创建下载任务；“下载任务”页面展示进度、失败步骤并支持暂停 / 恢复 / 重试。数据库和密钥目录必须作为一个整体备份与恢复。
+登录后可在“订阅”页面添加 Mikan RSS；RSS 地址使用 Data Protection 加密保存，页面不会显示查询参数。下载前先在“设置”页面启用并配置 qBittorrent（地址、账号、下载器侧保存路径，密码加密保存），优胜条目会自动登记下载任务；“下载任务”页面展示进度、失败步骤并支持暂停 / 恢复 / 重试 / 删除，删除支持单条与批量选择，均可选择是否连带删除 qBittorrent 中的种子及其已下载文件。数据库和密钥目录必须作为一个整体备份与恢复。
 
 ## 验证
 
