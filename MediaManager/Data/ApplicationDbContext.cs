@@ -136,9 +136,14 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.HasIndex(item => item.FeedItemId);
             entity.HasIndex(item => new { item.SubjectId, item.Episode, item.Status });
             // 同一资源在活动状态下只允许一个任务；终态任务可并存（如被替换后的历史记录）。
-            entity.HasIndex(item => item.InfoHash).IsUnique()
-                  .HasFilter($"\"{nameof(DownloadTask.Status)}\" IN " +
-                             "('PendingSubmit', 'Submitting', 'Downloading', 'Paused')");
+            // MySQL 不支持带 WHERE 的部分索引，统一用存储型计算列表达“是否活动”：
+            // 活动行取 1、终态行取 NULL，唯一索引对 NULL 不去重，与 SQLite 部分索引语义完全一致。
+            // 反引号标识符 SQLite 同样接受，表达式字符串可保持一致。
+            entity.Property<int?>("ActiveFlag")
+                  .HasComputedColumnSql(
+                                        "CASE WHEN `Status` IN ('PendingSubmit', 'Submitting', 'Downloading', 'Paused') " +
+                                        "THEN 1 ELSE NULL END", true);
+            entity.HasIndex("InfoHash", "ActiveFlag").IsUnique();
             entity.HasOne(item => item.FeedItem).WithMany()
                   .HasForeignKey(item => item.FeedItemId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(item => item.Subject).WithMany()

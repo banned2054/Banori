@@ -3,6 +3,7 @@ using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
 using MediaManager.Core.Subjects;
 using MediaManager.Data;
+using MediaManager.Data.Migrations;
 using MediaManager.Features.Dashboard;
 using MediaManager.Features.Downloads;
 using MediaManager.Features.FeedItems;
@@ -16,6 +17,7 @@ using MediaManager.Workers;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -851,9 +853,12 @@ public sealed class SubscriptionRefreshTests
         services.AddDataProtection()
                 .PersistKeysToFileSystem(Directory.CreateDirectory(Path.Combine(directory.FullName, "keys")));
         services.AddSingleton<TimeProvider>(new FixedTimeProvider(timestamp));
+        // 与 Program.cs 一致：按 provider 过滤迁移集，否则 MySQL 基线会被 SQLite 迁移器应用。
         services.AddDbContextFactory<ApplicationDbContext>(options =>
-                                                               options
-                                                                  .UseSqlite($"Data Source={Path.Combine(directory.FullName, "p2r.db")};Pooling=False"));
+        {
+            options.ReplaceService<IMigrationsAssembly, ProviderAwareMigrationsAssembly>();
+            options.UseSqlite($"Data Source={Path.Combine(directory.FullName, "p2r.db")};Pooling=False");
+        });
         services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion =
                                                       IdentitySchemaVersions.Version3)
                 .AddEntityFrameworkStores<ApplicationDbContext>();

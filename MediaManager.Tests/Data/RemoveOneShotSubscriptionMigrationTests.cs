@@ -1,5 +1,6 @@
 using MediaManager.Core.Rules;
 using MediaManager.Data;
+using MediaManager.Data.Migrations;
 using MediaManager.Features.Downloads;
 using MediaManager.Features.Subscriptions;
 using Microsoft.AspNetCore.Identity;
@@ -103,24 +104,36 @@ public sealed class RemoveOneShotSubscriptionMigrationTests
                     WinnerFeedItemId = oneShotItemWithTaskId, RuleVersion = 1, RankingBasis = "测试优胜",
                     NamingSnapshot   = "命名快照", SelectedAtUtc = timestamp
                 });
-                db.DownloadTasks.Add(new DownloadTask
-                {
-                    Id = taskWithSourceId, FeedItemId = oneShotItemWithTaskId, SubjectId = 42,
-                    InfoHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    TorrentFile = [0x64], TorrentUrl = "https://example.com/a.torrent",
-                    SavePath = "/downloads/a-aaaaaaaa", NamingSnapshot = "一次性条目（有任务）",
-                    Episode = 1, Status = DownloadTaskStatus.Downloading, CreatedAtUtc = timestamp
-                });
-                // 普通订阅条目的任务：迁移不得触碰。
-                db.DownloadTasks.Add(new DownloadTask
-                {
-                    Id = detachedTaskId, FeedItemId = regularItemId,
-                    InfoHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                    TorrentFile = [0x64], TorrentUrl = "https://example.com/b.torrent",
-                    SavePath = "/downloads/b-bbbbbbbb", NamingSnapshot = "常规条目",
-                    Status = DownloadTaskStatus.PendingSubmit, CreatedAtUtc = timestamp
-                });
+                // 先落库 EF 实体（订阅条目等是任务行的外键来源）。
                 await db.SaveChangesAsync();
+                // 当前模型已映射 ActiveFlag 计算列而存量库没有该列，任务行同样用原生 SQL 复原。
+                await db.Database.ExecuteSqlRawAsync("""
+                                                     INSERT INTO "DownloadTasks"
+                                                         ("Id", "FeedItemId", "SubjectId", "InfoHash", "TorrentFile",
+                                                          "TorrentUrl", "SavePath", "NamingSnapshot", "Episode",
+                                                          "Version", "Status", "IsUserPaused", "AttemptCount", "CreatedAtUtc")
+                                                     VALUES ({0}, {1}, 42, {2}, {3}, {4}, {5}, {6}, 1,
+                                                             1, {7}, 0, 0, {8})
+                                                     """,
+                                                     taskWithSourceId, oneShotItemWithTaskId,
+                                                     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                                     new byte[] { 0x64 }, "https://example.com/a.torrent",
+                                                     "/downloads/a-aaaaaaaa",
+                                                     "一次性条目（有任务）", DownloadTaskStatus.Downloading.ToString(),
+                                                     timestamp);
+                await db.Database.ExecuteSqlRawAsync("""
+                                                     INSERT INTO "DownloadTasks"
+                                                         ("Id", "FeedItemId", "InfoHash", "TorrentFile",
+                                                          "TorrentUrl", "SavePath", "NamingSnapshot",
+                                                          "Version", "Status", "IsUserPaused", "AttemptCount", "CreatedAtUtc")
+                                                     VALUES ({0}, {1}, {2}, {3}, {4}, {5}, {6},
+                                                             1, {7}, 0, 0, {8})
+                                                     """,
+                                                     detachedTaskId, regularItemId,
+                                                     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                                                     new byte[] { 0x64 }, "https://example.com/b.torrent",
+                                                     "/downloads/b-bbbbbbbb",
+                                                     "常规条目", DownloadTaskStatus.PendingSubmit.ToString(), timestamp);
             }
 
             // 应用剩余迁移（含 RemoveOneShotSubscription）。
@@ -167,9 +180,12 @@ public sealed class RemoveOneShotSubscriptionMigrationTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        // 与 Program.cs 一致：按 provider 过滤迁移集，否则 MySQL 基线会被 SQLite 迁移器应用。
         services.AddDbContextFactory<ApplicationDbContext>(options =>
-                                                               options
-                                                                  .UseSqlite($"Data Source={Path.Combine(directory.FullName, "migration.db")};Pooling=False"));
+        {
+            options.ReplaceService<IMigrationsAssembly, ProviderAwareMigrationsAssembly>();
+            options.UseSqlite($"Data Source={Path.Combine(directory.FullName, "migration.db")};Pooling=False");
+        });
         services.AddSingleton<TimeProvider>(new FixedTimeProvider(timestamp));
         // 与应用及订阅/设置测试保持一致的 Identity 模型配置：缺注册会与先构建模型的测试产生顺序依赖。
         services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion =

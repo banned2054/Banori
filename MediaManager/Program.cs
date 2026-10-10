@@ -6,6 +6,7 @@ using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
 using MediaManager.Core.Subjects;
 using MediaManager.Data;
+using MediaManager.Data.Migrations;
 using MediaManager.Features.Anime;
 using MediaManager.Features.Dashboard;
 using MediaManager.Features.Downloads;
@@ -26,6 +27,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace MediaManager;
 
@@ -69,17 +71,35 @@ internal class Program
         var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ??
                                throw new InvalidOperationException("未配置连接字符串 DefaultConnection。");
 
-        var sqliteConnection = new SqliteConnectionStringBuilder(connectionString);
-        if (!string.IsNullOrEmpty(sqliteConnection.DataSource)   &&
-            sqliteConnection.DataSource != ":memory:"            &&
-            sqliteConnection.Mode       != SqliteOpenMode.Memory &&
-            !sqliteConnection.DataSource.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
-            sqliteConnection.DataSource =
-                Path.GetFullPath(sqliteConnection.DataSource, builder.Environment.ContentRootPath);
+        var databaseOptions = builder.Configuration.GetSection(DatabaseOptions.SectionName).Get<DatabaseOptions>() ??
+                              new DatabaseOptions();
+        var databaseProvider = DatabaseOptions.ParseProvider(databaseOptions.Provider);
 
         builder.Services.AddDbContextFactory<ApplicationDbContext>(options =>
-                                                                       options.UseSqlite(sqliteConnection
-                                                                                   .ConnectionString));
+        {
+            options.ReplaceService<IMigrationsAssembly, ProviderAwareMigrationsAssembly>();
+            switch (databaseProvider)
+            {
+                case DatabaseProvider.MySql :
+                    options.UseMySql(connectionString,
+                                     DatabaseOptions.ResolveMySqlServerVersion(databaseOptions.MySqlServerVersion,
+                                                                               connectionString));
+                    break;
+                case DatabaseProvider.Sqlite :
+                    var sqliteConnection = new SqliteConnectionStringBuilder(connectionString);
+                    if (!string.IsNullOrEmpty(sqliteConnection.DataSource)   &&
+                        sqliteConnection.DataSource != ":memory:"            &&
+                        sqliteConnection.Mode       != SqliteOpenMode.Memory &&
+                        !sqliteConnection.DataSource.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
+                        sqliteConnection.DataSource =
+                            Path.GetFullPath(sqliteConnection.DataSource, builder.Environment.ContentRootPath);
+
+                    options.UseSqlite(sqliteConnection.ConnectionString);
+                    break;
+                default :
+                    throw new InvalidOperationException($"未支持的数据库 provider：{databaseProvider}。");
+            }
+        });
         builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
         builder.Services.AddIdentityCore<ApplicationUser>(options =>

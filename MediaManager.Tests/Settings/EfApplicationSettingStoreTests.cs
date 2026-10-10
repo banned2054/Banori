@@ -1,8 +1,10 @@
 using MediaManager.Data;
+using MediaManager.Data.Migrations;
 using MediaManager.Features.Settings;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace MediaManager.Tests.Settings;
@@ -23,9 +25,12 @@ public sealed class EfApplicationSettingStoreTests
             services.AddLogging();
             services.AddDataProtection().PersistKeysToFileSystem(keyDirectory);
             services.AddSingleton<TimeProvider>(new FixedTimeProvider(timestamp));
+            // 与 Program.cs 一致：按 provider 过滤迁移集，否则 MySQL 基线会被 SQLite 迁移器应用。
             services.AddDbContextFactory<ApplicationDbContext>(options =>
-                                                                   options
-                                                                      .UseSqlite($"Data Source={databasePath};Pooling=False"));
+            {
+                options.ReplaceService<IMigrationsAssembly, ProviderAwareMigrationsAssembly>();
+                options.UseSqlite($"Data Source={databasePath};Pooling=False");
+            });
             services.AddIdentityCore<ApplicationUser>(options =>
                                                           options.Stores.SchemaVersion =
                                                               IdentitySchemaVersions.Version3)

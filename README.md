@@ -9,7 +9,7 @@ MediaManager.Core/        筛选、集数修正、命名预览、info-hash 提�
 MediaManager/
   Components/Pages/       订阅、条目、下载任务、设置页面及页面 ViewModel
   Features/               业务服务：订阅管理、Mikan 刷新、条目查询、总览、下载闭环、设置
-  Data/                   EF Core 实体与 SQLite 迁移
+  Data/                   EF Core 实体与双 provider 迁移（SQLite 默认 / MySQL）
   Integrations/           Mikan、Bangumi、qBittorrent 客户端与种子下载
   Workers/                周期调度 Worker（订阅刷新、下载对账）
 MediaManager.Tests/       规则单元测试、SQLite 行为测试
@@ -34,6 +34,36 @@ dotnet run --project MediaManager/MediaManager.csproj
 首次创建完成后应从运行环境移除 `BootstrapAdmin__Password`。默认数据库位于 `MediaManager/App_Data/mediamanager.db`，Data Protection 密钥位于 `MediaManager/App_Data/keys`；部署时二者都需要持久化和备份。
 
 连接字符串中的普通相对数据库路径以应用内容根目录（`ContentRootPath`）为基准，不随进程工作目录变化；绝对路径保持原位置，SQLite `file:` URI 和内存数据库保留原有语义。注册确认页面已移除，不提供公开的邮箱确认链接。
+
+### 数据库 provider：SQLite（默认）与 MySQL
+
+应用长期支持两种数据库，由 `Database:Provider` 配置切换（`Sqlite` 默认 / `MySql`），迁移集按 provider 隔离：SQLite 迁移位于 `Data/Migrations/`，MySQL 基线位于 `Data/Migrations/MySql/`，由 `ProviderAwareMigrationsAssembly` 按当前 provider 过滤，互不可见。两者共用同一 EF 模型；"同一资源活动任务唯一" 的约束在 SQLite 用带 WHERE 的部分索引表达，在 MySQL 用等价的 `ActiveFlag` 存储型计算列（活动行 1、终态行 NULL，唯一索引不对 NULL 去重）。
+
+MySQL 配置示例：
+
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=localhost;Port=3306;Database=mediamanager;User=mediamanager;Password=请替换"
+  },
+  "Database": {
+    "Provider": "MySql",
+    "MySqlServerVersion": ""
+  }
+}
+```
+
+`MySqlServerVersion` 填服务器版本（如 `"8.0.36"` 或 `"10.11.4-MariaDB"`）可跳过启动探测；留空则启动时自动探测（要求启动时数据库可达）。MySQL provider 为 `Microting.EntityFrameworkCore.MySql`（Pomelo 的 EF Core 10 延续版，基于 MySqlConnector）。时间戳统一以 UTC 写入读取；MySQL `datetime(6)` 的精度为微秒（.NET tick 为 100 纳秒），应用内不存在亚微秒的时间戳相等比较，不受影响。
+
+MySQL 下的迁移工具命令（快照文件的位置由工具自动管理，执行后请用 `git status` 检查 `Data/Migrations/ApplicationDbContextModelSnapshot.cs` 是否被重写为 MySQL 模型——工具会把快照写在默认位置；如被重写，从 git 恢复 SQLite 快照，并按 `Data/Migrations/MySql/` 内快照的提取方式同步 MySQL 快照）：
+
+```powershell
+dotnet ef migrations add <名称> --project MediaManager --startup-project MediaManager --namespace MediaManager.Data.Migrations --output-dir Data/Migrations
+dotnet ef migrations add <名称> --project MediaManager --startup-project MediaManager --namespace MediaManager.Data.Migrations.MySql --output-dir Data/Migrations/MySql -- --Database:Provider=MySql
+dotnet ef database update --project MediaManager --startup-project MediaManager -- --Database:Provider=MySql "ConnectionStrings:DefaultConnection=..."
+```
+
+schema 变更需要同时为两个 provider 各加一个迁移（模型唯一，迁移集两份）；用 `dotnet ef migrations has-pending-model-changes`（加同样的 `--` 参数）可以只读校验某一 provider 的快照是否与模型一致。
 
 登录后可在“订阅”页面添加 Mikan RSS，在“条目”页面检查解析与决策；RSS 地址使用 Data Protection 加密保存，页面不会显示查询参数。下载前先在“设置”页面启用并配置 qBittorrent（地址、账号、下载器侧保存路径，密码加密保存），再在已选择条目的详情页创建下载任务；“下载任务”页面展示进度、失败步骤并支持暂停 / 恢复 / 重试。数据库和密钥目录必须作为一个整体备份与恢复。
 
