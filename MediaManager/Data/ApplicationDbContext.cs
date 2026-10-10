@@ -111,6 +111,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.Property(item => item.Preference).HasMaxLength(100);
             entity.Property(item => item.Reason).HasMaxLength(1000).IsRequired();
             entity.Property(item => item.NamingPreview).HasMaxLength(1000);
+            entity.Property(item => item.NamingIngredients);
             // 显式默认值：存量行升级时必须得到合法枚举值，空字符串会破坏字符串转换读取。
             entity.Property(item => item.SelectionOutcome).HasConversion<string>().HasMaxLength(32)
                   .HasDefaultValue(SelectionOutcome.None);
@@ -131,6 +132,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.Property(item => item.SavePath).HasMaxLength(1000).IsRequired();
             entity.Property(item => item.SiteSource).HasMaxLength(50);
             entity.Property(item => item.NamingSnapshot).HasMaxLength(200).IsRequired();
+            entity.Property(item => item.NamingIngredients);
             entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(32);
             entity.Property(item => item.FailedStep).HasMaxLength(50);
             entity.Property(item => item.Error).HasMaxLength(1000);

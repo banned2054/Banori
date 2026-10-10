@@ -72,27 +72,44 @@ public sealed class RemoveOneShotSubscriptionMigrationTests
                 {
                     Id = 42, Name = "Test Subject", NameCn = "测试作品", Platform = "TV", CachedAtUtc = timestamp
                 });
-                db.FeedItems.Add(new FeedItem
-                {
-                    Id             = regularItemId, SubscriptionId = regularSubscriptionId, StableId = "regular-1",
-                    Title          = "常规条目", FirstSeenAtUtc = timestamp, Status = FeedItemStatus.Accepted,
-                    DecisionStatus = ReleaseDecisionStatus.Accepted, Reason = "测试。",
-                    EvaluatedAtUtc = timestamp
-                });
-                db.FeedItems.Add(new FeedItem
-                {
-                    Id = oneShotItemWithTaskId, SubscriptionId = oneShotSubscriptionId, StableId = "one-shot-1",
-                    Title = "一次性条目（有任务）", FirstSeenAtUtc = timestamp, Status = FeedItemStatus.Accepted,
-                    DecisionStatus = ReleaseDecisionStatus.Accepted, Reason = "测试。",
-                    EvaluatedAtUtc = timestamp, SubjectId = 42, Episode = 1
-                });
-                db.FeedItems.Add(new FeedItem
-                {
-                    Id = oneShotItemWithoutTaskId, SubscriptionId = oneShotSubscriptionId, StableId = "one-shot-2",
-                    Title = "一次性条目（无任务）", FirstSeenAtUtc = timestamp, Status = FeedItemStatus.NeedsReview,
-                    DecisionStatus = ReleaseDecisionStatus.NeedsReview, Reason = "测试。",
-                    EvaluatedAtUtc = timestamp
-                });
+                // 先落库 Subject，条目行的原生 SQL 外键引用它。
+                await db.SaveChangesAsync();
+                // 条目行同样用原生 SQL 复原：存量库停在 RemoveOneShotSubscription 之前，
+                // 当前模型此后新增的 FeedItems 列（如 NamingIngredients）在存量表中尚不存在。
+                await db.Database.ExecuteSqlRawAsync("""
+                                                     INSERT INTO "FeedItems"
+                                                         ("Id", "SubscriptionId", "StableId", "Title", "FirstSeenAtUtc",
+                                                          "Status", "DecisionStatus", "Reason", "EvaluatedAtUtc",
+                                                          "SubjectId", "Episode", "Version")
+                                                     VALUES ({0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8},
+                                                             NULL, NULL, 1)
+                                                     """,
+                                                     regularItemId, regularSubscriptionId, "regular-1",
+                                                     "常规条目", timestamp, FeedItemStatus.Accepted.ToString(),
+                                                     ReleaseDecisionStatus.Accepted.ToString(), "测试。", timestamp);
+                await db.Database.ExecuteSqlRawAsync("""
+                                                     INSERT INTO "FeedItems"
+                                                         ("Id", "SubscriptionId", "StableId", "Title", "FirstSeenAtUtc",
+                                                          "Status", "DecisionStatus", "Reason", "EvaluatedAtUtc",
+                                                          "SubjectId", "Episode", "Version")
+                                                     VALUES ({0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8},
+                                                             42, 1, 1)
+                                                     """,
+                                                     oneShotItemWithTaskId, oneShotSubscriptionId, "one-shot-1",
+                                                     "一次性条目（有任务）", timestamp, FeedItemStatus.Accepted.ToString(),
+                                                     ReleaseDecisionStatus.Accepted.ToString(), "测试。", timestamp);
+                await db.Database.ExecuteSqlRawAsync("""
+                                                     INSERT INTO "FeedItems"
+                                                         ("Id", "SubscriptionId", "StableId", "Title", "FirstSeenAtUtc",
+                                                          "Status", "DecisionStatus", "Reason", "EvaluatedAtUtc",
+                                                          "SubjectId", "Episode", "Version")
+                                                     VALUES ({0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8},
+                                                             NULL, NULL, 1)
+                                                     """,
+                                                     oneShotItemWithoutTaskId, oneShotSubscriptionId, "one-shot-2",
+                                                     "一次性条目（无任务）", timestamp,
+                                                     FeedItemStatus.NeedsReview.ToString(),
+                                                     ReleaseDecisionStatus.NeedsReview.ToString(), "测试。", timestamp);
                 db.RefreshWorkItems.Add(new RefreshWorkItem
                 {
                     Id     = Guid.NewGuid(), SubscriptionId              = oneShotSubscriptionId,

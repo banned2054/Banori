@@ -1,5 +1,4 @@
 using MediaManager.Core.Rules;
-using MediaManager.Features.Downloads;
 
 namespace MediaManager.Features.Subscriptions;
 
@@ -108,49 +107,40 @@ public sealed record FeedItemAnalysis
     public          string?                Preference     { get; init; }
     public required string                 Reason         { get; init; }
     public          string?                NamingPreview  { get; init; }
-    public required DateTimeOffset         EvaluatedAtUtc { get; init; }
+
+    /// <summary>命名要素 JSON：与 NamingPreview 同源生成；登记下载任务时随任务落库，供完成改名按文件集数重渲染。</summary>
+    public string? NamingIngredients { get; init; }
+
+    public required DateTimeOffset EvaluatedAtUtc { get; init; }
 }
 
 public sealed record FeedItemView
 {
-    public required Guid            Id               { get; init; }
-    public required Guid            SubscriptionId   { get; init; }
-    public required string          SubscriptionName { get; init; }
-    public required string          Title            { get; init; }
-    public          string?         Link             { get; init; }
-    public          string?         TorrentUrl       { get; init; }
-    public          DateTimeOffset? PublishedAtUtc   { get; init; }
-    public required DateTimeOffset  FirstSeenAtUtc   { get; init; }
-    public required FeedItemStatus  Status           { get; init; }
-    public          string?         ParsedTitle      { get; init; }
-    public          string?         MediaType        { get; init; }
-    public          decimal?        Episode          { get; init; }
-    public          int             Version          { get; init; }
-    public          string?         Group            { get; init; }
-    public          string?         Language         { get; init; }
-    public          string?         Resolution       { get; init; }
-    public          int?            SubjectId        { get; init; }
-    public          string?         SubjectName      { get; init; }
-
-    /// <summary>标题映射记录的修正前原始 Subject；仅详情查询填充，列表查询为 null。</summary>
-    public int? OriginalSubjectId { get; init; }
-
-    public          ReleaseDecisionStatus? DecisionStatus { get; init; }
-    public          string?                Preference     { get; init; }
-    public required string                 Reason         { get; init; }
-    public          string?                NamingPreview  { get; init; }
+    public required Guid                   Id               { get; init; }
+    public required Guid                   SubscriptionId   { get; init; }
+    public required string                 SubscriptionName { get; init; }
+    public required string                 Title            { get; init; }
+    public          string?                Link             { get; init; }
+    public          string?                TorrentUrl       { get; init; }
+    public          DateTimeOffset?        PublishedAtUtc   { get; init; }
+    public required DateTimeOffset         FirstSeenAtUtc   { get; init; }
+    public required FeedItemStatus         Status           { get; init; }
+    public          string?                ParsedTitle      { get; init; }
+    public          string?                MediaType        { get; init; }
+    public          decimal?               Episode          { get; init; }
+    public          int                    Version          { get; init; }
+    public          string?                Group            { get; init; }
+    public          string?                Language         { get; init; }
+    public          string?                Resolution       { get; init; }
+    public          int?                   SubjectId        { get; init; }
+    public          string?                SubjectName      { get; init; }
+    public          ReleaseDecisionStatus? DecisionStatus   { get; init; }
+    public          string?                Preference       { get; init; }
+    public required string                 Reason           { get; init; }
+    public          string?                NamingPreview    { get; init; }
 
     /// <summary>条目在同集择优中的结果；None 表示尚未参与择优（含历史数据）。</summary>
     public SelectionOutcome SelectionOutcome { get; init; }
-
-    /// <summary>条目所在同集组选择记录的规则版本；无选择记录或非详情查询时为 null。</summary>
-    public int? SelectionRuleVersion { get; init; }
-
-    /// <summary>条目所在同集组选择记录的优胜依据（描述组内优胜，非本条目）；仅详情查询填充。</summary>
-    public string? SelectionBasis { get; init; }
-
-    /// <summary>该条目最近一次下载任务摘要；从未创建下载任务时为 null。仅详情查询填充。</summary>
-    public DownloadTaskBrief? Download { get; init; }
 }
 
 public sealed record DashboardSnapshot(

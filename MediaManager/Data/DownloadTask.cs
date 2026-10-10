@@ -38,6 +38,9 @@ public sealed class DownloadTask
     /// <summary>命名快照：完成后按此改名，重试沿用原值。</summary>
     public string NamingSnapshot { get; set; } = string.Empty;
 
+    /// <summary>命名要素 JSON：快照的模板与令牌值；完成改名时按每个内容文件的集数重渲染，缺失时回退快照。</summary>
+    public string? NamingIngredients { get; set; }
+
     public decimal?           Episode { get; set; }
     public int                Version { get; set; } = 1;
     public DownloadTaskStatus Status  { get; set; }

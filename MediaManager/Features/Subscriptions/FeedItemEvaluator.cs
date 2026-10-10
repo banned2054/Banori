@@ -101,9 +101,9 @@ public sealed class FeedItemEvaluator(
             await selectionService.SelectAndRegisterAsync(keys, true, cancellationToken);
     }
 
-    private async Task EvaluateWithSubjectAsync(Guid   itemId,          ParseResult       parsed, int subjectId,
-                                                string normalizedTitle, DateTimeOffset?   publishedAtUtc,
-                                                string stableId,        string?           feedHost,
+    private async Task EvaluateWithSubjectAsync(Guid              itemId,          ParseResult parsed, int subjectId,
+                                                string            normalizedTitle, DateTimeOffset? publishedAtUtc,
+                                                string            stableId,        string? feedHost,
                                                 CancellationToken cancellationToken)
     {
         if (parsed.MediaType.ToString() == "MultipleEpisode" || parsed.Episode is null)
@@ -185,14 +185,18 @@ public sealed class FeedItemEvaluator(
         // 命名模板的 {source} 令牌取订阅 feed 的来源站点（mikan/anibt 等）。
         var siteSource     = TorrentSiteSource.FromHost(feedHost);
         var namingTemplate = await namingTemplateStore.GetAsync(cancellationToken);
-        var namingPreview = namingPolicy.Create(subject.DisplayName, correction.Episode, parsed.Version,
-                                                preference, siteSource, namingTemplate);
+        // 预览与命名要素同源生成：要素落库后，完成改名按每个内容文件的集数重渲染，与快照永远一致。
+        var ingredients = new TorrentNamingIngredients(namingTemplate, subject.DisplayName,
+                                                       ReleaseNamePreviewPolicy.FormatEpisodeText(correction.Episode),
+                                                       parsed.Version, preference, siteSource,
+                                                       parsed.Language.ToString(), parsed.Resolution.ToString());
+        var namingPreview = namingPolicy.Create(ingredients);
 
         await SaveAnalysisAsync(itemId,
                                 CreateAnalysis(parsed, status, subject.Id, subject.DisplayName,
                                                decisionStatus, preference,
                                                eligibility.Reason + correctionReason, namingPreview,
-                                               correction.Episode),
+                                               correction.Episode, ingredients.ToJson()),
                                 cancellationToken);
     }
 
@@ -242,34 +246,35 @@ public sealed class FeedItemEvaluator(
     private FeedItemAnalysis CreateAnalysis(ParseResult parsed,      FeedItemStatus status, int? subjectId,
                                             string?     subjectName, ReleaseDecisionStatus? decisionStatus,
                                             string?     preference,  string reason, string? namingPreview,
-                                            decimal?    episode)
+                                            decimal?    episode,     string? namingIngredients = null)
     {
         return new FeedItemAnalysis
         {
-            Status         = status,
-            ParsedTitle    = parsed.Title,
-            MediaType      = parsed.MediaType.ToString(),
-            Episode        = episode,
-            StartEpisode   = parsed.StartEpisode,
-            EndEpisode     = parsed.EndEpisode,
-            Version        = parsed.Version,
-            Group          = parsed.Group,
-            GroupType      = parsed.GroupType.ToString(),
-            Language       = parsed.Language.ToString(),
-            SubtitleType   = parsed.SubtitleType.ToString(),
-            Resolution     = parsed.Resolution.ToString(),
-            Source         = parsed.Source.ToString(),
-            WebSource      = parsed.WebSource,
-            VideoCodec     = parsed.VideoCodec,
-            AudioCodec     = parsed.AudioCodec,
-            ColorBitDepth  = parsed.ColorBitDepth,
-            SubjectId      = subjectId,
-            SubjectName    = subjectName,
-            DecisionStatus = decisionStatus,
-            Preference     = preference,
-            Reason         = reason,
-            NamingPreview  = namingPreview,
-            EvaluatedAtUtc = timeProvider.GetUtcNow()
+            Status            = status,
+            ParsedTitle       = parsed.Title,
+            MediaType         = parsed.MediaType.ToString(),
+            Episode           = episode,
+            StartEpisode      = parsed.StartEpisode,
+            EndEpisode        = parsed.EndEpisode,
+            Version           = parsed.Version,
+            Group             = parsed.Group,
+            GroupType         = parsed.GroupType.ToString(),
+            Language          = parsed.Language.ToString(),
+            SubtitleType      = parsed.SubtitleType.ToString(),
+            Resolution        = parsed.Resolution.ToString(),
+            Source            = parsed.Source.ToString(),
+            WebSource         = parsed.WebSource,
+            VideoCodec        = parsed.VideoCodec,
+            AudioCodec        = parsed.AudioCodec,
+            ColorBitDepth     = parsed.ColorBitDepth,
+            SubjectId         = subjectId,
+            SubjectName       = subjectName,
+            DecisionStatus    = decisionStatus,
+            Preference        = preference,
+            Reason            = reason,
+            NamingPreview     = namingPreview,
+            NamingIngredients = namingIngredients,
+            EvaluatedAtUtc    = timeProvider.GetUtcNow()
         };
     }
 
@@ -360,29 +365,30 @@ public sealed class FeedItemEvaluator(
     {
         await using var db   = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var             item = await db.FeedItems.SingleAsync(value => value.Id == itemId, cancellationToken);
-        item.Status         = analysis.Status;
-        item.ParsedTitle    = analysis.ParsedTitle;
-        item.MediaType      = analysis.MediaType;
-        item.Episode        = analysis.Episode;
-        item.StartEpisode   = analysis.StartEpisode;
-        item.EndEpisode     = analysis.EndEpisode;
-        item.Version        = analysis.Version;
-        item.Group          = analysis.Group;
-        item.GroupType      = analysis.GroupType;
-        item.Language       = analysis.Language;
-        item.SubtitleType   = analysis.SubtitleType;
-        item.Resolution     = analysis.Resolution;
-        item.Source         = analysis.Source;
-        item.WebSource      = analysis.WebSource;
-        item.VideoCodec     = analysis.VideoCodec;
-        item.AudioCodec     = analysis.AudioCodec;
-        item.ColorBitDepth  = analysis.ColorBitDepth;
-        item.SubjectId      = analysis.SubjectId;
-        item.DecisionStatus = analysis.DecisionStatus;
-        item.Preference     = analysis.Preference;
-        item.Reason         = analysis.Reason;
-        item.NamingPreview  = analysis.NamingPreview;
-        item.EvaluatedAtUtc = analysis.EvaluatedAtUtc;
+        item.Status            = analysis.Status;
+        item.ParsedTitle       = analysis.ParsedTitle;
+        item.MediaType         = analysis.MediaType;
+        item.Episode           = analysis.Episode;
+        item.StartEpisode      = analysis.StartEpisode;
+        item.EndEpisode        = analysis.EndEpisode;
+        item.Version           = analysis.Version;
+        item.Group             = analysis.Group;
+        item.GroupType         = analysis.GroupType;
+        item.Language          = analysis.Language;
+        item.SubtitleType      = analysis.SubtitleType;
+        item.Resolution        = analysis.Resolution;
+        item.Source            = analysis.Source;
+        item.WebSource         = analysis.WebSource;
+        item.VideoCodec        = analysis.VideoCodec;
+        item.AudioCodec        = analysis.AudioCodec;
+        item.ColorBitDepth     = analysis.ColorBitDepth;
+        item.SubjectId         = analysis.SubjectId;
+        item.DecisionStatus    = analysis.DecisionStatus;
+        item.Preference        = analysis.Preference;
+        item.Reason            = analysis.Reason;
+        item.NamingPreview     = analysis.NamingPreview;
+        item.NamingIngredients = analysis.NamingIngredients;
+        item.EvaluatedAtUtc    = analysis.EvaluatedAtUtc;
         // 条目重新评估后不再合格时，旧的组内落选标记已失去意义，清除以免详情页误导；
         // 仍合格的条目保留原值，等待组内重选更新为优胜或落选。
         item.SelectionOutcome = analysis.Status == FeedItemStatus.Accepted

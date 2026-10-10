@@ -1,4 +1,6 @@
+using Banned.AniParser.Models;
 using MediaManager.Core.Rules;
+using MediaManager.Core.Torrents;
 
 namespace MediaManager.Tests.Rules;
 
@@ -47,5 +49,53 @@ public sealed class ReleaseNamePreviewPolicyTests
         var result = new ReleaseNamePreviewPolicy().Create("动画", 1m, 1, "Sc", "a/b?c", "{source}/{title}");
 
         Assert.Equal("a b c 动画", result);
+    }
+
+    [Fact]
+    public void Create_FromIngredients_FallsBackToDefaultTemplateAndMatchesLegacyShape()
+    {
+        var ingredients = new TorrentNamingIngredients(null, "动画: 第一季", "07.5", 2, "Sc", "mikan");
+
+        var result = new ReleaseNamePreviewPolicy().Create(ingredients);
+
+        // 模板为空回退默认模板，与旧重载同形。
+        Assert.Equal("[Anime]动画 第一季 E07.5 mikan", result);
+    }
+
+    [Fact]
+    public void FormatEpisodeText_FromParseResult_SupportsSingleAndRange()
+    {
+        var single = new ParseResult { Episode = 7m };
+        Assert.Equal("07", ReleaseNamePreviewPolicy.FormatEpisodeText(single));
+
+        var range = new ParseResult { StartEpisode = 1, EndEpisode = 12 };
+        Assert.Equal("01-E12", ReleaseNamePreviewPolicy.FormatEpisodeText(range));
+
+        var rangeOfOne = new ParseResult { StartEpisode = 5, EndEpisode = 5 };
+        Assert.Equal("05", ReleaseNamePreviewPolicy.FormatEpisodeText(rangeOfOne));
+
+        var unparseable = new ParseResult();
+        Assert.Null(ReleaseNamePreviewPolicy.FormatEpisodeText(unparseable));
+    }
+
+    [Fact]
+    public void Create_RangeEpisodeText_RendersConsolidatedCollectionName()
+    {
+        var ingredients = new TorrentNamingIngredients(null, "龙与虎", "01-E12", 1, "Sc", "byrbt");
+
+        Assert.Equal("[Anime]龙与虎 E01-E12 byrbt", new ReleaseNamePreviewPolicy().Create(ingredients));
+    }
+
+    [Fact]
+    public void Ingredients_JsonRoundTrip_PreservesValuesAndToleratesGarbage()
+    {
+        var ingredients = new TorrentNamingIngredients("[Anime]{title} E{episode} {source}", "动画", "07", 2,
+                                                       "Sc", "mikan");
+
+        var restored = TorrentNamingIngredients.FromJson(ingredients.ToJson());
+
+        Assert.Equal(ingredients, restored);
+        Assert.Null(TorrentNamingIngredients.FromJson("not json"));
+        Assert.Null(TorrentNamingIngredients.FromJson(null));
     }
 }

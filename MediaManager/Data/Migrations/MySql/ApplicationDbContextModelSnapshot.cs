@@ -208,6 +208,9 @@ namespace MediaManager.Data.Migrations.MySql
                     b.Property<DateTimeOffset?>("LastSyncedAtUtc")
                         .HasColumnType("datetime(6)");
 
+                    b.Property<string>("NamingIngredients")
+                        .HasColumnType("longtext");
+
                     b.Property<string>("NamingSnapshot")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -316,6 +319,9 @@ namespace MediaManager.Data.Migrations.MySql
                     b.Property<string>("MediaType")
                         .HasMaxLength(50)
                         .HasColumnType("varchar(50)");
+
+                    b.Property<string>("NamingIngredients")
+                        .HasColumnType("longtext");
 
                     b.Property<string>("NamingPreview")
                         .HasMaxLength(1000)
