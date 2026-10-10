@@ -103,7 +103,6 @@ public static class TorrentInfoHashExtractor
         var position = 1;
         var found    = false;
         while (position < data.Length && data[position] != (byte)'e')
-        {
             if (data[position] == (byte)'l')
             {
                 position++;
@@ -130,7 +129,6 @@ public static class TorrentInfoHashExtractor
                     found = true;
                 }
             }
-        }
 
         return found;
     }

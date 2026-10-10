@@ -44,11 +44,11 @@ public sealed class SettingsPageViewModel(
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
         var downloader = await qbittorrentSettings.GetAsync(cancellationToken);
-        Downloader.BaseUrl  = downloader.BaseUrl;
-        Downloader.Username = downloader.Username;
-        Downloader.SavePath = downloader.SavePath;
-        Downloader.Enabled  = downloader.Enabled;
-        Downloader.ProxyId  = downloader.ProxyId?.ToString();
+        Downloader.BaseUrl        = downloader.BaseUrl;
+        Downloader.Username       = downloader.Username;
+        Downloader.SavePath       = downloader.SavePath;
+        Downloader.Enabled        = downloader.Enabled;
+        Downloader.ProxyId        = downloader.ProxyId?.ToString();
         Downloader.NamingTemplate = await namingTemplateStore.GetAsync(cancellationToken);
 
         var hookBaseUrl = await qbittorrentSettings.GetHookBaseUrlAsync(cancellationToken);
@@ -163,11 +163,11 @@ public sealed class SettingsPageViewModel(
         try
         {
             var (succeeded, message) = await qbittorrentSettings.TestConnectionAsync(
-             new QbittorrentSettings(Downloader.BaseUrl  ?? string.Empty, Downloader.Username ?? string.Empty,
-                                     Downloader.SavePath ?? string.Empty, true,
-                                     Downloader.ParseProxyId()),
-             string.IsNullOrWhiteSpace(Downloader.Password) ? null : Downloader.Password,
-             cancellationToken);
+                 new QbittorrentSettings(Downloader.BaseUrl  ?? string.Empty, Downloader.Username ?? string.Empty,
+                                         Downloader.SavePath ?? string.Empty, true,
+                                         Downloader.ParseProxyId()),
+                 string.IsNullOrWhiteSpace(Downloader.Password) ? null : Downloader.Password,
+                 cancellationToken);
             TestSucceeded = succeeded;
             TestMessage   = message;
         }

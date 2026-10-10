@@ -49,8 +49,8 @@ public sealed class ManageTelegramSettingsTests
         var settings = CreateService(new MemoryApplicationSettingStore());
         await Assert.ThrowsAsync<ArgumentException>(() =>
                                                         settings.SaveAsync(new TelegramSettings("42",
-                                                                               null, true,
-                                                                               NotificationEvents.All)));
+                                                                                    null, true,
+                                                                                    NotificationEvents.All)));
     }
 
     [Fact]
@@ -60,8 +60,8 @@ public sealed class ManageTelegramSettingsTests
         var settings = CreateService(store);
         await Assert.ThrowsAsync<ArgumentException>(() =>
                                                         settings.SaveAsync(new TelegramSettings(string.Empty,
-                                                                               null, true,
-                                                                               NotificationEvents.All),
+                                                                                    null, true,
+                                                                                    NotificationEvents.All),
                                                                            "bot-token"));
     }
 
@@ -199,8 +199,8 @@ public sealed class ManageGotifySettingsTests
     {
         var settings = CreateService(new MemoryApplicationSettingStore());
         await Assert.ThrowsAsync<ArgumentException>(() => settings.SaveAsync(new GotifySettings("http://gotify.test",
-                                                                                 null, true,
-                                                                                 NotificationEvents.All)));
+                                                                                      null, true,
+                                                                                      NotificationEvents.All)));
     }
 
     [Theory]
@@ -211,7 +211,7 @@ public sealed class ManageGotifySettingsTests
         var settings = CreateService(new MemoryApplicationSettingStore());
         await Assert.ThrowsAsync<ArgumentException>(() =>
                                                         settings.SaveAsync(new GotifySettings(baseUrl, null, true,
-                                                                               NotificationEvents.All),
+                                                                                    NotificationEvents.All),
                                                                            "app-token"));
     }
 

@@ -14,15 +14,15 @@ public static class TorrentSiteSource
     [
         ("tracker-public.tjupt.org", "tjupt"),
         ("tracker-campus.tjupt.org", "tjupt"),
-        ("tracker.byr.pt",           "byrbt"),
-        ("tr.bangumi.moe",           "mikan"),
-        ("nyaa.tracker.wf",          "mikan"),
-        ("t.nyaatracker.com",        "mikan"),
-        ("open.acgtracker.com",      "mikan"),
-        ("t.acg.rip",                "mikan"),
-        ("bangumi.moe",              "mikan"),
-        ("daydream.dmhy.best",       "U2"),
-        ("anibt",                    "anibt")
+        ("tracker.byr.pt", "byrbt"),
+        ("tr.bangumi.moe", "mikan"),
+        ("nyaa.tracker.wf", "mikan"),
+        ("t.nyaatracker.com", "mikan"),
+        ("open.acgtracker.com", "mikan"),
+        ("t.acg.rip", "mikan"),
+        ("bangumi.moe", "mikan"),
+        ("daydream.dmhy.best", "U2"),
+        ("anibt", "anibt")
     ];
 
     private static readonly Dictionary<string, string> KnownHosts = new(StringComparer.OrdinalIgnoreCase)

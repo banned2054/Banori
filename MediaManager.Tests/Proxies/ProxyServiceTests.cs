@@ -61,7 +61,7 @@ public sealed class ProxyServiceTests
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
                                                         harness.Service.SaveAsync(new SaveProxyRequest(null, name,
-                                                            ProxyProtocol.Http, host, port, null)));
+                                                                          ProxyProtocol.Http, host, port, null)));
     }
 
     [Fact]
@@ -72,8 +72,8 @@ public sealed class ProxyServiceTests
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
                                                         harness.Service.SaveAsync(new SaveProxyRequest(null, "重名",
-                                                            ProxyProtocol.Socks5, "10.0.0.2", 1080,
-                                                            null)));
+                                                                          ProxyProtocol.Socks5, "10.0.0.2", 1080,
+                                                                          null)));
     }
 
     [Fact]

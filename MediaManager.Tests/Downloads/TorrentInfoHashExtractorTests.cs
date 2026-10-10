@@ -61,10 +61,11 @@ public sealed class TorrentInfoHashExtractorTests
     public void ExtractTrackers_CollectsAnnounceAndNestedAnnounceList()
     {
         var torrent = Encoding.UTF8.GetBytes(
-                                              "d" + Str("announce", "udp://tracker.byr.pt:6969/announce") +
-                                              "13:announce-list" + "ll" + Str(null, "https://tr.bangumi.moe:6969/announce") +
-                                              Str(null, "udp://tracker-public.tjupt.org/announce") + "ee" +
-                                              "4:infod4:name3:abce" + "e");
+                                             "d" + Str("announce", "udp://tracker.byr.pt:6969/announce") +
+                                             "13:announce-list" + "ll" +
+                                             Str(null, "https://tr.bangumi.moe:6969/announce") +
+                                             Str(null, "udp://tracker-public.tjupt.org/announce") + "ee" +
+                                             "4:infod4:name3:abce" + "e");
 
         List<string> trackers = [];
         Assert.True(TorrentInfoHashExtractor.TryExtractTrackerUrls(torrent, trackers));
@@ -86,8 +87,8 @@ public sealed class TorrentInfoHashExtractorTests
         Assert.True(TorrentInfoHashExtractor.TryExtractTrackerUrls(flat, flatTrackers));
         Assert.Equal(["udp://daydream.dmhy.best:6969"], flatTrackers);
 
-        var noTracker = Encoding.UTF8.GetBytes("d4:infod4:name3:abce" + "e");
-        List<string> empty = [];
+        var          noTracker = Encoding.UTF8.GetBytes("d4:infod4:name3:abce" + "e");
+        List<string> empty     = [];
         Assert.False(TorrentInfoHashExtractor.TryExtractTrackerUrls(noTracker, empty));
         Assert.Empty(empty);
     }

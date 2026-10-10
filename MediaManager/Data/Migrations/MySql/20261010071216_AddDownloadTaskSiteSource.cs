@@ -1,30 +1,29 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+﻿#nullable disable
 
-#nullable disable
+using Microsoft.EntityFrameworkCore.Migrations;
 
-namespace MediaManager.Data.Migrations.MySql
+namespace MediaManager.Data.Migrations.MySql;
+
+/// <inheritdoc />
+public partial class AddDownloadTaskSiteSource : Migration
 {
     /// <inheritdoc />
-    public partial class AddDownloadTaskSiteSource : Migration
+    protected override void Up(MigrationBuilder migrationBuilder)
     {
-        /// <inheritdoc />
-        protected override void Up(MigrationBuilder migrationBuilder)
-        {
-            migrationBuilder.AddColumn<string>(
-                name: "SiteSource",
-                table: "DownloadTasks",
-                type: "varchar(50)",
-                maxLength: 50,
-                nullable: true)
-                .Annotation("MySql:CharSet", "utf8mb4");
-        }
+        migrationBuilder.AddColumn<string>(
+                                           "SiteSource",
+                                           "DownloadTasks",
+                                           "varchar(50)",
+                                           maxLength : 50,
+                                           nullable : true)
+                        .Annotation("MySql:CharSet", "utf8mb4");
+    }
 
-        /// <inheritdoc />
-        protected override void Down(MigrationBuilder migrationBuilder)
-        {
-            migrationBuilder.DropColumn(
-                name: "SiteSource",
-                table: "DownloadTasks");
-        }
+    /// <inheritdoc />
+    protected override void Down(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.DropColumn(
+                                    "SiteSource",
+                                    "DownloadTasks");
     }
 }
