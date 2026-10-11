@@ -32,6 +32,7 @@ public sealed class DownloadTaskQueries(IDbContextFactory<ApplicationDbContext> 
                       .ToDictionaryAsync(task => task.Id, task => task.NamingSnapshot, cancellationToken);
         return tasks.Select(task => ToView(task, relatedNames)).ToList();
     }
+
     private static DownloadTaskView ToView(DownloadTask task, IReadOnlyDictionary<Guid, string> relatedNames)
     {
         var ingredients = TorrentNamingIngredients.FromJson(task.NamingIngredients);

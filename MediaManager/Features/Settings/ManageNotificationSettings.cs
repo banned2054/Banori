@@ -8,12 +8,12 @@ internal static class NotificationChannelSettingsStore
     public static async Task<(string ChannelValue, bool Enabled, Guid? ProxyId,
         IReadOnlyList<NotificationEventType> Events)> GetAsync(
         IApplicationSettingStore store, string enabledKey, string channelValueKey, string eventsKey, string proxyIdKey,
-        CancellationToken cancellationToken)
+        CancellationToken        cancellationToken)
     {
-        var enabledText = await store.GetAsync(enabledKey, cancellationToken);
+        var enabledText  = await store.GetAsync(enabledKey, cancellationToken);
         var channelValue = await store.GetAsync(channelValueKey, cancellationToken) ?? string.Empty;
-        var eventsText = await store.GetAsync(eventsKey, cancellationToken);
-        var proxyText = await store.GetAsync(proxyIdKey, cancellationToken);
+        var eventsText   = await store.GetAsync(eventsKey, cancellationToken);
+        var proxyText    = await store.GetAsync(proxyIdKey, cancellationToken);
         return (channelValue,
                 string.Equals(enabledText, "true", StringComparison.OrdinalIgnoreCase),
                 Guid.TryParse(proxyText, out var proxyId) ? proxyId : null,
@@ -21,9 +21,9 @@ internal static class NotificationChannelSettingsStore
     }
 
     public static async Task SaveAsync(
-        IApplicationSettingStore store, string enabledKey, string channelValueKey, string channelValue,
-        string proxyIdKey, string eventsKey, bool enabled, Guid? proxyId,
-        IReadOnlyList<NotificationEventType> events, CancellationToken cancellationToken)
+        IApplicationSettingStore             store,      string enabledKey, string channelValueKey, string channelValue,
+        string                               proxyIdKey, string eventsKey, bool enabled, Guid? proxyId,
+        IReadOnlyList<NotificationEventType> events,     CancellationToken cancellationToken)
     {
         await store.SetAsync(enabledKey, enabled ? "true" : "false", cancellationToken);
         await store.SetAsync(channelValueKey, channelValue, cancellationToken);
@@ -54,7 +54,8 @@ public sealed class ManageTelegramSettings(IApplicationSettingStore settingStore
     public async Task<TelegramSettings> GetAsync(CancellationToken cancellationToken = default)
     {
         var stored = await NotificationChannelSettingsStore.GetAsync(
-            settingStore, EnabledKey, ChatIdKey, EventsKey, ProxyIdKey, cancellationToken);
+                                                                     settingStore, EnabledKey, ChatIdKey, EventsKey,
+                                                                     ProxyIdKey, cancellationToken);
         return new TelegramSettings(stored.ChannelValue.Trim(), stored.ProxyId, stored.Enabled, stored.Events);
     }
 
@@ -85,10 +86,12 @@ public sealed class ManageTelegramSettings(IApplicationSettingStore settingStore
         }
 
         await NotificationChannelSettingsStore.SaveAsync(
-            settingStore, EnabledKey, ChatIdKey, chatId, ProxyIdKey, EventsKey, settings.Enabled, settings.ProxyId,
-            settings.Events, cancellationToken);
+                                                         settingStore, EnabledKey, ChatIdKey, chatId, ProxyIdKey,
+                                                         EventsKey, settings.Enabled, settings.ProxyId,
+                                                         settings.Events, cancellationToken);
         await NotificationChannelSettingsStore.SaveTokenIfProvidedAsync(
-            settingStore, BotTokenKey, botToken, cancellationToken);
+                                                                        settingStore, BotTokenKey, botToken,
+                                                                        cancellationToken);
     }
 
     /// <summary>
@@ -139,7 +142,8 @@ public sealed class ManageGotifySettings(IApplicationSettingStore settingStore, 
     public async Task<GotifySettings> GetAsync(CancellationToken cancellationToken = default)
     {
         var stored = await NotificationChannelSettingsStore.GetAsync(
-            settingStore, EnabledKey, BaseUrlKey, EventsKey, ProxyIdKey, cancellationToken);
+                                                                     settingStore, EnabledKey, BaseUrlKey, EventsKey,
+                                                                     ProxyIdKey, cancellationToken);
         return new GotifySettings(stored.ChannelValue.Trim(), stored.ProxyId, stored.Enabled, stored.Events);
     }
 
@@ -178,10 +182,12 @@ public sealed class ManageGotifySettings(IApplicationSettingStore settingStore, 
         }
 
         await NotificationChannelSettingsStore.SaveAsync(
-            settingStore, EnabledKey, BaseUrlKey, baseUrl, ProxyIdKey, EventsKey, settings.Enabled, settings.ProxyId,
-            settings.Events, cancellationToken);
+                                                         settingStore, EnabledKey, BaseUrlKey, baseUrl, ProxyIdKey,
+                                                         EventsKey, settings.Enabled, settings.ProxyId,
+                                                         settings.Events, cancellationToken);
         await NotificationChannelSettingsStore.SaveTokenIfProvidedAsync(
-            settingStore, AppTokenKey, appToken, cancellationToken);
+                                                                        settingStore, AppTokenKey, appToken,
+                                                                        cancellationToken);
     }
 
     /// <summary>

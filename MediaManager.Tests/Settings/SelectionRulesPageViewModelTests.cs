@@ -3,11 +3,12 @@ using Banned.AniParser.Models.Enums;
 using MediaManager.Components.Pages.Settings;
 using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
+using MediaManager.Core.Subjects;
 using MediaManager.Data;
+using MediaManager.Features.Anime;
 using MediaManager.Features.Downloads;
 using MediaManager.Features.Settings;
 using MediaManager.Features.Subscriptions;
-using MediaManager.Features.Anime;
 using MediaManager.Integrations;
 using MediaManager.Integrations.Qbittorrent;
 using MediaManager.Tests.Downloads;
@@ -234,7 +235,7 @@ public sealed class SelectionRulesPageViewModelTests
         var directory = Directory.CreateTempSubdirectory("MediaManager.P4.RulesPage.Tests.");
         var timestamp = new DateTimeOffset(2026, 9, 27, 4, 0, 0, TimeSpan.Zero);
         var services  = new ServiceCollection();
-        var lifetime = new FakeHostApplicationLifetime();
+        var lifetime  = new FakeHostApplicationLifetime();
         services.AddLogging();
         services.AddDbContextFactory<ApplicationDbContext>(options =>
                                                                options
@@ -257,7 +258,7 @@ public sealed class SelectionRulesPageViewModelTests
         services.AddSingleton<ISubjectMetadataProvider>(NullSubjectMetadataProvider.Instance);
         services.AddScoped<SubjectMetadataCache>();
         services.AddSingleton<ISubjectLinkResolver>(NullSubjectLinkResolver.Instance);
-        services.AddSingleton<MediaManager.Core.Subjects.SubjectEpisodeCorrectionPolicy>();
+        services.AddSingleton<SubjectEpisodeCorrectionPolicy>();
         services.AddSingleton<DownloadCoordinationGate>();
         services.AddScoped<DownloadService>();
         services.AddScoped<DownloadIntakeService>();
@@ -331,9 +332,9 @@ public sealed class SelectionRulesPageViewModelTests
     }
 
     private sealed class SelectionRulesHarness(
-        DirectoryInfo   directory,
-        DateTimeOffset  timestamp,
-        ServiceProvider provider,
+        DirectoryInfo               directory,
+        DateTimeOffset              timestamp,
+        ServiceProvider             provider,
         FakeHostApplicationLifetime lifetime) : IDisposable
     {
         public DirectoryInfo Directory { get; } = directory;

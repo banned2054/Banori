@@ -1,5 +1,4 @@
 using MediaManager.Data;
-using MediaManager.Features.Subscriptions;
 using MediaManager.Integrations;
 using Microsoft.EntityFrameworkCore;
 
@@ -16,7 +15,7 @@ public sealed class SubjectMetadataCache(
     TimeProvider                            timeProvider)
 {
     /// <summary>读取本地缓存的 Subject 元数据；未缓存返回 null，不访问 Bangumi API。</summary>
-    public async Task<SubjectMetadata?> GetCachedAsync(int subjectId,
+    public async Task<SubjectMetadata?> GetCachedAsync(int               subjectId,
                                                        CancellationToken cancellationToken = default)
     {
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
@@ -60,7 +59,7 @@ public sealed class SubjectMetadataCache(
     }
 
     /// <summary>标题映射回写：解析出系列标题才落映射，让同系列后续条目直接命中。</summary>
-    public async Task SaveTitleMappingAsync(string normalizedTitle, int subjectId,
+    public async Task SaveTitleMappingAsync(string            normalizedTitle, int subjectId,
                                             CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(normalizedTitle)) return;

@@ -46,7 +46,7 @@ public sealed class CandidateSelectionService(
     IDbContextFactory<ApplicationDbContext> dbContextFactory,
     ISelectionRuleProvider                  ruleProvider,
     SelectionGroupGate                      groupGate,
-    MediaManager.Features.Downloads.DownloadCoordinationGate downloadGate,
+    DownloadCoordinationGate                downloadGate,
     CandidateEligibilityPolicy              eligibilityPolicy,
     CandidateRankingPolicy                  rankingPolicy,
     ManageQbittorrentSettings               qbittorrentSettings,
@@ -101,7 +101,9 @@ public sealed class CandidateSelectionService(
                 plans.Add(plan);
                 // 登记事务与 qB 提交/删除共用同一进程门禁，防止跨 scope 竞态。
                 using (await downloadGate.EnterAsync(cancellationToken))
+                {
                     await CommitSelectionAsync(plan, resetFailedIntent, cancellationToken);
+                }
             }
             finally
             {
@@ -500,8 +502,8 @@ public sealed class CandidateSelectionService(
                         // 种子下载跟随所属订阅的代理配置，与 RSS 抓取保持同一出口。
                         (torrentBytes, infoHash) =
                             await intakeService.DownloadTorrentAsync(winnerItem.TorrentUrl!,
-                                                                       winnerItem.Subscription.ProxyId,
-                                                                       cancellationToken);
+                                                                     winnerItem.Subscription.ProxyId,
+                                                                     cancellationToken);
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {

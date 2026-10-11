@@ -1,12 +1,11 @@
 using Banned.AniParser;
-using Microsoft.Extensions.Hosting;
 using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
 using MediaManager.Core.Subjects;
 using MediaManager.Data;
 using MediaManager.Data.Migrations;
-using MediaManager.Features.Dashboard;
 using MediaManager.Features.Anime;
+using MediaManager.Features.Dashboard;
 using MediaManager.Features.Downloads;
 using MediaManager.Features.FeedItems;
 using MediaManager.Features.Settings;
@@ -21,6 +20,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace MediaManager.Tests.Subscriptions;
@@ -628,9 +628,9 @@ public sealed class SubscriptionRefreshTests
                                                                                   "https://mikanani.me/RSS/MyBangumi?token=secret",
                                                                                   true, 30, null));
                 var normalizedTitle = TitleNormalizer.Normalize(
-                                                                       scope.ServiceProvider
-                                                                            .GetRequiredService<AniParser>()
-                                                                            .Parse(episode13Title)!.Title);
+                                                                scope.ServiceProvider
+                                                                     .GetRequiredService<AniParser>()
+                                                                     .Parse(episode13Title)!.Title);
 
                 // 第 13 集先到：条目按集数修正规则落到 529431，标题映射必须保留页面发现的原始 Subject 467461。
                 await subscriptionService.RequestRefreshAsync(subscriptionId);

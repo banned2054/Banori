@@ -1,12 +1,13 @@
 using Banned.AniParser;
 using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
+using MediaManager.Core.Subjects;
 using MediaManager.Data;
+using MediaManager.Features.Anime;
 using MediaManager.Features.Downloads;
 using MediaManager.Features.Notifications;
 using MediaManager.Features.Settings;
 using MediaManager.Features.Subscriptions;
-using MediaManager.Features.Anime;
 using MediaManager.Integrations;
 using MediaManager.Integrations.Qbittorrent;
 using MediaManager.Tests.Downloads;
@@ -165,7 +166,7 @@ public sealed class NotificationHookTests
         services.AddSingleton<ISubjectMetadataProvider>(NullSubjectMetadataProvider.Instance);
         services.AddScoped<SubjectMetadataCache>();
         services.AddSingleton<ISubjectLinkResolver>(NullSubjectLinkResolver.Instance);
-        services.AddSingleton<MediaManager.Core.Subjects.SubjectEpisodeCorrectionPolicy>();
+        services.AddSingleton<SubjectEpisodeCorrectionPolicy>();
         services.AddSingleton<DownloadCoordinationGate>();
         services.AddScoped<DownloadService>();
         services.AddScoped<DownloadIntakeService>();

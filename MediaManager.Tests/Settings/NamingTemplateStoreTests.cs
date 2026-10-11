@@ -10,7 +10,7 @@ public sealed class NamingTemplateStoreTests
     public async Task Templates_AreIndependentAndEachDefaultsWhenUnset()
     {
         var settings = new MemoryApplicationSettingStore();
-        var store = new NamingTemplateStore(settings);
+        var store    = new NamingTemplateStore(settings);
 
         Assert.Equal(ReleaseNamePreviewPolicy.DefaultTemplate, await store.GetAsync());
         Assert.Equal(ReleaseNamePreviewPolicy.DefaultFileTemplate, await store.GetFileTemplateAsync());

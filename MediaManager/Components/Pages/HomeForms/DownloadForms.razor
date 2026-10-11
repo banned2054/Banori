@@ -2,8 +2,8 @@
 @using MediaManager.Features.Downloads
 @using MediaManager.Features.Proxies
 @rendermode InteractiveServer
-@inject DownloadIntakeService Intake
-@inject ProxyService          ProxyService
+@inject DownloadIntakeService  Intake
+@inject ProxyService           ProxyService
 @inject ILogger<DownloadForms> Logger
 
 @* 总览页的下载登记表单：Torrent 上传与 RSS 链接下载两套卡片、共用忙碌与结果状态。
@@ -141,7 +141,7 @@
 }
 
 @code {
-	private IReadOnlyList<ProxyView> _proxies = [];
+	private IReadOnlyList<ProxyView> _proxies  = [];
 	private RssDownloadDraft         _rssDraft = new();
 	private RssDownloadResult?       _rssResult;
 	private IBrowserFile?            _torrentFile;
@@ -281,4 +281,5 @@
 			SubjectId = null;
 		}
 	}
+
 }

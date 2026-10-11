@@ -26,6 +26,7 @@ public sealed class DownloadCoordinationGate
         await wait;
         return new Lease(_semaphore);
     }
+
     private sealed class Lease(SemaphoreSlim semaphore) : IDisposable
     {
         private SemaphoreSlim? _semaphore = semaphore;
