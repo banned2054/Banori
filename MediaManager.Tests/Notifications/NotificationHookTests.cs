@@ -168,6 +168,7 @@ public sealed class NotificationHookTests
         services.AddSingleton<MediaManager.Core.Subjects.SubjectEpisodeCorrectionPolicy>();
         services.AddSingleton<DownloadCoordinationGate>();
         services.AddScoped<DownloadService>();
+        services.AddScoped<DownloadIntakeService>();
         // 与应用及下载/订阅测试保持一致的 Identity 模型配置，避免 ApplicationDbContext 模型缓存顺序依赖。
         services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion =
                                                       IdentitySchemaVersions.Version3)
@@ -177,6 +178,7 @@ public sealed class NotificationHookTests
         var harness = new HookHarness(directory, provider, store,
                                       provider.GetRequiredService<FakeQbittorrentSessionFactory>(),
                                       provider.GetRequiredService<DownloadService>(),
+                                      provider.GetRequiredService<DownloadIntakeService>(),
                                       provider.GetRequiredService<NotificationDeliveryService>(),
                                       provider.GetRequiredService<FakeTelegramSender>(),
                                       provider.GetRequiredService<FakeGotifySender>(),
@@ -209,6 +211,7 @@ public sealed class NotificationHookTests
         FakeTorrentStore              store,
         FakeQbittorrentSessionFactory factory,
         DownloadService               downloadService,
+        DownloadIntakeService         intakeService,
         NotificationDeliveryService   deliveryService,
         FakeTelegramSender            telegram,
         FakeGotifySender              gotify,
@@ -217,6 +220,7 @@ public sealed class NotificationHookTests
         public FakeTorrentStore              Store           { get; } = store;
         public FakeQbittorrentSessionFactory Factory         { get; } = factory;
         public DownloadService               DownloadService { get; } = downloadService;
+        public DownloadIntakeService         IntakeService   { get; } = intakeService;
         public NotificationDeliveryService   DeliveryService { get; } = deliveryService;
         public FakeTelegramSender            Telegram        { get; } = telegram;
         public FakeGotifySender              Gotify          { get; } = gotify;
@@ -274,7 +278,7 @@ public sealed class NotificationHookTests
                 NamingSnapshot   = NamingV1, IntentTaskId    = null, SelectedAtUtc = Timestamp
             });
             await db.SaveChangesAsync();
-            return await DownloadService.CreateForFeedItemAsync(itemId);
+            return await IntakeService.CreateForFeedItemAsync(itemId);
         }
 
         public async Task<DownloadTask> GetTaskAsync(Guid taskId)

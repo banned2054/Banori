@@ -29,4 +29,16 @@ public static class DownloadPathNamePolicy
 
         return cleaned;
     }
+
+    /// <summary>保存路径归一化分隔符（反斜杠转正斜杠并去尾部分隔符），供完成改名与接管路径的精确比较。</summary>
+    public static string NormalizePath(string path)
+    {
+        return path.Trim().Replace('\\', '/').TrimEnd('/');
+    }
+
+    /// <summary>以归一化分隔符拼接目录段与名称；大小写不处理，目录名由调用方先行净化。</summary>
+    public static string JoinSavePath(string directory, string name)
+    {
+        return $"{NormalizePath(directory)}/{name.Trim().Replace('\\', '/')}";
+    }
 }

@@ -180,8 +180,10 @@ public sealed class DownloadTasksPageViewModelTests
 
     private static DownloadTasksPageViewModel CreateViewModel(DownloadServiceTests.TestHarness harness)
     {
-        return new DownloadTasksPageViewModel(harness.Service,
-            NullLogger<DownloadTasksPageViewModel>.Instance);
+        return new DownloadTasksPageViewModel(harness.Service, harness.Intake,
+                                              new DownloadTaskQueries(harness.Provider.GetRequiredService<
+                                                                          IDbContextFactory<ApplicationDbContext>>()),
+                                              NullLogger<DownloadTasksPageViewModel>.Instance);
     }
 
     private static (TaskCompletionSource Started, TaskCompletionSource Release) InstallFindGate(

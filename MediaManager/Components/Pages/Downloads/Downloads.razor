@@ -5,6 +5,8 @@
 @implements IDisposable
 
 @inject DownloadService                     DownloadService
+@inject DownloadIntakeService               IntakeService
+@inject DownloadTaskQueries                 TaskQueries
 @inject ILogger<DownloadTasksPageViewModel> Logger
 
 <PageTitle>下载任务 - MediaManager</PageTitle>
@@ -301,7 +303,7 @@ else
 
 	protected override void OnInitialized()
 	{
-		_vm = new DownloadTasksPageViewModel(DownloadService, Logger);
+		_vm = new DownloadTasksPageViewModel(DownloadService, IntakeService, TaskQueries, Logger);
 	}
 
 	protected override async Task OnInitializedAsync()

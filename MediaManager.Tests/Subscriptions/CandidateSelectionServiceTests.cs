@@ -120,7 +120,7 @@ public sealed class CandidateSelectionServiceTests
 
         var exception =
             await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                                                                    harness.DownloadService
+                                                                    harness.IntakeService
                                                                            .CreateForFeedItemAsync(itemId));
 
         Assert.Contains("优胜候选", exception.Message, StringComparison.Ordinal);
@@ -888,6 +888,21 @@ public sealed class CandidateSelectionServiceTests
                                                   provider.GetRequiredService<TimeProvider>(),
                                                   NullLogger<DownloadService>.Instance,
                                                   new MediaManager.Core.Subjects.SubjectEpisodeCorrectionPolicy());
+        var intakeService = new DownloadIntakeService(dbFactory,
+                                                      provider.GetRequiredService<DownloadCoordinationGate>(),
+                                                      provider.GetRequiredService<ITorrentFileSource>(),
+                                                      new FakeFeedSourceReader(),
+                                                      qbSettings,
+                                                      new AniParser(), new NamingTemplateStore(settingsStore),
+                                                      new ReleaseNamePreviewPolicy(),
+                                                      new CandidateEligibilityPolicy(),
+                                                      new CandidateRankingPolicy(),
+                                                      selectionRuleProvider,
+                                                      new SubjectMetadataCache(dbFactory, UnusedSubjectProvider.Instance,
+                                                                               provider.GetRequiredService<TimeProvider>()),
+                                                      UnusedSubjectLinkResolver.Instance,
+                                                      provider.GetRequiredService<TimeProvider>(),
+                                                      NullLogger<DownloadIntakeService>.Instance);
         // 门闸必须进程级共享：与应用的单例注册一致，两个服务实例（模拟刷新 worker 与
         // Blazor 电路各自的 Scoped 实例）通过同一门闸互斥同组并发。
         var gate      = new SelectionGroupGate();
@@ -898,12 +913,13 @@ public sealed class CandidateSelectionServiceTests
             return new CandidateSelectionService(dbFactory, selectionRuleProvider, gate,
                                                  provider.GetRequiredService<DownloadCoordinationGate>(),
                                                  new CandidateEligibilityPolicy(), new CandidateRankingPolicy(),
-                                                 qbSettings, downloadService, fixedTime,
+                                                 qbSettings, intakeService, fixedTime,
                                                  NullLogger<CandidateSelectionService>.Instance);
         }
 
-        var harness = new SelectionHarness(directory, timestamp, provider, downloadService, CreateService(),
-                                           CreateService(), ruleSettings, brokenStableIds, fetchCounter);
+        var harness = new SelectionHarness(directory, timestamp, provider, downloadService, intakeService,
+                                           CreateService(), CreateService(), ruleSettings, brokenStableIds,
+                                           fetchCounter);
         await using var db = await harness.CreateDbContextAsync();
         await db.Database.EnsureCreatedAsync();
         db.MediaSubjects.Add(new MediaSubject
@@ -1000,6 +1016,7 @@ public sealed class CandidateSelectionServiceTests
         DateTimeOffset              timestamp,
         ServiceProvider             provider,
         DownloadService             downloadService,
+        DownloadIntakeService       intakeService,
         CandidateSelectionService   selectionService,
         CandidateSelectionService   parallelSelectionService,
         ManageSelectionRuleSettings ruleSettings,
@@ -1009,6 +1026,7 @@ public sealed class CandidateSelectionServiceTests
         public DirectoryInfo             Directory        { get; } = directory;
         public DateTimeOffset            Timestamp        { get; } = timestamp;
         public DownloadService           DownloadService  { get; } = downloadService;
+        public DownloadIntakeService     IntakeService    { get; } = intakeService;
         public CandidateSelectionService SelectionService { get; } = selectionService;
 
         /// <summary>共享同一门闸的第二个服务实例，模拟另一 DI 作用域（如 Blazor 电路）。</summary>

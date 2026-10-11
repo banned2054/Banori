@@ -885,6 +885,7 @@ public sealed class SubscriptionRefreshTests
         services.AddSingleton<IQbittorrentSessionFactory>(new FakeQbittorrentSessionFactory(new FakeTorrentStore()));
         services.AddScoped<NamingTemplateStore>();
         services.AddScoped<DownloadService>();
+        services.AddScoped<DownloadIntakeService>();
         services.AddSingleton<SelectionGroupGate>();
         services.AddSingleton<DownloadCoordinationGate>();
         services.AddScoped<CandidateSelectionService>();

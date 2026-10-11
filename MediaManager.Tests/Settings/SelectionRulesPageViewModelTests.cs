@@ -259,6 +259,7 @@ public sealed class SelectionRulesPageViewModelTests
         services.AddSingleton<MediaManager.Core.Subjects.SubjectEpisodeCorrectionPolicy>();
         services.AddSingleton<DownloadCoordinationGate>();
         services.AddScoped<DownloadService>();
+        services.AddScoped<DownloadIntakeService>();
         services.AddSingleton<CandidateEligibilityPolicy>();
         services.AddSingleton<CandidateRankingPolicy>();
         // 规则设置服务经 DI 构造（依赖 IApplicationSettingStore），不硬编码其构造签名。

@@ -144,6 +144,8 @@ internal class Program
         builder.Services.AddScoped<AnimeQueries>();
         builder.Services.AddSingleton<DownloadCoordinationGate>();
         builder.Services.AddScoped<DownloadService>();
+        builder.Services.AddScoped<DownloadIntakeService>();
+        builder.Services.AddScoped<DownloadTaskQueries>();
         builder.Services.AddScoped<IQbittorrentSessionFactory, QbittorrentSessionFactory>();
         builder.Services.AddSingleton<ProxyService>();
         builder.Services.AddSingleton<IProxiedHttpClientSource, ProxiedHttpClientSource>();

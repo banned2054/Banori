@@ -1009,7 +1009,7 @@ public sealed class DownloadServiceTests
         var reconcile = harness.ReconcileAsync();
         await addStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         using var registrationScope = harness.Provider.CreateScope();
-        var otherScopedService = registrationScope.ServiceProvider.GetRequiredService<DownloadService>();
+        var otherScopedService = registrationScope.ServiceProvider.GetRequiredService<DownloadIntakeService>();
         var registration = Task.Run(() => otherScopedService.CreateFromRssFeedAsync("https://mikanani.me/RSS/preview"));
         await gateWaitAttempted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.False(registration.IsCompleted);
@@ -2260,6 +2260,8 @@ public sealed class DownloadServiceTests
         services.AddScoped<NamingTemplateStore>();
         services.AddSingleton<DownloadCoordinationGate>();
         services.AddScoped<DownloadService>();
+        services.AddScoped<DownloadIntakeService>();
+        services.AddScoped<DownloadTaskQueries>();
         // 与应用及订阅/设置测试保持一致的 Identity 模型配置：Identity 服务注册影响
         // ApplicationDbContext 模型缓存的行为，缺注册会与先构建模型的测试产生顺序依赖。
         services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion =
@@ -2269,7 +2271,8 @@ public sealed class DownloadServiceTests
 
         var harness = new TestHarness(directory, timestamp, provider, store,
                                       provider.GetRequiredService<FakeQbittorrentSessionFactory>(),
-                                      provider.GetRequiredService<DownloadService>(), harnessTorrentNames,
+                                      provider.GetRequiredService<DownloadService>(),
+                                      provider.GetRequiredService<DownloadIntakeService>(), harnessTorrentNames,
                                       feedReader, torrentFileSource, subjectProvider, linkResolver);
         await using var db = await harness.CreateDbContextAsync();
         await db.Database.EnsureCreatedAsync();
@@ -2330,6 +2333,7 @@ public sealed class DownloadServiceTests
         FakeTorrentStore              store,
         FakeQbittorrentSessionFactory factory,
         DownloadService               service,
+        DownloadIntakeService         intake,
         Dictionary<string, string>    torrentNames,
         FakeFeedSourceReader          feedReader,
         FakeTorrentFileSource         torrentFileSource,
@@ -2341,6 +2345,7 @@ public sealed class DownloadServiceTests
         public FakeTorrentStore              Store            { get; } = store;
         public FakeQbittorrentSessionFactory Factory          { get; } = factory;
         public DownloadService               Service          { get; } = service;
+        public DownloadIntakeService         Intake           { get; } = intake;
         public IServiceProvider Provider { get; } = provider;
         public Dictionary<string, string>    TorrentNames     { get; } = torrentNames;
         public HashSet<string>               UsedWinnerGroups { get; } = new(StringComparer.Ordinal);
@@ -2363,7 +2368,7 @@ public sealed class DownloadServiceTests
 
         public Task<Guid> CreateDownloadAsync(Guid itemId)
         {
-            return Service.CreateForFeedItemAsync(itemId);
+            return Intake.CreateForFeedItemAsync(itemId);
         }
 
         /// <summary>
@@ -2372,13 +2377,13 @@ public sealed class DownloadServiceTests
         /// </summary>
         public Task<Guid> CreateUploadAsync(byte[] torrentBytes, string? siteSource = null, int? subjectId = 42)
         {
-            return Service.CreateFromUploadAsync(torrentBytes, siteSource, subjectId);
+            return Intake.CreateFromUploadAsync(torrentBytes, siteSource, subjectId);
         }
 
         public Task<RssDownloadResult> CreateFromRssFeedAsync(string feedUrl, Guid? proxyId = null,
                                                               int?   subjectId = null)
         {
-            return Service.CreateFromRssFeedAsync(feedUrl, proxyId, subjectId);
+            return Intake.CreateFromRssFeedAsync(feedUrl, proxyId, subjectId);
         }
 
         /// <summary>落 Subject 元数据与标题映射：rawTitles 用评估器同源归一化，供绑定门禁命中。</summary>

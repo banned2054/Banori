@@ -5,6 +5,8 @@ namespace MediaManager.Components.Pages.Downloads;
 /// <summary>下载任务页状态：任务列表、上传种子与暂停 / 恢复 / 重试操作。随页面组件创建和释放。</summary>
 public sealed class DownloadTasksPageViewModel(
     DownloadService                     downloadService,
+    DownloadIntakeService               intakeService,
+    DownloadTaskQueries                 taskQueries,
     ILogger<DownloadTasksPageViewModel> logger)
 {
     /// <summary>上传种子的大小上限：.torrent 通常远小于该值，超限基本说明选错了文件。</summary>
@@ -81,7 +83,7 @@ public sealed class DownloadTasksPageViewModel(
 
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
-        Tasks = await downloadService.ListAsync(cancellationToken : cancellationToken);
+        Tasks = await taskQueries.ListAsync(cancellationToken : cancellationToken);
         var selectedBefore = _selectedIds.ToHashSet();
         _selectedIds.IntersectWith(Tasks.Select(task => task.Id));
         if (!selectedBefore.SetEquals(_selectedIds)) InvalidateBulkPanel();
@@ -282,7 +284,7 @@ public sealed class DownloadTasksPageViewModel(
         }
 
         await RunCoreAsync(
-                           () => downloadService.CreateFromUploadAsync(buffer.ToArray(), UploadSiteSource,
+                           () => intakeService.CreateFromUploadAsync(buffer.ToArray(), UploadSiteSource,
                                                                        UploadSubjectId, cancellationToken),
                            "上传种子已登记，等待提交下载器。", cancellationToken,
                            exception => logger.LogWarning(exception, "上传种子登记失败。"));

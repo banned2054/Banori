@@ -8,7 +8,7 @@
 @rendermode InteractiveServer
 @attribute [Authorize]
 @inject DashboardQueries DashboardService
-@inject DownloadService  DownloadService
+@inject DownloadIntakeService DownloadIntake
 @inject ProxyService     ProxyService
 @inject ILogger<Home>    Logger
 
@@ -248,7 +248,7 @@
 			                                                         DownloadTasksPageViewModel.MaxTorrentUploadBytes);
 			using var buffer = new MemoryStream();
 			await fileStream.CopyToAsync(buffer);
-			await DownloadService.CreateFromUploadAsync(buffer.ToArray(), null, _torrentSubjectId);
+			await DownloadIntake.CreateFromUploadAsync(buffer.ToArray(), null, _torrentSubjectId);
 			_operationSucceeded = true;
 			_message            = "Torrent 已登记，等待提交下载器。";
 			_torrentFile        = null;
@@ -280,7 +280,7 @@
 		try
 		{
 			var proxyId = Guid.TryParse(_rssDraft.ProxyId, out var parsed) ? parsed : (Guid?)null;
-			var result  = await DownloadService.CreateFromRssFeedAsync(_rssDraft.FeedUrl, proxyId, _rssDraft.SubjectId);
+			var result  = await DownloadIntake.CreateFromRssFeedAsync(_rssDraft.FeedUrl, proxyId, _rssDraft.SubjectId);
 			_rssResult = result;
 			if (result.CreatedCount == 0 && !result.HasChanges && result.SupersededCount == 0)
 			{

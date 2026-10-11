@@ -50,7 +50,7 @@ public sealed class CandidateSelectionService(
     CandidateEligibilityPolicy              eligibilityPolicy,
     CandidateRankingPolicy                  rankingPolicy,
     ManageQbittorrentSettings               qbittorrentSettings,
-    DownloadService                         downloadService,
+    DownloadIntakeService                   intakeService,
     TimeProvider                            timeProvider,
     ILogger<CandidateSelectionService>      logger)
 {
@@ -481,7 +481,7 @@ public sealed class CandidateSelectionService(
                     {
                         // 种子下载跟随所属订阅的代理配置，与 RSS 抓取保持同一出口。
                         (torrentBytes, infoHash) =
-                            await downloadService.DownloadTorrentAsync(winnerItem.TorrentUrl!,
+                            await intakeService.DownloadTorrentAsync(winnerItem.TorrentUrl!,
                                                                        winnerItem.Subscription.ProxyId,
                                                                        cancellationToken);
                     }
@@ -595,7 +595,7 @@ public sealed class CandidateSelectionService(
                         }
                         else
                         {
-                            selection.IntentTaskId = await downloadService.CreateTaskWithinContextAsync(
+                            selection.IntentTaskId = await intakeService.CreateTaskWithinContextAsync(
                                  db, winnerItem, torrentBytes!, infoHash!, cancellationToken);
                             selection.IntentFailedReason = null;
                         }
