@@ -199,9 +199,9 @@ public sealed class DownloadService(
             CreatedAtUtc      = timeProvider.GetUtcNow()
         };
         db.DownloadTasks.Add(task);
-        // 登记即替换：同事务终止现任；qB 删除留给协调门内对账，避免在订阅外层事务中等待 I/O。
+        // 登记即替换：同事务只翻转现任状态；下载器远端清理留给协调门内对账。
         if (replacesTaskId is { } incumbentId)
-            await SupersedeIncumbentAsync(db, incumbentId, task.Id, cancellationToken, deleteDownloader: false);
+            await SupersedeIncumbentAsync(db, incumbentId, task.Id, cancellationToken);
         try
         {
             await db.SaveChangesAsync(cancellationToken);
@@ -463,7 +463,7 @@ public sealed class DownloadService(
 
         var task = BuildTaskRecord(DownloadTaskStatus.PendingSubmit, replacesTaskId, null);
         db.DownloadTasks.Add(task);
-        // 登记即替换：同事务终止现任，低优先任务不再进入提交或继续下载。
+        // 登记即替换：同事务只翻转现任状态，低优先任务不再进入提交或继续下载；远端清理交由对账。
         if (replacesTaskId is { } incumbentId)
             await SupersedeIncumbentAsync(db, incumbentId, task.Id, cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
@@ -534,11 +534,11 @@ public sealed class DownloadService(
 
     /// <summary>
     ///     登记即替换未完成现任；已完成资源在新版本实际完成前仍是当前版本，必须保留 Completed，
-    ///     否则后续候选的版本守卫无法将其作为替换链目标。已提交未完成资源才从下载器连文件删除。
+    ///     否则后续候选的版本守卫无法将其作为替换链目标。登记不登录下载器、不做远端删除：
+    ///     本地回滚无法撤销远端操作，被顶替未完成资源的清理由对账流程在提交后恢复执行。
     /// </summary>
     private async Task SupersedeIncumbentAsync(
-        ApplicationDbContext db, Guid incumbentId, Guid newTaskId, CancellationToken cancellationToken,
-        bool deleteDownloader = true)
+        ApplicationDbContext db, Guid incumbentId, Guid newTaskId, CancellationToken cancellationToken)
     {
         var incumbent = await db.DownloadTasks.SingleOrDefaultAsync(value => value.Id == incumbentId,
                                                                     cancellationToken);
@@ -547,31 +547,10 @@ public sealed class DownloadService(
             incumbent.ReplacedByTaskId != null)
             return;
 
-        if (deleteDownloader && incumbent.Status is DownloadTaskStatus.Submitting or
-            DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused)
-        {
-            try
-            {
-                await using var session = await sessionFactory.CreateAsync(cancellationToken);
-                var found = await session.FindTorrentsAsync([incumbent.InfoHash], cancellationToken);
-                if (found.Count > 0)
-                    await session.DeleteTorrentAsync(incumbent.InfoHash, true, cancellationToken);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                logger.LogWarning(exception,
-                    "登记替换现任 {TaskId} 时删除下载器种子失败；保持现任不变，替换任务将回滚或记录失败。", incumbentId);
-                throw new InvalidOperationException("下载器中旧任务删除失败，未能安全替换。", exception);
-            }
-        }
-
         incumbent.Status           = DownloadTaskStatus.Replaced;
         incumbent.ReplacedByTaskId = newTaskId;
-        logger.LogInformation("任务 {TaskId} 因更高优先级任务 {NewTaskId} 登记被直接替换。", incumbentId, newTaskId);
+        logger.LogInformation("任务 {TaskId} 因更高优先级任务 {NewTaskId} 登记被替换，远端清理交由对账流程。",
+                              incumbentId, newTaskId);
     }
 
     /// <summary>
@@ -792,7 +771,7 @@ public sealed class DownloadService(
             ReplacesTaskId    = replacesTaskId
         };
         db.DownloadTasks.Add(task);
-        // 订阅事务由调用方提交；此处仅在同一 DbContext 中登记现任状态，保持原子落库。
+        // 订阅事务由调用方提交；此处仅在同一 DbContext 中翻转现任状态，保持原子落库，远端清理由对账承接。
         if (replacesTaskId is { } incumbentId)
             await SupersedeIncumbentAsync(db, incumbentId, task.Id, cancellationToken);
         try
@@ -964,7 +943,8 @@ public sealed class DownloadService(
 
         await using var session = await sessionFactory.CreateAsync(cancellationToken);
 
-        // 登记期替换只落库，不在选择事务内等待 qB；在全局协调门内清理被替换且未完成的资源。
+        // 登记期替换只落库，不在登记事务内等待 qB；在全局协调门内清理被替换且未完成的资源。
+        // 单项清理失败只记录日志，下一轮按同样的未完成记录继续，不阻塞本轮提交与核对。
         List<DownloadTask> superseded;
         await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
             superseded = await db.DownloadTasks.AsNoTracking()
@@ -972,13 +952,22 @@ public sealed class DownloadService(
                                task.CompletedAtUtc == null)
                 .ToListAsync(cancellationToken);
         foreach (var oldTask in superseded)
-        {
-            var stillOwned = await IsActiveTaskForHashAsync(oldTask.InfoHash, oldTask.Id, cancellationToken);
-            if (stillOwned) continue;
-            var foundOld = await session.FindTorrentsAsync([oldTask.InfoHash], cancellationToken);
-            if (foundOld.Count > 0)
-                await session.DeleteTorrentAsync(oldTask.InfoHash, true, cancellationToken);
-        }
+            try
+            {
+                var stillOwned = await IsActiveTaskForHashAsync(oldTask.InfoHash, oldTask.Id, cancellationToken);
+                if (stillOwned) continue;
+                var foundOld = await session.FindTorrentsAsync([oldTask.InfoHash], cancellationToken);
+                if (foundOld.Count > 0)
+                    await session.DeleteTorrentAsync(oldTask.InfoHash, true, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "清理被顶替任务 {TaskId} 的下载器资源失败，下一轮重试。", oldTask.Id);
+            }
 
         var reconcileHashes = tasks
                              .Where(task => task.Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused)
@@ -1587,8 +1576,8 @@ public sealed class DownloadService(
         trackedTask.FailedStep      = null;
         trackedTask.Error           = null;
 
-        // 登记期已直接替换现任（见 SupersedeIncumbentAsync），此处是兜底：登记时删除下载器种子失败
-        // 而退回完成期替换的、以及竞态残留的替换对象——未下完的连种子带文件删除（不留半成品冗余数据），
+        // 登记期只翻转现任状态（见 SupersedeIncumbentAsync），远端清理由对账承接；此处是兜底：
+        // 清理对账间隙仍残留的未完成替换对象——未下完的连种子带文件删除（不留半成品冗余数据），
         // 已下完的沿用版本守卫语义仅标记、保留文件。删除下载器种子失败不阻断完成，留待人工处理。
         var supersededHashes = new List<string>();
         if (trackedTask.ReplacesTaskId is { } arbitrationTargetId)

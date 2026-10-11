@@ -648,9 +648,9 @@ public sealed class DownloadServiceTests
         Assert.Equal(replacement.Id, uploaded.ReplacedByTaskId);
     }
 
-    /// <summary>现任已在下载器中下载时被高优先任务顶替：登记即连文件删除其种子并终止，不等下载完成。</summary>
+    /// <summary>现任已在下载器中下载时被高优先任务顶替：登记只翻转状态不触远端，清理由对账承接。</summary>
     [Fact]
-    public async Task CreateFromRssFeed_BetterVariantAfterDownloadingIncumbent_DeletesTorrentImmediately()
+    public async Task CreateFromRssFeed_BetterVariantAfterDownloadingIncumbent_SupersedesWithoutRemoteDeletion()
     {
         using var harness = await CreateHarnessAsync();
         await harness.SaveSelectionRulesAsync(NekoRules());
@@ -664,11 +664,17 @@ public sealed class DownloadServiceTests
         AddNekoFeedItem(harness, "neko-jpsc", NekoTitle("简日双语"));
         var result = await harness.CreateFromRssFeedAsync("https://mikanani.me/RSS/preview");
 
+        // 登记即翻转现任状态，但远端种子保留：本地回滚无法撤销远端删除，清理交给对账。
         Assert.Equal(1, result.CreatedCount);
-        Assert.Contains((tcHash, true), harness.Store.DeleteCalls);
-        Assert.False(harness.Store.Torrents.ContainsKey(tcHash));
+        Assert.Empty(harness.Store.DeleteCalls);
+        Assert.True(harness.Store.Torrents.ContainsKey(tcHash));
         var incumbent = await harness.GetTaskAsync(uploadTaskId);
         Assert.Equal(DownloadTaskStatus.Replaced, incumbent.Status);
+
+        // 下一轮对账连文件清理被顶替种子。
+        await harness.ReconcileAsync();
+        Assert.Contains((tcHash, true), harness.Store.DeleteCalls);
+        Assert.False(harness.Store.Torrents.ContainsKey(tcHash));
     }
 
     [Fact]
@@ -751,6 +757,76 @@ public sealed class DownloadServiceTests
         // 上传的简日按规则更优：订阅侧登记被拒并说明占用者，人工可删除旧任务后重试。
         Assert.Contains("同集已有更优任务", exception.Message);
         Assert.Equal(1, await CountTasksAsync(harness));
+    }
+
+    [Fact]
+    public async Task Create_SupersedeDuringRegistration_DoesNotTouchDownloader_CleanupDeferredToReconcile()
+    {
+        using var harness = await CreateHarnessAsync();
+        await harness.SaveSelectionRulesAsync(NekoRules());
+        await harness.SeedSubjectMappingAsync(42, "Test Subject", "测试作品", NekoParsedTitle());
+        var uploadTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("繁日双语")), "mikan");
+        await harness.ReconcileAsync();
+        var uploadHash = Assert.Single(harness.Store.Torrents.Keys);
+
+        // 登记期替换不登录下载器：下载器完全不可达时登记仍成功，现任状态照常翻转、种子原样保留。
+        // 远端删除无法随本地回滚撤销，因此登记只落库，不产生任何需要撤销的远端副作用。
+        harness.Factory.ThrowOnCreate = true;
+        var parsedTitle = new AniParser().Parse(NekoTitle("简日双语"))!.Title;
+        var itemId = await SeedAcceptedItemAsync(harness, "sub-jpsc", NekoTitle("简日双语"), NamingV1, 1, 12m,
+                                                 parsedTitle, "JpSc",
+                                                 "喵萌奶茶屋");
+        var taskId = await harness.CreateDownloadAsync(itemId);
+
+        var task = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.PendingSubmit, task.Status);
+        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(uploadTaskId)).Status);
+        Assert.True(harness.Store.Torrents.ContainsKey(uploadHash));
+        Assert.Empty(harness.Store.DeleteCalls);
+
+        // 下一轮对账在协调门内清理被顶替资源并提交新任务。
+        harness.Factory.ThrowOnCreate = false;
+        await harness.ReconcileAsync();
+        Assert.Equal(2, harness.Store.AddCalls.Count);
+        var deletion = Assert.Single(harness.Store.DeleteCalls);
+        Assert.Equal(uploadHash, deletion.Hash);
+        Assert.True(deletion.DeleteFiles);
+        Assert.False(harness.Store.Torrents.ContainsKey(uploadHash));
+        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(uploadTaskId)).Status);
+        Assert.Equal(DownloadTaskStatus.Downloading, (await harness.GetTaskAsync(taskId)).Status);
+    }
+
+    [Fact]
+    public async Task Reconcile_SupersededCleanupFailure_RetriedNextRoundWithoutBlockingSubmit()
+    {
+        using var harness = await CreateHarnessAsync();
+        await harness.SaveSelectionRulesAsync(NekoRules());
+        await harness.SeedSubjectMappingAsync(42, "Test Subject", "测试作品", NekoParsedTitle());
+        var uploadTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("繁日双语")), "mikan");
+        await harness.ReconcileAsync();
+        var uploadHash = Assert.Single(harness.Store.Torrents.Keys);
+
+        var parsedTitle = new AniParser().Parse(NekoTitle("简日双语"))!.Title;
+        var itemId = await SeedAcceptedItemAsync(harness, "sub-jpsc", NekoTitle("简日双语"), NamingV1, 1, 12m,
+                                                 parsedTitle, "JpSc",
+                                                 "喵萌奶茶屋");
+        var taskId = await harness.CreateDownloadAsync(itemId);
+
+        // 清理单项失败不阻塞本轮：被顶替种子保留，新任务照常提交，下一轮按同一未完成记录继续清理。
+        harness.Factory.SessionConfigurator =
+            session => session.DeleteException = new QbittorrentException("模拟清理失败");
+        await harness.ReconcileAsync();
+        Assert.Empty(harness.Store.DeleteCalls);
+        Assert.True(harness.Store.Torrents.ContainsKey(uploadHash));
+        Assert.Equal(DownloadTaskStatus.Downloading, (await harness.GetTaskAsync(taskId)).Status);
+
+        harness.Factory.SessionConfigurator = null;
+        await harness.ReconcileAsync();
+        var deletion = Assert.Single(harness.Store.DeleteCalls);
+        Assert.Equal(uploadHash, deletion.Hash);
+        Assert.True(deletion.DeleteFiles);
+        Assert.False(harness.Store.Torrents.ContainsKey(uploadHash));
+        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(uploadTaskId)).Status);
     }
 
     /// <summary>测试规则：喵萌奶茶屋列入组序，语言序沿用默认（简日 JpSc 优先）。</summary>

@@ -96,6 +96,9 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     /// <summary>AddTorrent 发出前回调，用于断言请求发出时本地已持久化的状态。</summary>
     public Func<Task>? BeforeAddTorrentAsync { get; set; }
 
+    /// <summary>设置后 DeleteTorrent 抛出该异常，模拟清理时下载器暂时不可用。</summary>
+    public Exception? DeleteException { get; set; }
+
     /// <summary>AddTorrent 完成后回调：可确定性模拟服务端已接收、客户端尚未收到结果。</summary>
     public Func<Task>? AfterAddTorrentAsync { get; set; }
 
@@ -231,6 +234,8 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
 
     public Task DeleteTorrentAsync(string infoHash, bool deleteFiles, CancellationToken cancellationToken = default)
     {
+        if (DeleteException is not null) throw DeleteException;
+
         store.DeleteCalls.Add((infoHash, deleteFiles));
         store.Torrents.Remove(infoHash);
         store.Files.Remove(infoHash);
