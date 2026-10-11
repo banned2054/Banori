@@ -7,19 +7,22 @@ MediaManager 是面向个人或家庭媒体库的动漫 RSS 管理面板。当�
 ## 项目结构
 
 ```text
-MediaManager.Core/        筛选、集数修正、命名预览、info-hash 提取、路径净化等纯规则，可独立测试
+MediaManager.Core/        标题归一化、筛选、集数修正、命名预览、info-hash 提取、路径净化等纯规则，可独立测试
 MediaManager/
   Components/Pages/       订阅、下载任务、设置页面及页面 ViewModel
-  Features/               业务服务：订阅管理、Mikan 刷新、条目查询、总览、下载闭环、设置
+  Features/               业务服务：订阅管理、Mikan 刷新、条目评估、下载登记（DownloadIntakeService）、
+                          下载执行与生命周期（DownloadService）、任务列表查询（DownloadTaskQueries）、通知、设置
   Data/                   EF Core 实体与双 provider 迁移（SQLite 默认 / MySQL）
   Integrations/           Mikan、Bangumi、qBittorrent 客户端与种子下载
-  Workers/                周期调度 Worker（订阅刷新、下载对账）
+  Workers/                周期调度 Worker（订阅刷新、下载对账、通知投递）
 MediaManager.Tests/       规则单元测试、SQLite 行为测试
 ```
 
 刷新链路：订阅页 / 到期调度 → `SubscriptionService` 入队 → `MikanRefreshService` 执行（读 RSS、去重入库、评估遗留条目）→ `FeedItemEvaluator`（AniParser 解析、Subject 关联、Core 规则决策、命名预览与命名要素）→ 保存结果与下次刷新时间。
 
-下载链路：优胜条目自动登记下载意图 / RSS 链接下载 / 本地上传种子（下载种子、提取 info-hash、登记 `DownloadTask`；qB 种子名称与种子内文件名称分别使用独立模板，模板及 AniParser/Bangumi 元数据一并快照落库）→ `DownloadReconcileWorker` 周期对账 → 提交 qBittorrent（`rename` 参数直接设置种子名 + 来源 tag）→ 响应丢失按 hash 对账确认 → 完成后按命名要素改名并记录替换关系：种子名和保存目录沿用种子名称模板，单文件与多文件内容项使用文件名称模板，并按各自实际集数渲染；附属文件挪进 `Seed/`、有公共根目录时改根目录名（ByrTorrent 同源方法）；无命名要素的存量任务回退按命名快照改名。命名模板支持 `{ani.*}` 解析属性、`{bgm.*}` Bangumi 属性与 `{site.source}` 站点来源；旧 `{title}`、`{episode}` 等令牌继续兼容。删除任务时先删下载器再删记录（幂等可重试），可选连带删除下载器种子与已下载文件；被删任务替换的旧任务回退为已完成。
+登记：优胜条目自动登记 / RSS 链接下载 / 本地上传种子三个入口统一走 `DownloadIntakeService`（下载种子、提取 info-hash、Bangumi 绑定门禁、同集统一裁决、登记 `DownloadTask`；上传大小上限在登记入口校验）。登记事务只落任务与替换状态，不登录下载器；被顶替未完成任务的远端清理由 `DownloadReconcileWorker` 的对账在提交后继续，失败或重启后可恢复。任务列表页的只读投影由 `DownloadTaskQueries` 提供。
+
+执行：`DownloadReconcileWorker` 周期对账（`DownloadService`）→ 提交 qBittorrent（qB 种子名称与种子内文件名称分别使用独立模板，模板及 AniParser/Bangumi 元数据一并快照落库）→ `DownloadReconcileWorker` 周期对账 → `rename` 参数直接设置种子名 + 来源 tag，外部预置的同 hash 种子按 hash 接管）→ 响应丢失按 hash 对账确认 → 完成后按命名要素改名并记录替换关系：种子名和保存目录沿用种子名称模板，单文件与多文件内容项使用文件名称模板，并按各自实际集数渲染；附属文件挪进 `Seed/`、有公共根目录时改根目录名（ByrTorrent 同源方法）；无命名要素的存量任务回退按命名快照改名。命名模板支持 `{ani.*}` 解析属性、`{bgm.*}` Bangumi 属性与 `{site.source}` 站点来源；旧 `{title}`、`{episode}` 等令牌继续兼容。删除任务时先删下载器再删记录（幂等可重试），可选连带删除下载器种子与已下载文件；被删任务替换的旧任务回退为已完成。
 
 ## 本地启动
 

@@ -125,3 +125,13 @@ P2 曾采用 Core、Application、宿主、Tests 四项目。P2R 发现统一 `I
 - 若进行旧数据导入，先导出旧配置与结构，核对 Hash、状态、时间、关联及重复项；旧完成布尔值不能证明资源仍存在。
 - 正式切换须避免新旧程序同时管理同一批资源；回退前核对新增任务和远端文件变化，恢复数据库不能撤销外部操作。
 - 计划文档不代表提交、推送、发布、部署或真实外部操作授权。
+
+## 8. 结构整理轮实施记录（2026-10-11）
+
+按 [plan.md](plan.md) 的 S0-S4 顺序实施，提交 `d0aeef8`（S1 副作用边界）、`b3c7ff8`（S2 共享能力）、`88b6156`（S3 下载职责拆分）、`e1f026d`（S4 页面状态与文档）。基线构建 0 警告 0 错误、360 个测试通过；完成后 362 个测试通过（新增 2 个 S1 行为测试）。验证范围：模拟下载器行为测试全量通过；隔离临时目录应用启动冒烟通过（管理员初始化、登录后总览 / 下载 / 择优规则 / 订阅页均 200 渲染，总览表单组件正常输出）。真实 qBittorrent 端到端、真实 Bangumi API、MySQL 临时库验证与页面交互操作（上传、RSS 登记、规则保存驱动重选）未在本轮执行，如实列为未验证。
+
+- S1：`SupersedeIncumbentAsync` 移除 `deleteDownloader` 分支，登记（订阅 / RSS / 上传）不再登录 qB 或删除远端种子；对账循环内清理被顶替未完成任务，逐项容错、下一轮继续。登记期远端删除失败不再中断登记（原行为），换为对账可恢复清理——这是本轮唯一的行为语义修正，由 `Create_SupersedeDuringRegistration_*`、`Reconcile_SupersededCleanupFailure_*` 与改写的 RSS 顶替用例覆盖。
+- S2：`TitleNormalizer` 移入 Core（算法与历史映射键不变）；`SubjectMetadataCache` 统一 MediaSubject / SubjectTitleMapping 写入与缓存优先读取；`NamingIngredientsComposer` 集中命名要素展开；契约按归属拆分（条目评估契约入 FeedItemModels、SubjectMetadata 归 Anime、DashboardSnapshot 归 Dashboard）。
+- S3：`DownloadService` 1986 行拆为 `DownloadIntakeService`（登记编排）、`DownloadService`（执行与生命周期）、`DownloadTaskQueries`（只读投影）与 `DownloadTaskLookups`（查重 / 替换目标查找）；`NormalizePath` / `JoinSavePath` 并入 Core `DownloadPathNamePolicy`。单条 / 批量删除保留在执行服务内同一下载器删除链。
+- S4：总览页表单提取为 `DownloadForms` 组件（上传上限常量移入 `DownloadIntakeService` 并在登记入口强制校验）；规则保存后的整库重选编排移入 `CandidateSelectionService.ReselectAfterRuleSaveAsync`（应用停机令牌随业务走，页面 ViewModel 不再依赖 IHostApplicationLifetime）。
+- 数据与迁移：`MediaManager/Data` 目录零改动，SQLite / MySQL 两套迁移集与模型快照与基线完全一致。
