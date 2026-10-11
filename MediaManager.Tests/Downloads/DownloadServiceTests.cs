@@ -5,6 +5,7 @@ using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
 using MediaManager.Core.Torrents;
 using MediaManager.Data;
+using MediaManager.Features.Anime;
 using MediaManager.Features.Downloads;
 using MediaManager.Features.Settings;
 using MediaManager.Features.Subscriptions;
@@ -313,7 +314,7 @@ public sealed class DownloadServiceTests
         Assert.Equal(7,
                      await db.SubjectTitleMappings.AsNoTracking()
                              .Where(mapping => mapping.NormalizedTitle ==
-                                               FeedItemEvaluator.NormalizeTitle(NekoParsedTitle()))
+                                               TitleNormalizer.Normalize(NekoParsedTitle()))
                              .Select(mapping => mapping.SubjectId).SingleAsync());
 
         // 同系列第二条不再需要表单 ID：直接命中回写的映射。
@@ -346,8 +347,8 @@ public sealed class DownloadServiceTests
         Assert.Equal(9, task.SubjectId);
         Assert.True(await db.SubjectTitleMappings.AsNoTracking().AnyAsync(mapping =>
                                                                               mapping.NormalizedTitle ==
-                                                                              FeedItemEvaluator
-                                                                                 .NormalizeTitle(NekoParsedTitle()) &&
+                                                                              TitleNormalizer
+                                                                                 .Normalize(NekoParsedTitle()) &&
                                                                               mapping.SubjectId == 9));
     }
 
@@ -496,8 +497,8 @@ public sealed class DownloadServiceTests
             "【喵萌奶茶屋】★07月新番★[与你相恋到生命尽头 / きみが死ぬまで恋をしたい / Kimi ga Shinu made Koi wo Shitai][12][1080p][简日双语].mp4";
         var tcParsed = new AniParser().Parse(tcTitle)!;
         var scParsed = new AniParser().Parse(scTitle)!;
-        Assert.NotEqual(FeedItemEvaluator.NormalizeTitle(tcParsed.Title),
-                        FeedItemEvaluator.NormalizeTitle(scParsed.Title));
+        Assert.NotEqual(TitleNormalizer.Normalize(tcParsed.Title),
+                        TitleNormalizer.Normalize(scParsed.Title));
         await harness.SeedSubjectMappingAsync(541285, "きみが死ぬまで恋をしたい", "与你相恋到生命尽头",
                                               tcParsed.Title, scParsed.Title);
         harness.TorrentNames["neko-tc"] = tcTitle;
@@ -1599,8 +1600,8 @@ public sealed class DownloadServiceTests
         await using var db = await harness.CreateDbContextAsync();
         Assert.True(await db.SubjectTitleMappings.AsNoTracking().AnyAsync(mapping =>
                                                                               mapping.NormalizedTitle ==
-                                                                              FeedItemEvaluator
-                                                                                 .NormalizeTitle(NekoParsedTitle()) &&
+                                                                              TitleNormalizer
+                                                                                 .Normalize(NekoParsedTitle()) &&
                                                                               mapping.SubjectId == 7));
     }
 
@@ -2245,6 +2246,7 @@ public sealed class DownloadServiceTests
         var subjectProvider = new FakeSubjectProvider(timestamp);
         var linkResolver    = new FakeSubjectLinkResolver();
         services.AddSingleton<ISubjectMetadataProvider>(subjectProvider);
+        services.AddScoped<SubjectMetadataCache>();
         services.AddSingleton<ISubjectLinkResolver>(linkResolver);
         services.AddScoped<ManageQbittorrentSettings>();
         services.AddNotificationTestFakes();
@@ -2394,7 +2396,7 @@ public sealed class DownloadServiceTests
                 db.SubjectTitleMappings.Add(new SubjectTitleMapping
                 {
                     Id              = Guid.NewGuid(),
-                    NormalizedTitle = FeedItemEvaluator.NormalizeTitle(rawTitle),
+                    NormalizedTitle = TitleNormalizer.Normalize(rawTitle),
                     SubjectId       = subjectId,
                     UpdatedAtUtc    = Timestamp
                 });

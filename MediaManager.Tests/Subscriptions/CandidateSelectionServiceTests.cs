@@ -4,6 +4,7 @@ using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
 using MediaManager.Core.Torrents;
 using MediaManager.Data;
+using MediaManager.Features.Anime;
 using MediaManager.Features.Downloads;
 using MediaManager.Features.Notifications;
 using MediaManager.Features.Settings;
@@ -881,7 +882,8 @@ public sealed class CandidateSelectionServiceTests
                                                   new CandidateEligibilityPolicy(),
                                                   new CandidateRankingPolicy(),
                                                   selectionRuleProvider,
-                                                  UnusedSubjectProvider.Instance,
+                                                  new SubjectMetadataCache(dbFactory, UnusedSubjectProvider.Instance,
+                                                                           provider.GetRequiredService<TimeProvider>()),
                                                   UnusedSubjectLinkResolver.Instance,
                                                   provider.GetRequiredService<TimeProvider>(),
                                                   NullLogger<DownloadService>.Instance,

@@ -153,6 +153,7 @@ internal class Program
         builder.Services.AddSingleton<IFeedSourceReader, RssFeedSourceReader>();
         builder.Services.AddSingleton<ISubjectLinkResolver, MikanSubjectLinkResolver>();
         builder.Services.AddSingleton<ISubjectMetadataProvider, BangumiSubjectMetadataProvider>();
+        builder.Services.AddScoped<SubjectMetadataCache>();
         builder.Services.AddHttpClient("FeedSource", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(30);

@@ -5,6 +5,7 @@ using MediaManager.Core.Rules.Selection;
 using MediaManager.Core.Subjects;
 using MediaManager.Core.Torrents;
 using MediaManager.Data;
+using MediaManager.Features.Anime;
 using MediaManager.Features.Downloads;
 using MediaManager.Integrations;
 using Microsoft.EntityFrameworkCore;
@@ -19,7 +20,7 @@ namespace MediaManager.Features.Subscriptions;
 public sealed class FeedItemEvaluator(
     IDbContextFactory<ApplicationDbContext> dbContextFactory,
     ISubjectLinkResolver                    subjectLinkResolver,
-    ISubjectMetadataProvider                subjectMetadataProvider,
+    SubjectMetadataCache                    subjectCache,
     AniParser                               parser,
     ISelectionRuleProvider                  ruleProvider,
     CandidateEligibilityPolicy              eligibilityPolicy,
@@ -55,7 +56,7 @@ public sealed class FeedItemEvaluator(
             return;
         }
 
-        var normalizedTitle = NormalizeTitle(parsed.Title);
+        var normalizedTitle = TitleNormalizer.Normalize(parsed.Title);
         var subjectId       = requestedSubjectId;
         if (subjectId is null && normalizedTitle.Length > 0)
             subjectId = await FindSubjectIdByTitleAsync(normalizedTitle, cancellationToken);
@@ -126,18 +127,12 @@ public sealed class FeedItemEvaluator(
         SubjectMetadata subject;
         try
         {
-            subject = await GetSubjectAsync(correction.SubjectId.Value, cancellationToken) ??
-                      await subjectMetadataProvider.GetAsync(correction.SubjectId.Value, cancellationToken);
-            await SaveSubjectMetadataAsync(subject, cancellationToken);
+            subject = await subjectCache.EnsureAsync(correction.SubjectId.Value, cancellationToken);
             if (correction.SubjectId.Value != subjectId)
-            {
                 // 标题映射指向修正前的原始 Subject，其元数据一并落库以满足映射外键。
-                var original = await GetSubjectAsync(subjectId, cancellationToken) ??
-                               await subjectMetadataProvider.GetAsync(subjectId, cancellationToken);
-                await SaveSubjectMetadataAsync(original, cancellationToken);
-            }
+                await subjectCache.EnsureAsync(subjectId, cancellationToken);
 
-            await SaveTitleMappingAsync(normalizedTitle, subjectId, cancellationToken);
+            await subjectCache.SaveTitleMappingAsync(normalizedTitle, subjectId, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -187,20 +182,10 @@ public sealed class FeedItemEvaluator(
         var namingTemplate = await namingTemplateStore.GetAsync(cancellationToken);
         var fileTemplate = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
         // 预览与命名要素同源生成，且分别快照 AniParser 与 Bangumi 字段。
-        var ingredients = new TorrentNamingIngredients(namingTemplate, subject.DisplayName,
-                                                       ReleaseNamePreviewPolicy.FormatEpisodeText(correction.Episode),
-                                                       parsed.Version, preference, siteSource,
-                                                       parsed.Language.ToString(), parsed.Resolution.ToString(),
-                                                       FileTemplate: fileTemplate, AniMediaType: parsed.MediaType.ToString(),
-                                                       AniTitle: parsed.Title,
-                                                       AniGroup: parsed.Group, AniGroupType: parsed.GroupType.ToString(),
-                                                       AniSubtitleType: parsed.SubtitleType.ToString(),
-                                                       AniSource: parsed.Source.ToString(), AniWebSource: parsed.WebSource,
-                                                       AniResolution: parsed.Resolution.ToString(),
-                                                       AniVideoCodec: parsed.VideoCodec, AniAudioCodec: parsed.AudioCodec,
-                                                       AniColorBitDepth: parsed.ColorBitDepth, BangumiId: subject.Id,
-                                                       BangumiName: subject.Name, BangumiNameCn: subject.NameCn,
-                                                       BangumiPlatform: subject.Platform, BangumiDate: subject.AirDate);
+        var ingredients = NamingIngredientsComposer.Compose(
+            namingTemplate, fileTemplate, parsed,
+            ReleaseNamePreviewPolicy.FormatEpisodeText(correction.Episode), preference, siteSource,
+            subject.Id, subject.Name, subject.NameCn, subject.Platform, subject.AirDate);
         var namingPreview = namingPolicy.Create(ingredients);
 
         await SaveAnalysisAsync(itemId,
@@ -238,10 +223,8 @@ public sealed class FeedItemEvaluator(
     {
         try
         {
-            var subject = await GetSubjectAsync(subjectId, cancellationToken) ??
-                          await subjectMetadataProvider.GetAsync(subjectId, cancellationToken);
-            await SaveSubjectMetadataAsync(subject, cancellationToken);
-            await SaveTitleMappingAsync(normalizedTitle, subjectId, cancellationToken);
+            var subject = await subjectCache.EnsureAsync(subjectId, cancellationToken);
+            await subjectCache.SaveTitleMappingAsync(normalizedTitle, subjectId, cancellationToken);
             return subject.Id;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -297,13 +280,6 @@ public sealed class FeedItemEvaluator(
                                                 null, parsed.Episode), cancellationToken);
     }
 
-    public static string NormalizeTitle(string? title)
-    {
-        return string.IsNullOrWhiteSpace(title)
-            ? string.Empty
-            : string.Concat(title.Trim().ToUpperInvariant().Where(character => !char.IsWhiteSpace(character)));
-    }
-
     private async Task<int?> FindSubjectIdByTitleAsync(string normalizedTitle, CancellationToken cancellationToken)
     {
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
@@ -311,64 +287,6 @@ public sealed class FeedItemEvaluator(
                        .Where(item => item.NormalizedTitle == normalizedTitle)
                        .Select(item => (int?)item.SubjectId)
                        .SingleOrDefaultAsync(cancellationToken);
-    }
-
-    private async Task<SubjectMetadata?> GetSubjectAsync(int subjectId, CancellationToken cancellationToken)
-    {
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var subject = await db.MediaSubjects.AsNoTracking()
-                              .SingleOrDefaultAsync(item => item.Id == subjectId, cancellationToken);
-        return subject is null
-            ? null
-            : new SubjectMetadata(subject.Id, subject.Name, subject.NameCn, subject.Platform, subject.AirDate,
-                                  subject.ImageUrl, subject.CachedAtUtc);
-    }
-
-    private async Task SaveSubjectMetadataAsync(SubjectMetadata subject, CancellationToken cancellationToken)
-    {
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var entity = await db.MediaSubjects.SingleOrDefaultAsync(item => item.Id == subject.Id, cancellationToken);
-        if (entity is null)
-        {
-            entity = new MediaSubject { Id = subject.Id };
-            db.MediaSubjects.Add(entity);
-        }
-
-        entity.Name        = subject.Name;
-        entity.NameCn      = subject.NameCn;
-        entity.Platform    = subject.Platform;
-        entity.AirDate     = subject.AirDate;
-        entity.ImageUrl    = subject.ImageUrl;
-        entity.CachedAtUtc = subject.CachedAtUtc;
-        await db.SaveChangesAsync(cancellationToken);
-    }
-
-    /// <summary>标题映射始终指向本次评估解析出的原始 Subject（集数修正前），修正结果不得写回映射。</summary>
-    private async Task SaveTitleMappingAsync(string normalizedTitle, int subjectId, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(normalizedTitle)) return;
-
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var mapping =
-            await db.SubjectTitleMappings.SingleOrDefaultAsync(item => item.NormalizedTitle == normalizedTitle,
-                                                               cancellationToken);
-        if (mapping is null)
-        {
-            db.SubjectTitleMappings.Add(new SubjectTitleMapping
-            {
-                Id              = Guid.NewGuid(),
-                NormalizedTitle = normalizedTitle,
-                SubjectId       = subjectId,
-                UpdatedAtUtc    = timeProvider.GetUtcNow()
-            });
-        }
-        else
-        {
-            mapping.SubjectId    = subjectId;
-            mapping.UpdatedAtUtc = timeProvider.GetUtcNow();
-        }
-
-        await db.SaveChangesAsync(cancellationToken);
     }
 
     private async Task SaveAnalysisAsync(Guid              itemId, FeedItemAnalysis analysis,

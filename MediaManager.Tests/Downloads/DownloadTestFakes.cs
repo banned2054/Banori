@@ -1,6 +1,7 @@
 using Banned.Qbittorrent.Exceptions;
 using MediaManager.Core.Torrents;
 using MediaManager.Features.Settings;
+using MediaManager.Features.Anime;
 using MediaManager.Features.Subscriptions;
 using MediaManager.Integrations;
 using MediaManager.Integrations.Qbittorrent;

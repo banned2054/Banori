@@ -6,6 +6,7 @@ using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
 using MediaManager.Core.Torrents;
 using MediaManager.Data;
+using MediaManager.Features.Anime;
 using MediaManager.Features.Notifications;
 using MediaManager.Features.Settings;
 using MediaManager.Features.Subscriptions;
@@ -37,7 +38,7 @@ public sealed class DownloadService(
     CandidateEligibilityPolicy              eligibilityPolicy,
     CandidateRankingPolicy                  rankingPolicy,
     ISelectionRuleProvider                  ruleProvider,
-    ISubjectMetadataProvider                subjectMetadataProvider,
+    SubjectMetadataCache                    subjectCache,
     ISubjectLinkResolver                    subjectLinkResolver,
     TimeProvider                            timeProvider,
     ILogger<DownloadService>                logger,
@@ -146,7 +147,7 @@ public sealed class DownloadService(
                                                           BuildAdhocCandidate(infoHash, null, identity,
                                                                               binding.SubjectId),
                                                           binding.SubjectId,
-                                                          FeedItemEvaluator.NormalizeTitle(identity.Title),
+                                                          TitleNormalizer.Normalize(identity.Title),
                                                           identity.Episode, resolvedSource, infoHash, null,
                                                           cancellationToken);
             if (!arbitration.Register)
@@ -356,7 +357,7 @@ public sealed class DownloadService(
         }
 
         foreach (var group in groupable.GroupBy(entry => (
-                                                    SeriesKey : FeedItemEvaluator.NormalizeTitle(entry.Parsed.Title),
+                                                    SeriesKey : TitleNormalizer.Normalize(entry.Parsed.Title),
                                                     MediaType : entry.Parsed.MediaType.ToString(),
                                                     Episode : entry.Parsed.Episode ?? 0)))
         {
@@ -418,7 +419,7 @@ public sealed class DownloadService(
                                                           BuildAdhocCandidate(item.StableId, item.PublishedAtUtc,
                                                                               identity, binding.SubjectId),
                                                           binding.SubjectId,
-                                                          FeedItemEvaluator.NormalizeTitle(identity.Title),
+                                                          TitleNormalizer.Normalize(identity.Title),
                                                           identity.Episode, resolvedSource, infoHash, null,
                                                           cancellationToken);
             if (!arbitration.Register)
@@ -492,13 +493,9 @@ public sealed class DownloadService(
     {
         var template = await namingTemplateStore.GetAsync(cancellationToken);
         var fileTemplate = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
-        var metadata = await GetSubjectMetadataAsync(subject.SubjectId, cancellationToken);
+        var metadata = await subjectCache.GetCachedAsync(subject.SubjectId, cancellationToken);
         var bgmName = metadata?.Name ?? subject.DisplayName;
         var bgmNameCn = metadata?.NameCn ?? string.Empty;
-        var bgmPlatform = metadata?.Platform ?? string.Empty;
-        var bgmDate = metadata?.AirDate ?? string.Empty;
-        var displayName = string.IsNullOrWhiteSpace(bgmNameCn) ? bgmName : bgmNameCn;
-        subject = subject with { DisplayName = displayName };
 
         var attempts = new[]
         {
@@ -513,19 +510,10 @@ public sealed class DownloadService(
             if (parsed is null || episodeText is null || string.IsNullOrWhiteSpace(parsed.Title)) continue;
 
             var group = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
-            var ingredients = new TorrentNamingIngredients(template, subject.DisplayName, episodeText,
-                                                           parsed.Version, group, siteSource,
-                                                           parsed.Language.ToString(), parsed.Resolution.ToString(),
-                                                           FileTemplate: fileTemplate, AniMediaType: parsed.MediaType.ToString(),
-                                                           AniTitle: parsed.Title,
-                                                           AniGroup: parsed.Group, AniGroupType: parsed.GroupType.ToString(),
-                                                           AniSubtitleType: parsed.SubtitleType.ToString(),
-                                                           AniSource: parsed.Source.ToString(), AniWebSource: parsed.WebSource,
-                                                           AniResolution: parsed.Resolution.ToString(),
-                                                           AniVideoCodec: parsed.VideoCodec, AniAudioCodec: parsed.AudioCodec,
-                                                           AniColorBitDepth: parsed.ColorBitDepth, BangumiId: subject.SubjectId,
-                                                           BangumiName: bgmName, BangumiNameCn: bgmNameCn,
-                                                           BangumiPlatform: bgmPlatform, BangumiDate: bgmDate);
+            var ingredients = NamingIngredientsComposer.Compose(
+                template, fileTemplate, parsed, episodeText, group, siteSource,
+                subject.SubjectId, bgmName, bgmNameCn, metadata?.Platform ?? string.Empty,
+                metadata?.AirDate);
             return (namingPolicy.Create(ingredients), ingredients.ToJson(), parsed);
         }
 
@@ -563,11 +551,11 @@ public sealed class DownloadService(
         ParseResult?      parsed, Uri? itemLink, int? requestedSubjectId, int? sourceSubjectId, Guid? proxyId,
         CancellationToken cancellationToken)
     {
-        var seriesKey = parsed is null ? string.Empty : FeedItemEvaluator.NormalizeTitle(parsed.Title);
+        var seriesKey = parsed is null ? string.Empty : TitleNormalizer.Normalize(parsed.Title);
         if (requestedSubjectId is { } explicitId)
         {
             var binding = await EnsureSubjectAsync(explicitId, cancellationToken);
-            await SaveTitleMappingAsync(seriesKey, binding.SubjectId, cancellationToken);
+            await subjectCache.SaveTitleMappingAsync(seriesKey, binding.SubjectId, cancellationToken);
             return binding;
         }
 
@@ -587,7 +575,7 @@ public sealed class DownloadService(
         if (sourceSubjectId is { } feedId)
         {
             var binding = await EnsureSubjectAsync(feedId, cancellationToken);
-            await SaveTitleMappingAsync(seriesKey, binding.SubjectId, cancellationToken);
+            await subjectCache.SaveTitleMappingAsync(seriesKey, binding.SubjectId, cancellationToken);
             return binding;
         }
 
@@ -598,7 +586,7 @@ public sealed class DownloadService(
             if (linkedSubjectId is not null)
             {
                 var binding = await EnsureSubjectAsync(linkedSubjectId.Value, cancellationToken);
-                await SaveTitleMappingAsync(seriesKey, binding.SubjectId, cancellationToken);
+                await subjectCache.SaveTitleMappingAsync(seriesKey, binding.SubjectId, cancellationToken);
                 return binding;
             }
         }
@@ -609,76 +597,8 @@ public sealed class DownloadService(
     /// <summary>确保 Subject 元数据在本地可用：缓存行直接用，否则调 Bangumi API 拉取并落库（失败抛出，由调用方拒绝登记）。</summary>
     private async Task<SubjectBinding> EnsureSubjectAsync(int subjectId, CancellationToken cancellationToken)
     {
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var cached = await db.MediaSubjects.AsNoTracking()
-                             .Where(subject => subject.Id == subjectId)
-                             .Select(subject => new { subject.Id, subject.Name, subject.NameCn })
-                             .SingleOrDefaultAsync(cancellationToken);
-        if (cached is not null)
-            return new SubjectBinding(cached.Id,
-                                      string.IsNullOrWhiteSpace(cached.NameCn) ? cached.Name : cached.NameCn);
-
-        var metadata = await subjectMetadataProvider.GetAsync(subjectId, cancellationToken);
-        await SaveSubjectMetadataAsync(metadata, cancellationToken);
+        var metadata = await subjectCache.EnsureAsync(subjectId, cancellationToken);
         return new SubjectBinding(metadata.Id, metadata.DisplayName);
-    }
-
-    private async Task<SubjectMetadata?> GetSubjectMetadataAsync(int subjectId, CancellationToken cancellationToken)
-    {
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        return await db.MediaSubjects.AsNoTracking()
-                       .Where(subject => subject.Id == subjectId)
-                       .Select(subject => new SubjectMetadata(subject.Id, subject.Name, subject.NameCn,
-                                                              subject.Platform, subject.AirDate, subject.ImageUrl,
-                                                              subject.CachedAtUtc))
-                       .SingleOrDefaultAsync(cancellationToken);
-    }
-
-    private async Task SaveSubjectMetadataAsync(SubjectMetadata subject, CancellationToken cancellationToken)
-    {
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var entity = await db.MediaSubjects.SingleOrDefaultAsync(item => item.Id == subject.Id, cancellationToken);
-        if (entity is null)
-        {
-            entity = new MediaSubject { Id = subject.Id };
-            db.MediaSubjects.Add(entity);
-        }
-
-        entity.Name        = subject.Name;
-        entity.NameCn      = subject.NameCn;
-        entity.Platform    = subject.Platform;
-        entity.AirDate     = subject.AirDate;
-        entity.ImageUrl    = subject.ImageUrl;
-        entity.CachedAtUtc = subject.CachedAtUtc;
-        await db.SaveChangesAsync(cancellationToken);
-    }
-
-    /// <summary>标题映射回写：解析出系列标题才落映射，让同系列后续条目直接命中。</summary>
-    private async Task SaveTitleMappingAsync(string seriesKey, int subjectId, CancellationToken cancellationToken)
-    {
-        if (seriesKey.Length == 0) return;
-
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var mapping =
-            await db.SubjectTitleMappings.SingleOrDefaultAsync(item => item.NormalizedTitle == seriesKey,
-                                                               cancellationToken);
-        if (mapping is null)
-        {
-            db.SubjectTitleMappings.Add(new SubjectTitleMapping
-            {
-                Id              = Guid.NewGuid(),
-                NormalizedTitle = seriesKey,
-                SubjectId       = subjectId,
-                UpdatedAtUtc    = timeProvider.GetUtcNow()
-            });
-        }
-        else
-        {
-            mapping.SubjectId    = subjectId;
-            mapping.UpdatedAtUtc = timeProvider.GetUtcNow();
-        }
-
-        await db.SaveChangesAsync(cancellationToken);
     }
 
     /// <summary>下载种子文件并提取 info-hash；网络请求不置于数据库事务内。</summary>
@@ -736,7 +656,7 @@ public sealed class DownloadService(
                 StableId = item.StableId
             };
             var arbitration = await ArbitrateEpisodeAsync(db, config, incoming, item.SubjectId,
-                                                          FeedItemEvaluator.NormalizeTitle(item.ParsedTitle),
+                                                          TitleNormalizer.Normalize(item.ParsedTitle),
                                                           item.Episode, resolvedSource, infoHash, item.SubjectId,
                                                           cancellationToken);
             if (!arbitration.Register)
@@ -838,7 +758,7 @@ public sealed class DownloadService(
             var ingredients = TorrentNamingIngredients.FromJson(task.NamingIngredients);
             var taskSeriesKey = ingredients is null
                 ? string.Empty
-                : FeedItemEvaluator.NormalizeTitle(ingredients.Title);
+                : TitleNormalizer.Normalize(ingredients.Title);
             var matched = subjectId is not null && task.SubjectId == subjectId;
             if (!matched && task.SubjectId is null && taskSeriesKey.Length > 0)
                 matched = taskSeriesKey == seriesKey;

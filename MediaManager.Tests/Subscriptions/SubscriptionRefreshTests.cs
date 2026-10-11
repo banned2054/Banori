@@ -5,6 +5,7 @@ using MediaManager.Core.Subjects;
 using MediaManager.Data;
 using MediaManager.Data.Migrations;
 using MediaManager.Features.Dashboard;
+using MediaManager.Features.Anime;
 using MediaManager.Features.Downloads;
 using MediaManager.Features.FeedItems;
 using MediaManager.Features.Settings;
@@ -625,7 +626,7 @@ public sealed class SubscriptionRefreshTests
                 var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "标题映射测试",
                                                                                   "https://mikanani.me/RSS/MyBangumi?token=secret",
                                                                                   true, 30, null));
-                var normalizedTitle = FeedItemEvaluator.NormalizeTitle(
+                var normalizedTitle = TitleNormalizer.Normalize(
                                                                        scope.ServiceProvider
                                                                             .GetRequiredService<AniParser>()
                                                                             .Parse(episode13Title)!.Title);
@@ -867,6 +868,7 @@ public sealed class SubscriptionRefreshTests
         services.AddSingleton<IFeedSourceReader>(new FakeFeedReader(feedFactory));
         services.AddSingleton(resolver ?? new CountingSubjectLinkResolver(42));
         services.AddSingleton<ISubjectMetadataProvider>(new FakeSubjectProvider(timestamp));
+        services.AddScoped<SubjectMetadataCache>();
         services.AddSingleton<AniParser>();
         services.AddSingleton<CandidateEligibilityPolicy>();
         services.AddSingleton<CandidateRankingPolicy>();

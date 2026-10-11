@@ -6,6 +6,7 @@ using MediaManager.Features.Downloads;
 using MediaManager.Features.Notifications;
 using MediaManager.Features.Settings;
 using MediaManager.Features.Subscriptions;
+using MediaManager.Features.Anime;
 using MediaManager.Integrations;
 using MediaManager.Integrations.Qbittorrent;
 using MediaManager.Tests.Downloads;
@@ -162,6 +163,7 @@ public sealed class NotificationHookTests
         services.AddScoped<NamingTemplateStore>();
         // 通知链路不触达 Subject 绑定解析，空实现只满足 DownloadService 构造签名。
         services.AddSingleton<ISubjectMetadataProvider>(NullSubjectMetadataProvider.Instance);
+        services.AddScoped<SubjectMetadataCache>();
         services.AddSingleton<ISubjectLinkResolver>(NullSubjectLinkResolver.Instance);
         services.AddSingleton<MediaManager.Core.Subjects.SubjectEpisodeCorrectionPolicy>();
         services.AddSingleton<DownloadCoordinationGate>();

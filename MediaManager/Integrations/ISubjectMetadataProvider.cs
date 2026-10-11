@@ -1,4 +1,5 @@
 using MediaManager.Features.Subscriptions;
+using MediaManager.Features.Anime;
 
 namespace MediaManager.Integrations;
 
