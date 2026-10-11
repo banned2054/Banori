@@ -14,6 +14,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
     public DbSet<MediaSubject>         MediaSubjects          => Set<MediaSubject>();
     public DbSet<SubjectTitleMapping>  SubjectTitleMappings   => Set<SubjectTitleMapping>();
     public DbSet<DownloadTask>         DownloadTasks          => Set<DownloadTask>();
+    public DbSet<DownloadTaskFile>     DownloadTaskFiles      => Set<DownloadTaskFile>();
     public DbSet<CandidateSelection>   CandidateSelections    => Set<CandidateSelection>();
     public DbSet<NotificationDelivery> NotificationDeliveries => Set<NotificationDelivery>();
     public DbSet<ProxyServer>          ProxyServers           => Set<ProxyServer>();
@@ -130,6 +131,10 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.Property(item => item.InfoHash).HasMaxLength(40).IsRequired();
             entity.Property(item => item.TorrentUrl).HasMaxLength(2000);
             entity.Property(item => item.SavePath).HasMaxLength(1000).IsRequired();
+            entity.Property(item => item.DownloadRootPath).HasMaxLength(1000);
+            entity.Property(item => item.MediaDirectory).HasMaxLength(1000);
+            entity.Property(item => item.SeedDirectory).HasMaxLength(1000);
+            entity.Property(item => item.PendingSavePath).HasMaxLength(1000);
             entity.Property(item => item.SiteSource).HasMaxLength(50);
             entity.Property(item => item.NamingSnapshot).HasMaxLength(200).IsRequired();
             entity.Property(item => item.NamingIngredients);
@@ -151,6 +156,21 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
                   .HasForeignKey(item => item.FeedItemId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(item => item.Subject).WithMany()
                   .HasForeignKey(item => item.SubjectId).OnDelete(DeleteBehavior.SetNull);
+        });
+
+        builder.Entity<DownloadTaskFile>(entity =>
+        {
+            entity.ToTable("DownloadTaskFiles");
+            entity.HasKey(item => item.Id);
+            entity.Property(item => item.OriginalRelativePath).IsRequired();
+            entity.Property(item => item.CurrentRelativePath).IsRequired();
+            entity.Property(item => item.Kind).HasConversion<string>().HasMaxLength(32);
+            entity.Property(item => item.EpisodeNumberOverride).HasPrecision(18, 4);
+            entity.Property(item => item.EpisodeEndOverride).HasPrecision(18, 4);
+            entity.Property(item => item.ClassificationReason).HasMaxLength(1000).IsRequired();
+            entity.HasIndex(item => new { item.DownloadTaskId, item.FileIndex }).IsUnique();
+            entity.HasOne(item => item.DownloadTask).WithMany(item => item.Files)
+                  .HasForeignKey(item => item.DownloadTaskId).OnDelete(DeleteBehavior.Cascade);
         });
 
         builder.Entity<CandidateSelection>(entity =>

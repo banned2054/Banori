@@ -2,6 +2,7 @@ using Banned.AniParser;
 using Banned.AniParser.Models.Enums;
 using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
+using MediaManager.Core.Subjects;
 using MediaManager.Core.Torrents;
 using MediaManager.Data;
 using MediaManager.Features.Anime;
@@ -17,6 +18,8 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace MediaManager.Tests.Subscriptions;
 
@@ -63,7 +66,21 @@ public sealed class CandidateSelectionServiceTests
             Assert.Equal(SelectionOutcome.RunnerUp,
                          (await db.FeedItems.SingleAsync(item => item.Id == itemIds["ANi"]))
                         .SelectionOutcome);
-            Assert.Equal(1, await db.DownloadTasks.CountAsync());
+            var task = Assert.Single(await db.DownloadTasks.Include(value => value.Files).ToListAsync());
+            Assert.Equal(selection.IntentTaskId, task.Id);
+            Assert.Equal("/downloads", task.DownloadRootPath);
+            Assert.Equal(DownloadDirectorySettings.DefaultMediaDirectory, task.MediaDirectory);
+            Assert.Equal(DownloadDirectorySettings.DefaultSeedDirectory, task.SeedDirectory);
+            Assert.Equal("/downloads/Media/Anime", task.SavePath);
+            var file = Assert.Single(task.Files);
+            Assert.Equal(task.Id, file.DownloadTaskId);
+            Assert.Equal(0, file.FileIndex);
+            Assert.Equal(SelectionTorrentFileName("guid:lolihouse"), file.OriginalRelativePath);
+            Assert.Equal(file.OriginalRelativePath, file.CurrentRelativePath);
+            Assert.Equal(1024L, file.Size);
+            Assert.Equal(DownloadFileKind.Anime, file.Kind);
+            Assert.False(file.IsManualOverride);
+            Assert.Equal(harness.Timestamp, file.UpdatedAtUtc);
         }
     }
 
@@ -814,6 +831,28 @@ public sealed class CandidateSelectionServiceTests
         Assert.Equal(0, harness.TorrentFetchCount);
     }
 
+    /// <summary>合法 BEP-3 单文件种子：稳定标识只用于派生安全文件名，不直接成为路径。</summary>
+    private static byte[] CreateSelectionTorrentBytes(string stableId)
+    {
+        var name = SelectionTorrentFileName(stableId);
+        // 1024 字节的确定性文件只占一个 piece，pieces 必须包含对应的 20 字节 SHA-1。
+        var header = Encoding.UTF8.GetBytes(
+                                            "d8:announce31:http://tracker.example/announce4:infod6:lengthi1024e" +
+                                            $"4:name{Encoding.UTF8.GetByteCount(name)}:{name}"                   +
+                                            "12:piece lengthi16384e6:pieces20:");
+        using var torrent = new MemoryStream();
+        torrent.Write(header);
+        torrent.Write(SHA1.HashData(new byte[1024]));
+        torrent.Write("ee"u8);
+        return torrent.ToArray();
+    }
+
+    private static string SelectionTorrentFileName(string stableId)
+    {
+        var identity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(stableId)));
+        return $"【喵萌奶茶屋】[Test Anime {identity}][12][1080p][简日双语].mkv";
+    }
+
     private static async Task<SelectionHarness> CreateHarnessAsync(bool                    configureDownloader = true,
                                                                    SelectionRuleConfig?    ruleConfig          = null,
                                                                    SwitchableRuleProvider? switchableProvider  = null)
@@ -842,7 +881,7 @@ public sealed class CandidateSelectionServiceTests
                 hold.Release.Task.Wait();
             }
 
-            return TestTorrentBytes.Create(stableId);
+            return CreateSelectionTorrentBytes(stableId);
         }));
         var sessionFactory = new FakeQbittorrentSessionFactory(new FakeTorrentStore());
         services.AddSingleton(sessionFactory);
@@ -887,7 +926,7 @@ public sealed class CandidateSelectionServiceTests
                                                   UnusedSubjectLinkResolver.Instance,
                                                   provider.GetRequiredService<TimeProvider>(),
                                                   NullLogger<DownloadService>.Instance,
-                                                  new MediaManager.Core.Subjects.SubjectEpisodeCorrectionPolicy());
+                                                  new SubjectEpisodeCorrectionPolicy());
         var intakeService = new DownloadIntakeService(dbFactory,
                                                       provider.GetRequiredService<DownloadCoordinationGate>(),
                                                       provider.GetRequiredService<ITorrentFileSource>(),
@@ -898,8 +937,10 @@ public sealed class CandidateSelectionServiceTests
                                                       new CandidateEligibilityPolicy(),
                                                       new CandidateRankingPolicy(),
                                                       selectionRuleProvider,
-                                                      new SubjectMetadataCache(dbFactory, UnusedSubjectProvider.Instance,
-                                                                               provider.GetRequiredService<TimeProvider>()),
+                                                      new SubjectMetadataCache(dbFactory,
+                                                                               UnusedSubjectProvider.Instance,
+                                                                               provider
+                                                                                  .GetRequiredService<TimeProvider>()),
                                                       UnusedSubjectLinkResolver.Instance,
                                                       provider.GetRequiredService<TimeProvider>(),
                                                       NullLogger<DownloadIntakeService>.Instance);
@@ -1116,8 +1157,8 @@ public sealed class CandidateSelectionServiceTests
         {
             await using var db           = await CreateDbContextAsync();
             var             item         = await db.FeedItems.SingleAsync(value => value.Id == itemId);
-            var             torrentBytes = TestTorrentBytes.Create(item.StableId);
-            TorrentInfoHashExtractor.TryExtractInfoHash(torrentBytes, out var infoHash);
+            var             torrentBytes = CreateSelectionTorrentBytes(item.StableId);
+            Assert.True(TorrentInfoHashExtractor.TryExtractInfoHash(torrentBytes, out var infoHash));
             db.DownloadTasks.Add(new DownloadTask
             {
                 Id             = Guid.NewGuid(),

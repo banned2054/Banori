@@ -13,6 +13,7 @@ namespace MediaManager.Data.Migrations.MySql
     [DbContext(typeof(ApplicationDbContext))]
     partial class ApplicationDbContextModelSnapshot : ModelSnapshot
     {
+        /// <inheritdoc />
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
@@ -183,6 +184,10 @@ namespace MediaManager.Data.Migrations.MySql
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("datetime(6)");
 
+                    b.Property<string>("DownloadRootPath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
                     b.Property<decimal?>("Episode")
                         .HasColumnType("decimal(65,30)");
 
@@ -208,6 +213,10 @@ namespace MediaManager.Data.Migrations.MySql
                     b.Property<DateTimeOffset?>("LastSyncedAtUtc")
                         .HasColumnType("datetime(6)");
 
+                    b.Property<string>("MediaDirectory")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
                     b.Property<string>("NamingIngredients")
                         .HasColumnType("longtext");
 
@@ -215,6 +224,10 @@ namespace MediaManager.Data.Migrations.MySql
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("varchar(200)");
+
+                    b.Property<string>("PendingSavePath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
 
                     b.Property<double?>("Progress")
                         .HasColumnType("double");
@@ -227,6 +240,10 @@ namespace MediaManager.Data.Migrations.MySql
 
                     b.Property<string>("SavePath")
                         .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
+                    b.Property<string>("SeedDirectory")
                         .HasMaxLength(1000)
                         .HasColumnType("varchar(1000)");
 
@@ -269,6 +286,70 @@ namespace MediaManager.Data.Migrations.MySql
                     b.HasIndex("SubjectId", "Episode", "Status");
 
                     b.ToTable("DownloadTasks", (string)null);
+                });
+
+            modelBuilder.Entity("MediaManager.Data.DownloadTaskFile", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("AnimeRelativePathOverride")
+                        .HasColumnType("longtext");
+
+                    b.Property<string>("ClassificationReason")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
+                    b.Property<string>("CurrentRelativePath")
+                        .IsRequired()
+                        .HasColumnType("longtext");
+
+                    b.Property<Guid>("DownloadTaskId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<decimal?>("EpisodeEndOverride")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<decimal?>("EpisodeNumberOverride")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<int>("FileIndex")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsManualOverride")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<string>("OriginalRelativePath")
+                        .IsRequired()
+                        .HasColumnType("longtext");
+
+                    b.Property<string>("PendingRenameFrom")
+                        .HasColumnType("longtext");
+
+                    b.Property<string>("PendingRenameTo")
+                        .HasColumnType("longtext");
+
+                    b.Property<long>("Size")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DownloadTaskId", "FileIndex")
+                        .IsUnique();
+
+                    b.ToTable("DownloadTaskFiles", (string)null);
                 });
 
             modelBuilder.Entity("MediaManager.Data.FeedItem", b =>
@@ -860,6 +941,17 @@ namespace MediaManager.Data.Migrations.MySql
                     b.Navigation("Subject");
                 });
 
+            modelBuilder.Entity("MediaManager.Data.DownloadTaskFile", b =>
+                {
+                    b.HasOne("MediaManager.Data.DownloadTask", "DownloadTask")
+                        .WithMany("Files")
+                        .HasForeignKey("DownloadTaskId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("DownloadTask");
+                });
+
             modelBuilder.Entity("MediaManager.Data.FeedItem", b =>
                 {
                     b.HasOne("MediaManager.Data.MediaSubject", "Subject")
@@ -1010,6 +1102,11 @@ namespace MediaManager.Data.Migrations.MySql
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("MediaManager.Data.DownloadTask", b =>
+                {
+                    b.Navigation("Files");
                 });
 
             modelBuilder.Entity("MediaManager.Data.MediaSubject", b =>

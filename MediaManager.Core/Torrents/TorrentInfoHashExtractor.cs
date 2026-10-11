@@ -157,9 +157,10 @@ public static class TorrentInfoHashExtractor
         return false;
     }
 
-    private static bool TryReadStringBytes(ReadOnlySpan<byte> data, ref int position, out ReadOnlySpan<byte> value)
+    internal static bool TryReadStringBytes(ReadOnlySpan<byte> data, ref int position, out ReadOnlySpan<byte> value)
     {
         value = default;
+        if (position < 0 || position >= data.Length) return false;
         var colon = data[position..].IndexOf((byte)':');
         if (colon <= 0) return false;
 
@@ -167,7 +168,7 @@ public static class TorrentInfoHashExtractor
         if (!TryParseDigits(lengthSpan, out var length)) return false;
 
         var start = position + colon + 1;
-        if (length < 0 || start + length > data.Length) return false;
+        if (length < 0 || length > data.Length - start) return false;
 
         value    = data[start..(start + length)];
         position = start + length;
@@ -175,7 +176,7 @@ public static class TorrentInfoHashExtractor
     }
 
     /// <summary>跳过一个 bencode 值（整数、字符串、列表或字典），位置停在值结束后的下一字节。</summary>
-    private static bool SkipValue(ReadOnlySpan<byte> data, ref int position)
+    internal static bool SkipValue(ReadOnlySpan<byte> data, ref int position)
     {
         if (position >= data.Length) return false;
 
@@ -231,7 +232,7 @@ public static class TorrentInfoHashExtractor
                 return false;
             }
 
-            if (value > int.MaxValue / 10) return false;
+            if (value > (int.MaxValue - (digit - '0')) / 10) return false;
 
             value = value * 10 + (digit - '0');
         }

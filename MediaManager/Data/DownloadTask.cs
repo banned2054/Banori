@@ -4,7 +4,7 @@ namespace MediaManager.Data;
 
 /// <summary>
 ///     持久化的下载意图：保存执行所需的决策快照（命名、集数、版本、种子字节）与恢复所需的状态。
-///     多个条目可能指向同一资源，Subject + Episode 不构成唯一键；同集多版本共存由隔离路径保证。
+///     多个条目可能指向同一资源，Subject + Episode 不构成唯一键；实际文件归档需检查目标路径冲突。
 /// </summary>
 public sealed class DownloadTask
 {
@@ -29,8 +29,17 @@ public sealed class DownloadTask
     /// <summary>远程种子地址；本地上传种子没有下载来源，保存为 upload://hash。</summary>
     public string? TorrentUrl { get; set; }
 
-    /// <summary>提交时使用的下载器隔离保存路径（含 hash 短码），创建后不变；接管外部种子时对齐为真实路径。</summary>
+    /// <summary>下载器当前保存根目录；接管与已确认的归档移动会更新该路径。</summary>
     public string SavePath { get; set; } = string.Empty;
+
+    public string? DownloadRootPath { get; set; }
+    public string? MediaDirectory   { get; set; }
+    public string? SeedDirectory    { get; set; }
+
+    /// <summary>已发起但尚未确认完成的下载器保存位置变更。</summary>
+    public string? PendingSavePath { get; set; }
+
+    public ICollection<DownloadTaskFile> Files { get; set; } = [];
 
     /// <summary>来源站点标签（mikan/anibt/u2/byrbt/tjupt 等）：提交时作为下载器 tag 与命名 {source} 令牌；未知来源为空。</summary>
     public string? SiteSource { get; set; }

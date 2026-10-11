@@ -7,6 +7,7 @@
 @inject DownloadService                     DownloadService
 @inject DownloadIntakeService               IntakeService
 @inject DownloadTaskQueries                 TaskQueries
+@inject DownloadFileService                 FileService
 @inject ILogger<DownloadTasksPageViewModel> Logger
 
 <PageTitle>下载任务 - MediaManager</PageTitle>
@@ -99,7 +100,7 @@ else
 			<tbody>
 			@foreach (var task in _vm.Tasks)
 			{
-				<tr>
+				<tr @key="task.Id">
 					@if (_vm.BatchMode)
 					{
 						<td>
@@ -109,6 +110,10 @@ else
 						</td>
 					}
 					<td>
+						<button type="button" class="btn btn-sm btn-outline-secondary mb-1" aria-expanded="@_vm.FileState(task.Id).Expanded"
+						        aria-controls="files-@task.Id" disabled="@_vm.Busy" @onclick="() => ToggleFilesAsync(task.Id)">
+							@(_vm.FileState(task.Id).Expanded ? "收起文件" : "展开文件")
+						</button>
 						<div class="fw-semibold">@DownloadStatusTitle(task)</div>
 						<code class="small">@task.NamingSnapshot</code>
 						@if (!string.IsNullOrEmpty(task.SiteSource))
@@ -175,6 +180,15 @@ else
 						}
 					</td>
 				</tr>
+				@if (_vm.FileState(task.Id).Expanded)
+				{
+					var filesRowKey = $"files-{task.Id}";
+					<tr @key="filesRowKey" id="files-@task.Id">
+						<td colspan="@(_vm.BatchMode ? 7 : 6)" class="p-0">
+							<DownloadTaskFiles TaskId="task.Id" ViewModel="_vm" CancellationToken="_cts.Token"/>
+						</td>
+					</tr>
+				}
 			}
 			</tbody>
 		</table>
@@ -303,7 +317,7 @@ else
 
 	protected override void OnInitialized()
 	{
-		_vm = new DownloadTasksPageViewModel(DownloadService, IntakeService, TaskQueries, Logger);
+		_vm = new DownloadTasksPageViewModel(DownloadService, IntakeService, TaskQueries, Logger, FileService);
 	}
 
 	protected override async Task OnInitializedAsync()
@@ -335,6 +349,11 @@ else
 		catch (ObjectDisposedException)
 		{
 		}
+	}
+
+	private Task ToggleFilesAsync(Guid taskId)
+	{
+		return RunOperationAsync(() => _vm.ToggleFilesAsync(taskId, _cts.Token));
 	}
 
 	private Task PauseAsync(Guid taskId)

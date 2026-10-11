@@ -2,6 +2,7 @@ using Banned.AniParser;
 using MediaManager.Components;
 using MediaManager.Components.Account;
 using MediaManager.Configuration;
+using MediaManager.Core.Downloads;
 using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
 using MediaManager.Core.Subjects;
@@ -119,6 +120,9 @@ internal class Program
         builder.Services.AddSingleton<RefreshPulse>();
         builder.Services.AddScoped<IApplicationSettingStore, EfApplicationSettingStore>();
         builder.Services.AddScoped<NamingTemplateStore>();
+        builder.Services.AddScoped<DownloadDirectorySettingsStore>();
+        builder.Services.AddScoped<DownloadSubmissionPathValidator>();
+        builder.Services.AddSingleton<DownloadFileClassificationPolicy>();
         builder.Services.AddScoped<ManageQbittorrentSettings>();
         builder.Services.AddScoped<ManageSelectionRuleSettings>();
         builder.Services.AddScoped<ManageTelegramSettings>();
@@ -144,6 +148,7 @@ internal class Program
         builder.Services.AddScoped<AnimeQueries>();
         builder.Services.AddSingleton<DownloadCoordinationGate>();
         builder.Services.AddScoped<DownloadService>();
+        builder.Services.AddScoped<DownloadFileService>();
         builder.Services.AddScoped<DownloadIntakeService>();
         builder.Services.AddScoped<DownloadTaskQueries>();
         builder.Services.AddScoped<IQbittorrentSessionFactory, QbittorrentSessionFactory>();

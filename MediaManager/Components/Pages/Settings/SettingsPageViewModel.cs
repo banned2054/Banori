@@ -11,6 +11,7 @@ namespace MediaManager.Components.Pages.Settings;
 public sealed class SettingsPageViewModel(
     ManageQbittorrentSettings      qbittorrentSettings,
     NamingTemplateStore            namingTemplateStore,
+    DownloadDirectorySettingsStore directorySettingsStore,
     ManageTelegramSettings         telegramSettings,
     ManageGotifySettings           gotifySettings,
     ProxyService                   proxyService,
@@ -26,6 +27,7 @@ public sealed class SettingsPageViewModel(
 
     /// <summary>默认命名模板，供输入框占位与“恢复默认”提示展示。</summary>
     public string DefaultNamingTemplate => ReleaseNamePreviewPolicy.DefaultTemplate;
+
     public string DefaultFileNamingTemplate => ReleaseNamePreviewPolicy.DefaultFileTemplate;
 
     /// <summary>命名代理列表，供各卡片的代理下拉展示；代理变动后由 ReloadProxiesAsync 刷新。</summary>
@@ -45,13 +47,16 @@ public sealed class SettingsPageViewModel(
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
         var downloader = await qbittorrentSettings.GetAsync(cancellationToken);
-        Downloader.BaseUrl        = downloader.BaseUrl;
-        Downloader.Username       = downloader.Username;
-        Downloader.SavePath       = downloader.SavePath;
-        Downloader.Enabled        = downloader.Enabled;
-        Downloader.ProxyId        = downloader.ProxyId?.ToString();
-        Downloader.NamingTemplate = await namingTemplateStore.GetAsync(cancellationToken);
+        Downloader.BaseUrl            = downloader.BaseUrl;
+        Downloader.Username           = downloader.Username;
+        Downloader.SavePath           = downloader.SavePath;
+        Downloader.Enabled            = downloader.Enabled;
+        Downloader.ProxyId            = downloader.ProxyId?.ToString();
+        Downloader.NamingTemplate     = await namingTemplateStore.GetAsync(cancellationToken);
         Downloader.FileNamingTemplate = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
+        var directories = await directorySettingsStore.GetAsync(cancellationToken);
+        Downloader.MediaDirectory = directories.MediaDirectory;
+        Downloader.SeedDirectory  = directories.SeedDirectory;
 
         var hookBaseUrl = await qbittorrentSettings.GetHookBaseUrlAsync(cancellationToken);
         Downloader.HookBaseUrl = hookBaseUrl;
@@ -84,6 +89,9 @@ public sealed class SettingsPageViewModel(
         StatusMessage = null;
         try
         {
+            // 先校验目录，错误输入不得先覆盖其它下载器设置。
+            var directories =
+                DownloadDirectorySettingsStore.Normalize(Downloader.MediaDirectory, Downloader.SeedDirectory);
             await qbittorrentSettings.SaveAsync(new QbittorrentSettings(Downloader.BaseUrl  ?? string.Empty,
                                                                         Downloader.Username ?? string.Empty,
                                                                         Downloader.SavePath ?? string.Empty,
@@ -98,6 +106,10 @@ public sealed class SettingsPageViewModel(
                                              _hookToken);
             await namingTemplateStore.SaveAsync(Downloader.NamingTemplate, cancellationToken);
             await namingTemplateStore.SaveFileTemplateAsync(Downloader.FileNamingTemplate, cancellationToken);
+            await directorySettingsStore.SaveAsync(directories.MediaDirectory, directories.SeedDirectory,
+                                                   cancellationToken);
+            Downloader.MediaDirectory = directories.MediaDirectory;
+            Downloader.SeedDirectory  = directories.SeedDirectory;
             await telegramSettings.SaveAsync(Telegram.ToSettings(),
                                              string.IsNullOrWhiteSpace(Telegram.BotToken)
                                                  ? null
@@ -166,11 +178,11 @@ public sealed class SettingsPageViewModel(
         try
         {
             var (succeeded, message) = await qbittorrentSettings.TestConnectionAsync(
-                 new QbittorrentSettings(Downloader.BaseUrl  ?? string.Empty, Downloader.Username ?? string.Empty,
-                                         Downloader.SavePath ?? string.Empty, true,
-                                         Downloader.ParseProxyId()),
-                 string.IsNullOrWhiteSpace(Downloader.Password) ? null : Downloader.Password,
-                 cancellationToken);
+             new QbittorrentSettings(Downloader.BaseUrl  ?? string.Empty, Downloader.Username ?? string.Empty,
+                                     Downloader.SavePath ?? string.Empty, true,
+                                     Downloader.ParseProxyId()),
+             string.IsNullOrWhiteSpace(Downloader.Password) ? null : Downloader.Password,
+             cancellationToken);
             TestSucceeded = succeeded;
             TestMessage   = message;
         }
@@ -269,6 +281,12 @@ public sealed class QbittorrentSettingsDraft
     /// <summary>种子内文件名称模板；留空表示恢复默认模板。</summary>
     [StringLength(200, ErrorMessage = "文件名称模板不能超过 200 个字符。")]
     public string? FileNamingTemplate { get; set; }
+
+    [StringLength(500, ErrorMessage = "媒体目录不能超过 500 个字符。")]
+    public string? MediaDirectory { get; set; }
+
+    [StringLength(500, ErrorMessage = "做种目录不能超过 500 个字符。")]
+    public string? SeedDirectory { get; set; }
 
     public bool Enabled { get; set; }
 

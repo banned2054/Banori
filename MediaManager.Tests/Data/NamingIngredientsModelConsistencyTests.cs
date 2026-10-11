@@ -1,4 +1,3 @@
-using MediaManager.Configuration;
 using MediaManager.Data;
 using MediaManager.Data.Migrations;
 using Microsoft.AspNetCore.Identity;
@@ -32,27 +31,34 @@ public sealed class NamingIngredientsModelConsistencyTests
                 options.UseSqlite("Data Source=:memory:");
         });
         using var provider = services.BuildServiceProvider();
-        using var scope = provider.CreateScope();
-        using var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        using var scope    = provider.CreateScope();
+        using var db       = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
-        var assembly = db.GetService<IMigrationsAssembly>();
-        var snapshot = Assert.IsAssignableFrom<ModelSnapshot>(assembly.ModelSnapshot);
-        var snapshotModel = db.GetService<IModelRuntimeInitializer>().Initialize(snapshot.Model, designTime: true);
-        var designModel = db.GetService<IDesignTimeModel>().Model;
-        var differ = db.GetService<IMigrationsModelDiffer>();
-        var differences = differ.GetDifferences(snapshotModel.GetRelationalModel(), designModel.GetRelationalModel());
+        var assembly      = db.GetService<IMigrationsAssembly>();
+        var snapshot      = Assert.IsAssignableFrom<ModelSnapshot>(assembly.ModelSnapshot);
+        var snapshotModel = db.GetService<IModelRuntimeInitializer>().Initialize(snapshot.Model, true);
+        var designModel   = db.GetService<IDesignTimeModel>().Model;
+        var differ        = db.GetService<IMigrationsModelDiffer>();
+        var differences   = differ.GetDifferences(snapshotModel.GetRelationalModel(), designModel.GetRelationalModel());
 
         Assert.Empty(differences);
         foreach (var table in new[] { "FeedItems", "DownloadTasks" })
         {
             var property = db.Model.GetEntityTypes().SelectMany(entity => entity.GetProperties())
-                .Single(value => value.Name == "NamingIngredients" && value.DeclaringType.GetTableName() == table);
+                             .Single(value => value.Name                         == "NamingIngredients" &&
+                                              value.DeclaringType.GetTableName() == table);
             Assert.Null(property.GetMaxLength());
-            Assert.Equal(mysql ? "longtext" : "TEXT", property.GetColumnType(), ignoreCase: true);
+            Assert.Equal(mysql ? "longtext" : "TEXT", property.GetColumnType(), true);
         }
 
         var migration = assembly.Migrations.Keys.Last();
         Assert.Contains(migration, assembly.Migrations.Keys);
-        Assert.Equal(mysql, migration.StartsWith("20261010091210", StringComparison.Ordinal));
+        Assert.Contains("AddDownloadTaskFiles", migration);
+        var fileEntity = db.Model.FindEntityType(typeof(DownloadTaskFile));
+        Assert.NotNull(fileEntity);
+        Assert.Contains(fileEntity.GetIndexes(), index => index.IsUnique &&
+                                                          index.Properties.Select(property => property.Name)
+                                                               .SequenceEqual(new[] { "DownloadTaskId", "FileIndex" }));
+        Assert.Equal(DeleteBehavior.Cascade, Assert.Single(fileEntity.GetForeignKeys()).DeleteBehavior);
     }
 }

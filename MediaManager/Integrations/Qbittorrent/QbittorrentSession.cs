@@ -22,6 +22,7 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
             {
                 FilePaths      = [temporaryPath],
                 SavePath       = savePath,
+                ContentLayout  = EnumContentLayout.Original,
                 Tags           = string.Join(',', tags),
                 Rename         = string.IsNullOrWhiteSpace(rename) ? null : rename,
                 PausedEnabled  = false,
@@ -70,6 +71,24 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
         var files = await client.Torrent.GetTorrentFiles(NormalizeHash(infoHash),
                                                          cancellationToken : cancellationToken);
         return (files ?? []).Select(file => file.Name ?? string.Empty).ToList();
+    }
+
+    public async Task<IReadOnlyList<TorrentFileSnapshot>> ListFilesAsync(string            infoHash,
+                                                                         CancellationToken cancellationToken = default)
+    {
+        var files = await client.Torrent.GetTorrentFiles(NormalizeHash(infoHash),
+                                                         cancellationToken : cancellationToken);
+        return (files ?? []).Select(file => new TorrentFileSnapshot(file.Index
+                                                                 ?? throw new
+                                                                        InvalidOperationException("下载器没有返回可靠的文件 index。"),
+                                                                    file.Name ??
+                                                                    throw new InvalidOperationException("下载器没有返回文件路径。"),
+                                                                    file.Size)).ToList();
+    }
+
+    public Task SetLocationAsync(string infoHash, string savePath, CancellationToken cancellationToken = default)
+    {
+        return client.Torrent.SetTorrentLocation(NormalizeHash(infoHash), savePath, cancellationToken);
     }
 
     public Task PauseAsync(string infoHash, CancellationToken cancellationToken = default)
@@ -124,7 +143,8 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
                                    QbittorrentTorrentStateMapper.Map(info.State ?? EnumTorrentState.Unknown),
                                    info.Progress  ?? 0,
                                    info.TotalSize ?? 0, info.SavePath ?? string.Empty,
-                                   info.TagList   ?? []);
+                                   info.TagList   ?? [],
+                                   string.Equals(info.State?.ToString(), "Moving", StringComparison.OrdinalIgnoreCase));
     }
 
     private static string NormalizeHash(string hash)

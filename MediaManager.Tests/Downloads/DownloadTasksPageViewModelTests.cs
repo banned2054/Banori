@@ -1,7 +1,6 @@
 using MediaManager.Components.Pages.Downloads;
 using MediaManager.Data;
 using MediaManager.Features.Downloads;
-using MediaManager.Integrations.Qbittorrent;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -15,9 +14,9 @@ public sealed class DownloadTasksPageViewModelTests
     [Fact]
     public async Task PrepareBulkDelete_SelectionChangesWhilePrecheckPending_DoesNotOpenPanel()
     {
-        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
-        var firstId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page A - 01"));
-        var secondId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page B - 01"));
+        using var harness  = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        var       firstId  = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page A - 01"));
+        var       secondId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page B - 01"));
         await harness.ReconcileAsync();
         var secondHash = TestTorrentBytes.InfoHashOf("Page B - 01");
         Assert.True(harness.Store.Torrents.ContainsKey(secondHash));
@@ -51,8 +50,8 @@ public sealed class DownloadTasksPageViewModelTests
     public async Task PrepareBulkDelete_LeavingBatchModeWhilePending_DiscardsLateResult()
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
-        var taskId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Exit - 01"));
-        var vm = CreateViewModel(harness);
+        var       taskId  = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Exit - 01"));
+        var       vm      = CreateViewModel(harness);
         await vm.LoadAsync();
         vm.ToggleBatchMode();
         vm.ToggleSelected(taskId);
@@ -74,8 +73,8 @@ public sealed class DownloadTasksPageViewModelTests
     public async Task PrepareBulkDelete_CancelWhilePrecheckPending_DiscardsLateResult()
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
-        var taskId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Cancel - 01"));
-        var vm = CreateViewModel(harness);
+        var       taskId  = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Cancel - 01"));
+        var       vm      = CreateViewModel(harness);
         await vm.LoadAsync();
         vm.ToggleBatchMode();
         vm.ToggleSelected(taskId);
@@ -95,13 +94,13 @@ public sealed class DownloadTasksPageViewModelTests
     [Fact]
     public async Task ConfirmBulkDelete_UsesImmutablePrecheckSelection()
     {
-        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
-        var firstId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Confirm A - 01"));
-        var secondId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Confirm B - 01"));
+        using var harness  = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        var       firstId  = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Confirm A - 01"));
+        var       secondId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Confirm B - 01"));
         await harness.ReconcileAsync();
-        var firstHash = TestTorrentBytes.InfoHashOf("Page Confirm A - 01");
+        var firstHash  = TestTorrentBytes.InfoHashOf("Page Confirm A - 01");
         var secondHash = TestTorrentBytes.InfoHashOf("Page Confirm B - 01");
-        var vm = CreateViewModel(harness);
+        var vm         = CreateViewModel(harness);
         await vm.LoadAsync();
         vm.ToggleBatchMode();
         vm.ToggleSelected(firstId);
@@ -120,20 +119,20 @@ public sealed class DownloadTasksPageViewModelTests
         Assert.NotNull(await harness.GetTaskAsync(secondId));
         Assert.False(harness.Store.Torrents.ContainsKey(firstHash));
         Assert.True(harness.Store.Torrents.ContainsKey(secondHash));
-        Assert.Contains(harness.Store.DeleteCalls, call => call.Hash == firstHash);
+        Assert.Contains(harness.Store.DeleteCalls, call => call.Hash       == firstHash);
         Assert.DoesNotContain(harness.Store.DeleteCalls, call => call.Hash == secondHash);
     }
 
     [Fact]
     public async Task PrepareDelete_UserChoiceAndReopenedTargetAreNotOverwrittenByLatePrecheck()
     {
-        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
-        var firstId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Delete A - 01"));
-        var secondId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Delete B - 01"));
+        using var harness  = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        var       firstId  = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Delete A - 01"));
+        var       secondId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Delete B - 01"));
         await harness.ReconcileAsync();
         var vm = CreateViewModel(harness);
         await vm.LoadAsync();
-        var first = vm.Tasks.Single(task => task.Id == firstId);
+        var first  = vm.Tasks.Single(task => task.Id == firstId);
         var second = vm.Tasks.Single(task => task.Id == secondId);
         var (started, release) = InstallFindGate(harness.Factory, "Page Delete A - 01");
 
@@ -156,7 +155,7 @@ public sealed class DownloadTasksPageViewModelTests
     public async Task PrepareDelete_SameTargetLatePrecheckPreservesExplicitUserChoice()
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
-        var taskId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Same - 01"));
+        var       taskId  = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Same - 01"));
         await harness.ReconcileAsync();
         var vm = CreateViewModel(harness);
         await vm.LoadAsync();
@@ -190,9 +189,9 @@ public sealed class DownloadTasksPageViewModelTests
         FakeQbittorrentSessionFactory factory, string targetName)
     {
         var targetHash = TestTorrentBytes.InfoHashOf(targetName);
-        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var hasPaused = 0;
+        var started    = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release    = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hasPaused  = 0;
         factory.SessionConfigurator = session => session.BeforeFindTorrentsAsync = async hashes =>
         {
             if (!hashes.Contains(targetHash, StringComparer.OrdinalIgnoreCase) ||

@@ -7,13 +7,20 @@ public sealed class DownloadTasksPageViewModel(
     DownloadService                     downloadService,
     DownloadIntakeService               intakeService,
     DownloadTaskQueries                 taskQueries,
-    ILogger<DownloadTasksPageViewModel> logger)
+    ILogger<DownloadTasksPageViewModel> logger,
+    IDownloadFileService?               fileService = null)
 {
-    private readonly HashSet<Guid> _selectedIds = [];
-    private Guid[] _bulkConfirmationIds = [];
-    private long _bulkRequestId;
+    private readonly Dictionary<Guid, DownloadTaskFilesState> _fileStates          = [];
+    private readonly HashSet<Guid>                            _selectedIds         = [];
+    private          Guid[]                                   _bulkConfirmationIds = [];
+    private          long                                     _bulkRequestId;
+
+    private bool _deleteFiles;
+
+    /// <summary>面板勾选项：是否连下载器中的种子一起删除。</summary>
+    private bool _deleteFromDownloader;
+
     private long _deleteRequestId;
-    private bool _deleteOptionsTouched;
     private bool _settingDeleteOptions;
 
     public IReadOnlyList<DownloadTaskView> Tasks { get; private set; } = [];
@@ -36,21 +43,18 @@ public sealed class DownloadTasksPageViewModel(
     public bool? TorrentInDownloader { get; private set; }
 
     /// <summary>删除器连删勾选被用户明确触碰时置位；用于确认异步预检不得覆盖用户选择。</summary>
-    internal bool DeleteOptionsTouched => _deleteOptionsTouched;
+    internal bool DeleteOptionsTouched { get; private set; }
 
-    /// <summary>面板勾选项：是否连下载器中的种子一起删除。</summary>
-    private bool _deleteFromDownloader;
     public bool DeleteFromDownloader
     {
         get => _deleteFromDownloader;
         set
         {
             _deleteFromDownloader = value;
-            if (!_settingDeleteOptions) _deleteOptionsTouched = true;
+            if (!_settingDeleteOptions) DeleteOptionsTouched = true;
         }
     }
 
-    private bool _deleteFiles;
     /// <summary>面板勾选项：删除下载器种子时是否连带删除已下载的文件。</summary>
     public bool DeleteFiles
     {
@@ -58,7 +62,7 @@ public sealed class DownloadTasksPageViewModel(
         set
         {
             _deleteFiles = value;
-            if (!_settingDeleteOptions) _deleteOptionsTouched = true;
+            if (!_settingDeleteOptions) DeleteOptionsTouched = true;
         }
     }
 
@@ -84,13 +88,163 @@ public sealed class DownloadTasksPageViewModel(
         var selectedBefore = _selectedIds.ToHashSet();
         _selectedIds.IntersectWith(Tasks.Select(task => task.Id));
         if (!selectedBefore.SetEquals(_selectedIds)) InvalidateBulkPanel();
+        var taskIds = Tasks.Select(task => task.Id).ToHashSet();
+        foreach (var id in _fileStates.Keys.Where(id => !taskIds.Contains(id)).ToArray())
+            _fileStates.Remove(id);
         Loaded = true;
+    }
+
+    /// <summary>详情以任务 Id 保存，摘要刷新不重新加载文件，也不重建正在编辑的草稿。</summary>
+    public DownloadTaskFilesState FileState(Guid taskId)
+    {
+        if (!_fileStates.TryGetValue(taskId, out var state))
+            _fileStates[taskId] = state = new DownloadTaskFilesState();
+        return state;
+    }
+
+    public async Task ToggleFilesAsync(Guid taskId, CancellationToken cancellationToken = default)
+    {
+        var state = FileState(taskId);
+        state.Expanded = !state.Expanded;
+        if (state.Expanded && state.Details is null)
+            await LoadFilesAsync(taskId, cancellationToken);
+    }
+
+    public async Task LoadFilesAsync(Guid taskId, CancellationToken cancellationToken = default)
+    {
+        var state = FileState(taskId);
+        if (state.Loading || state.Busy) return;
+        state.Loading = true;
+        state.Error   = null;
+        try
+        {
+            var details = await RequireFileService().ListAsync(taskId, cancellationToken);
+            if (IsCurrentFileState(taskId, state))
+            {
+                state.Details = details;
+                foreach (var draft in state.Drafts.Values) draft.InvalidatePreview();
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "下载任务 {TaskId} 文件列表加载失败。", taskId);
+            if (IsCurrentFileState(taskId, state)) state.Error = exception.Message;
+        }
+        finally
+        {
+            state.Loading = false;
+        }
+    }
+
+    public void BeginFileEdit(Guid taskId, int fileIndex)
+    {
+        var state = FileState(taskId);
+        if (state.Busy || state.Loading || state.Drafts.ContainsKey(fileIndex)) return;
+        var file = state.Details?.Files.SingleOrDefault(file => file.Index == fileIndex);
+        if (file is null) return;
+        state.Drafts[fileIndex] = new DownloadFileEditDraft(file);
+        state.Error             = null;
+        state.Message           = null;
+    }
+
+    public void CancelFileEdit(Guid taskId, int fileIndex)
+    {
+        var state = FileState(taskId);
+        // 应用已发出后无法用取消按钮撤销下载器变更。
+        if (!state.Busy) state.Drafts.Remove(fileIndex);
+    }
+
+    public async Task PreviewFileAsync(Guid taskId, int fileIndex, CancellationToken cancellationToken = default)
+    {
+        var state = FileState(taskId);
+        if (state.Busy || state.Loading || !state.Drafts.TryGetValue(fileIndex, out var draft)) return;
+        var request = draft.Request;
+        draft.Preview        = null;
+        draft.PreviewRequest = null;
+        state.Busy           = true;
+        state.Error          = null;
+        state.Message        = null;
+        try
+        {
+            var preview = await RequireFileService().PreviewAsync(taskId, fileIndex, request, cancellationToken);
+            if (IsCurrentFileState(taskId, state) && state.Drafts.GetValueOrDefault(fileIndex) == draft &&
+                draft.Request                                                                  == request)
+            {
+                draft.Preview        = preview;
+                draft.PreviewRequest = request;
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "下载任务 {TaskId} 文件 {FileIndex} 修改预览失败。", taskId, fileIndex);
+            if (IsCurrentFileState(taskId, state)) state.Error = exception.Message;
+        }
+        finally
+        {
+            state.Busy = false;
+        }
+    }
+
+    public async Task ApplyFileAsync(Guid taskId, int fileIndex, CancellationToken cancellationToken = default)
+    {
+        var state = FileState(taskId);
+        if (state.Busy || state.Loading || !state.Drafts.TryGetValue(fileIndex, out var draft) ||
+            !draft.CanApply) return;
+        var request = draft.Request;
+        state.Busy    = true;
+        state.Error   = null;
+        state.Message = null;
+        try
+        {
+            var details = await RequireFileService().ApplyAsync(taskId, fileIndex, request, cancellationToken);
+            if (!IsCurrentFileState(taskId, state)) return;
+            state.Details = details;
+            state.Drafts.Remove(fileIndex);
+            // 根目录迁移会影响其他文件的完整路径，需要重新预览，但保留其编辑值。
+            foreach (var otherDraft in state.Drafts.Values) otherDraft.InvalidatePreview();
+            state.Message = "修改已提交，文件位置以下载器确认结果为准。";
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "下载任务 {TaskId} 文件 {FileIndex} 修改失败。", taskId, fileIndex);
+            if (IsCurrentFileState(taskId, state))
+            {
+                state.Error = exception.Message;
+                draft.InvalidatePreview();
+            }
+        }
+        finally
+        {
+            state.Busy = false;
+        }
+    }
+
+    private IDownloadFileService RequireFileService()
+    {
+        return fileService ?? throw new InvalidOperationException("文件详情服务尚未启用。");
+    }
+
+    private bool IsCurrentFileState(Guid taskId, DownloadTaskFilesState state)
+    {
+        return _fileStates.GetValueOrDefault(taskId) == state;
     }
 
     public void ToggleBatchMode()
     {
-        BatchMode           = !BatchMode;
-        BulkDeletePanelOpen = false;
+        BatchMode            = !BatchMode;
+        BulkDeletePanelOpen  = false;
         _bulkConfirmationIds = [];
         _bulkRequestId++;
         _selectedIds.Clear();
@@ -120,15 +274,15 @@ public sealed class DownloadTasksPageViewModel(
         if (!BatchMode || _selectedIds.Count == 0) return;
 
         var requestId = ++_bulkRequestId;
-        var ids = _selectedIds.ToArray();
-        BulkDeletePanelOpen = false;
-        BulkPrecheck = null;
+        var ids       = _selectedIds.ToArray();
+        BulkDeletePanelOpen  = false;
+        BulkPrecheck         = null;
         _bulkConfirmationIds = [];
         var precheck = await downloadService.PrecheckBulkDeleteAsync(ids, cancellationToken);
         if (requestId != _bulkRequestId || !BatchMode || cancellationToken.IsCancellationRequested ||
             !_selectedIds.SetEquals(ids)) return;
 
-        BulkPrecheck = precheck;
+        BulkPrecheck         = precheck;
         _bulkConfirmationIds = ids;
         SetDeleteOptions(precheck.DownloaderChecked && precheck.TorrentsInDownloader == precheck.TaskCount, false);
         BulkDeletePanelOpen = true;
@@ -138,16 +292,16 @@ public sealed class DownloadTasksPageViewModel(
     {
         _bulkRequestId++;
         _bulkConfirmationIds = [];
-        BulkDeletePanelOpen = false;
-        BulkPrecheck = null;
+        BulkDeletePanelOpen  = false;
+        BulkPrecheck         = null;
     }
 
     private void InvalidateBulkPanel()
     {
         _bulkRequestId++;
         _bulkConfirmationIds = [];
-        BulkDeletePanelOpen = false;
-        BulkPrecheck = null;
+        BulkDeletePanelOpen  = false;
+        BulkPrecheck         = null;
     }
 
     private void SetDeleteOptions(bool deleteTorrent, bool deleteFiles)
@@ -156,7 +310,7 @@ public sealed class DownloadTasksPageViewModel(
         try
         {
             DeleteFromDownloader = deleteTorrent;
-            DeleteFiles = deleteFiles;
+            DeleteFiles          = deleteFiles;
         }
         finally
         {
@@ -167,15 +321,15 @@ public sealed class DownloadTasksPageViewModel(
     /// <summary>确认批量删除：面板在发起前关闭，删除多少个由结果消息汇报。</summary>
     public async Task ConfirmBulkDeleteAsync(CancellationToken cancellationToken = default)
     {
-        var ids                  = _bulkConfirmationIds.ToArray();
+        var ids = _bulkConfirmationIds.ToArray();
         if (ids.Length == 0 || !BulkDeletePanelOpen) return;
         var deleteFromDownloader = DeleteFromDownloader;
         var deleteFiles          = deleteFromDownloader && DeleteFiles;
-        BulkDeletePanelOpen = false;
+        BulkDeletePanelOpen  = false;
         _bulkConfirmationIds = [];
         _bulkRequestId++;
-        Busy                = true;
-        Message             = null;
+        Busy    = true;
+        Message = null;
         try
         {
             var deleted = await downloadService.DeleteManyAsync(ids, deleteFromDownloader, deleteFiles,
@@ -211,30 +365,32 @@ public sealed class DownloadTasksPageViewModel(
         var requestId = ++_deleteRequestId;
         DeleteTarget         = task;
         TorrentInDownloader  = null;
-        _deleteOptionsTouched = false;
+        DeleteOptionsTouched = false;
         SetDeleteOptions(false, false);
         try
         {
             var inDownloader = await downloadService.TorrentInDownloaderAsync(task.Id, cancellationToken);
-            if (requestId != _deleteRequestId || DeleteTarget?.Id != task.Id || cancellationToken.IsCancellationRequested)
+            if (requestId != _deleteRequestId || DeleteTarget?.Id != task.Id ||
+                cancellationToken.IsCancellationRequested)
                 return;
 
             TorrentInDownloader = inDownloader;
-            if (!_deleteOptionsTouched && inDownloader == true) SetDeleteOptions(true, false);
+            if (!DeleteOptionsTouched && inDownloader == true) SetDeleteOptions(true, false);
         }
         catch (KeyNotFoundException)
         {
             if (requestId != _deleteRequestId || DeleteTarget?.Id != task.Id) return;
-            DeleteTarget = null;
+            DeleteTarget        = null;
             TorrentInDownloader = null;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             if (requestId == _deleteRequestId && DeleteTarget?.Id == task.Id)
             {
-                DeleteTarget = null;
+                DeleteTarget        = null;
                 TorrentInDownloader = null;
             }
+
             throw;
         }
         catch
@@ -247,7 +403,7 @@ public sealed class DownloadTasksPageViewModel(
     public void CancelDelete()
     {
         _deleteRequestId++;
-        DeleteTarget = null;
+        DeleteTarget        = null;
         TorrentInDownloader = null;
     }
 
@@ -282,7 +438,7 @@ public sealed class DownloadTasksPageViewModel(
 
         await RunCoreAsync(
                            () => intakeService.CreateFromUploadAsync(buffer.ToArray(), UploadSiteSource,
-                                                                       UploadSubjectId, cancellationToken),
+                                                                     UploadSubjectId, cancellationToken),
                            "上传种子已登记，等待提交下载器。", cancellationToken,
                            exception => logger.LogWarning(exception, "上传种子登记失败。"));
     }
@@ -349,5 +505,115 @@ public sealed class DownloadTasksPageViewModel(
         }
 
         await LoadAsync(cancellationToken);
+    }
+}
+
+/// <summary>仅属于页面生命周期的文件详情与编辑草稿。</summary>
+public sealed class DownloadTaskFilesState
+{
+    public bool                                   Expanded { get; internal set; }
+    public bool                                   Loading  { get; internal set; }
+    public bool                                   Busy     { get; internal set; }
+    public string?                                Error    { get; internal set; }
+    public string?                                Message  { get; internal set; }
+    public DownloadTaskFilesView?                 Details  { get; internal set; }
+    public Dictionary<int, DownloadFileEditDraft> Drafts   { get; } = [];
+}
+
+public sealed class DownloadFileEditDraft(DownloadFileView file)
+{
+    private string?  _animeRelativePath = file.AnimeRelativePath;
+    private decimal? _episode           = file.Episode;
+    private decimal? _episodeEnd        = file.EpisodeEnd;
+
+    private DownloadFileKind
+        _kind = file.Kind == DownloadFileKind.Seed ? DownloadFileKind.Seed : DownloadFileKind.Anime;
+
+    private bool _reidentifyOriginalName;
+
+    public DownloadFileKind Kind
+    {
+        get => _kind;
+        set
+        {
+            if (_kind != value)
+            {
+                _kind = value;
+                InvalidatePreview();
+            }
+        }
+    }
+
+    public bool ReidentifyOriginalName
+    {
+        get => _reidentifyOriginalName;
+        set
+        {
+            if (_reidentifyOriginalName == value) return;
+            _reidentifyOriginalName = value;
+            if (value)
+            {
+                // 既有分类可能来自已改名路径；不要用旧人工值盖掉原始名重新解析的结果。
+                _episode           = null;
+                _episodeEnd        = null;
+                _animeRelativePath = null;
+            }
+
+            InvalidatePreview();
+        }
+    }
+
+    public decimal? Episode
+    {
+        get => _episode;
+        set
+        {
+            if (_episode != value)
+            {
+                _episode = value;
+                InvalidatePreview();
+            }
+        }
+    }
+
+    public decimal? EpisodeEnd
+    {
+        get => _episodeEnd;
+        set
+        {
+            if (_episodeEnd != value)
+            {
+                _episodeEnd = value;
+                InvalidatePreview();
+            }
+        }
+    }
+
+    public string? AnimeRelativePath
+    {
+        get => _animeRelativePath;
+        set
+        {
+            if (_animeRelativePath != value)
+            {
+                _animeRelativePath = value;
+                InvalidatePreview();
+            }
+        }
+    }
+
+    public DownloadFileEditRequest Request => new(Kind, ReidentifyOriginalName, Episode, EpisodeEnd,
+                                                  string.IsNullOrWhiteSpace(AnimeRelativePath)
+                                                      ? null
+                                                      : AnimeRelativePath);
+
+    public   DownloadFilePreview?     Preview        { get; internal set; }
+    internal DownloadFileEditRequest? PreviewRequest { get; set; }
+    public   bool                     CanApply       => Preview is not null && PreviewRequest == Request;
+
+    public void InvalidatePreview()
+    {
+        Preview        = null;
+        PreviewRequest = null;
     }
 }

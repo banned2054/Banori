@@ -1,6 +1,7 @@
 using Banned.AniParser;
 using Banned.AniParser.Models;
 using Banned.AniParser.Models.Enums;
+using MediaManager.Core.Downloads;
 using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
 using MediaManager.Core.Torrents;
@@ -35,7 +36,9 @@ public sealed class DownloadIntakeService(
     SubjectMetadataCache                    subjectCache,
     ISubjectLinkResolver                    subjectLinkResolver,
     TimeProvider                            timeProvider,
-    ILogger<DownloadIntakeService>          logger)
+    ILogger<DownloadIntakeService>          logger,
+    DownloadDirectorySettingsStore?         directorySettingsStore   = null,
+    DownloadFileClassificationPolicy?       fileClassificationPolicy = null)
 {
     /// <summary>所有下载登记的前置门禁：解析 Bangumi 绑定，未绑定返回 null（调用方拒绝下载并要求补 ID）。</summary>
     private const string SubjectUnboundMessage = "未能绑定 Bangumi Subject，请在表单补充 Bangumi ID 后重试。";
@@ -117,9 +120,10 @@ public sealed class DownloadIntakeService(
         var (namingSnapshot, namingIngredients, namingParsed) =
             await BuildNamingAsync(displayName, null, resolvedSource, $"上传种子：{infoHash[..8]}",
                                    uploadedParsed, binding, cancellationToken);
+        var directorySettings = await GetDirectoriesAsync(cancellationToken);
 
-        using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        using var       coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
+        await using var db                = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         if (await DownloadTaskLookups.FindActiveDuplicateIdAsync(db, infoHash, null, cancellationToken) is not null)
             throw new InvalidOperationException("同一资源已有下载任务（可能因更低优先级被替换终止）。");
 
@@ -151,7 +155,10 @@ public sealed class DownloadIntakeService(
                     InfoHash          = infoHash,
                     TorrentFile       = torrentBytes,
                     TorrentUrl        = $"upload://{infoHash}",
-                    SavePath          = BuildSavePath(settings.SavePath, null, namingSnapshot, infoHash),
+                    SavePath          = SelectSavePath(settings.SavePath, torrentBytes, directorySettings),
+                    DownloadRootPath  = settings.SavePath.Trim().TrimEnd('/', '\\'),
+                    MediaDirectory    = directorySettings.MediaDirectory,
+                    SeedDirectory     = directorySettings.SeedDirectory,
                     SiteSource        = resolvedSource,
                     NamingSnapshot    = namingSnapshot,
                     NamingIngredients = namingIngredients,
@@ -164,6 +171,7 @@ public sealed class DownloadIntakeService(
                     Status            = DownloadTaskStatus.Replaced,
                     CreatedAtUtc      = timeProvider.GetUtcNow()
                 };
+                AddOriginalFiles(superseded);
                 db.DownloadTasks.Add(superseded);
                 await db.SaveChangesAsync(cancellationToken);
                 logger.LogInformation("上传种子同集落选，已登记终止记录 {TaskId}（hash {InfoHash}）。",
@@ -180,7 +188,10 @@ public sealed class DownloadIntakeService(
             InfoHash          = infoHash,
             TorrentFile       = torrentBytes,
             TorrentUrl        = $"upload://{infoHash}",
-            SavePath          = BuildSavePath(settings.SavePath, null, namingSnapshot, infoHash),
+            SavePath          = SelectSavePath(settings.SavePath, torrentBytes, directorySettings),
+            DownloadRootPath  = settings.SavePath.Trim().TrimEnd('/', '\\'),
+            MediaDirectory    = directorySettings.MediaDirectory,
+            SeedDirectory     = directorySettings.SeedDirectory,
             SiteSource        = resolvedSource,
             NamingSnapshot    = namingSnapshot,
             NamingIngredients = namingIngredients,
@@ -191,6 +202,7 @@ public sealed class DownloadIntakeService(
             Status            = DownloadTaskStatus.PendingSubmit,
             CreatedAtUtc      = timeProvider.GetUtcNow()
         };
+        AddOriginalFiles(task);
         db.DownloadTasks.Add(task);
         // 登记即替换：同事务只翻转现任状态；下载器远端清理留给协调门内对账。
         if (replacesTaskId is { } incumbentId)
@@ -393,9 +405,10 @@ public sealed class DownloadIntakeService(
         var (namingSnapshot, namingIngredients, namingParsed) =
             await BuildNamingAsync(item.Title, displayName, resolvedSource, $"RSS 下载：{infoHash[..8]}", parsed,
                                    binding, cancellationToken);
+        var directorySettings = await GetDirectoriesAsync(cancellationToken);
 
-        using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        using var       coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
+        await using var db                = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         if (await DownloadTaskLookups.FindActiveDuplicateIdAsync(db, infoHash, null, cancellationToken) is not null ||
             await DownloadTaskLookups.FindCompletedDuplicateIdAsync(db, infoHash, cancellationToken) is not null)
             return (null, null);
@@ -421,7 +434,8 @@ public sealed class DownloadIntakeService(
                 var superseded = BuildTaskRecord(DownloadTaskStatus.Replaced, null,
                                                  arbitration.SupersededByTaskId);
                 superseded.FailedStep = "择优";
-                superseded.Error = "同集候选落选，保留终止记录供查重。";
+                superseded.Error      = "同集候选落选，保留终止记录供查重。";
+                AddOriginalFiles(superseded);
                 db.DownloadTasks.Add(superseded);
                 await db.SaveChangesAsync(cancellationToken);
                 logger.LogInformation("RSS 条目同集落选，已登记终止记录 {TaskId}（hash {InfoHash}）。",
@@ -440,7 +454,10 @@ public sealed class DownloadIntakeService(
                 InfoHash          = infoHash,
                 TorrentFile       = torrentBytes,
                 TorrentUrl        = item.TorrentUri!.AbsoluteUri,
-                SavePath          = BuildSavePath(basePath, null, namingSnapshot, infoHash),
+                SavePath          = SelectSavePath(basePath, torrentBytes, directorySettings),
+                DownloadRootPath  = basePath.Trim().TrimEnd('/', '\\'),
+                MediaDirectory    = directorySettings.MediaDirectory,
+                SeedDirectory     = directorySettings.SeedDirectory,
                 SiteSource        = resolvedSource,
                 NamingSnapshot    = namingSnapshot,
                 NamingIngredients = namingIngredients,
@@ -455,6 +472,7 @@ public sealed class DownloadIntakeService(
         }
 
         var task = BuildTaskRecord(DownloadTaskStatus.PendingSubmit, replacesTaskId, null);
+        AddOriginalFiles(task);
         db.DownloadTasks.Add(task);
         // 登记即替换：同事务只翻转现任状态，低优先任务不再进入提交或继续下载；远端清理交由对账。
         if (replacesTaskId is { } incumbentId)
@@ -480,14 +498,14 @@ public sealed class DownloadIntakeService(
     ///     完成时按快照兜底。成功渲染的那次解析随要素一并返回，供同集裁决复用同一解析口径。
     /// </summary>
     private async Task<(string Snapshot, string? IngredientsJson, ParseResult? Parsed)> BuildNamingAsync(
-        string?      primaryTitle,  string? fallbackTitle, string?           siteSource, string lastResort,
-        ParseResult? primaryParsed, SubjectBinding subject, CancellationToken cancellationToken)
+        string?      primaryTitle,  string?        fallbackTitle, string?           siteSource, string lastResort,
+        ParseResult? primaryParsed, SubjectBinding subject,       CancellationToken cancellationToken)
     {
-        var template = await namingTemplateStore.GetAsync(cancellationToken);
+        var template     = await namingTemplateStore.GetAsync(cancellationToken);
         var fileTemplate = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
-        var metadata = await subjectCache.GetCachedAsync(subject.SubjectId, cancellationToken);
-        var bgmName = metadata?.Name ?? subject.DisplayName;
-        var bgmNameCn = metadata?.NameCn ?? string.Empty;
+        var metadata     = await subjectCache.GetCachedAsync(subject.SubjectId, cancellationToken);
+        var bgmName      = metadata?.Name   ?? subject.DisplayName;
+        var bgmNameCn    = metadata?.NameCn ?? string.Empty;
 
         var attempts = new[]
         {
@@ -503,13 +521,22 @@ public sealed class DownloadIntakeService(
 
             var group = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
             var ingredients = NamingIngredientsComposer.Compose(
-                template, fileTemplate, parsed, episodeText, group, siteSource,
-                subject.SubjectId, bgmName, bgmNameCn, metadata?.Platform ?? string.Empty,
-                metadata?.AirDate);
+                                                                template, fileTemplate, parsed, episodeText, group,
+                                                                siteSource,
+                                                                subject.SubjectId, bgmName, bgmNameCn,
+                                                                metadata?.Platform ?? string.Empty,
+                                                                metadata?.AirDate);
             return (namingPolicy.Create(ingredients), ingredients.ToJson(), parsed);
         }
 
-        return (TruncateSnapshot(primaryTitle) ?? TruncateSnapshot(fallbackTitle) ?? lastResort, null, null);
+        var fallbackIngredients = new TorrentNamingIngredients(template, subject.DisplayName, string.Empty, 1,
+                                                               null, siteSource, FileTemplate : fileTemplate,
+                                                               BangumiId : subject.SubjectId, BangumiName : bgmName,
+                                                               BangumiNameCn : bgmNameCn,
+                                                               BangumiPlatform : metadata?.Platform,
+                                                               BangumiDate : metadata?.AirDate);
+        return (TruncateSnapshot(primaryTitle) ?? TruncateSnapshot(fallbackTitle) ?? lastResort,
+                fallbackIngredients.ToJson(), null);
     }
 
     /// <summary>
@@ -522,7 +549,7 @@ public sealed class DownloadIntakeService(
     {
         var incumbent = await db.DownloadTasks.SingleOrDefaultAsync(value => value.Id == incumbentId,
                                                                     cancellationToken);
-        if (incumbent is null                                         ||
+        if (incumbent is null                                                               ||
             incumbent.Status is DownloadTaskStatus.Completed or DownloadTaskStatus.Replaced ||
             incumbent.ReplacedByTaskId != null)
             return;
@@ -659,20 +686,24 @@ public sealed class DownloadIntakeService(
         // 替换对象在创建与完成两处共用同一规则，见 FindReplacementTargetAsync；
         // 同源占用者（规则裁决）优先，其余情况沿用跨源 Completed 的版本守卫目标。
         var replacesTaskId = arbitrationReplaces ??
-                             await DownloadTaskLookups.FindReplacementTargetAsync(db, item.SubjectId, item.Episode, infoHash, item.Version,
-                                                              cancellationToken);
+                             await DownloadTaskLookups.FindReplacementTargetAsync(db, item.SubjectId, item.Episode,
+                                 infoHash, item.Version,
+                                 cancellationToken);
 
+        var settings          = await qbittorrentSettings.GetAsync(cancellationToken);
+        var directorySettings = await GetDirectoriesAsync(cancellationToken);
         var task = new DownloadTask
         {
-            Id          = Guid.NewGuid(),
-            FeedItemId  = item.Id,
-            SubjectId   = item.SubjectId,
-            InfoHash    = infoHash,
-            TorrentFile = torrentBytes,
-            TorrentUrl  = item.TorrentUrl!,
-            SavePath = BuildSavePath((await qbittorrentSettings.GetAsync(cancellationToken)).SavePath,
-                                     item.Subject?.NameCn ?? item.Subject?.Name,
-                                     item.NamingPreview!, infoHash),
+            Id                = Guid.NewGuid(),
+            FeedItemId        = item.Id,
+            SubjectId         = item.SubjectId,
+            InfoHash          = infoHash,
+            TorrentFile       = torrentBytes,
+            TorrentUrl        = item.TorrentUrl!,
+            SavePath          = SelectSavePath(settings.SavePath, torrentBytes, directorySettings),
+            DownloadRootPath  = settings.SavePath.Trim().TrimEnd('/', '\\'),
+            MediaDirectory    = directorySettings.MediaDirectory,
+            SeedDirectory     = directorySettings.SeedDirectory,
             SiteSource        = resolvedSource,
             NamingSnapshot    = item.NamingPreview!,
             NamingIngredients = item.NamingIngredients,
@@ -682,6 +713,7 @@ public sealed class DownloadIntakeService(
             CreatedAtUtc      = timeProvider.GetUtcNow(),
             ReplacesTaskId    = replacesTaskId
         };
+        AddOriginalFiles(task);
         db.DownloadTasks.Add(task);
         // 订阅事务由调用方提交；此处仅在同一 DbContext 中翻转现任状态，保持原子落库，远端清理由对账承接。
         if (replacesTaskId is { } incumbentId)
@@ -846,16 +878,46 @@ public sealed class DownloadIntakeService(
                TorrentSiteSource.Sanitize(manualSource);
     }
 
-    private string BuildSavePath(string basePath, string? subjectName, string namingPreview, string infoHash)
+    private Task<DownloadDirectorySettings> GetDirectoriesAsync(CancellationToken cancellationToken)
     {
-        // 基础路径按用户输入原样使用（可能是 Windows 或 Linux 路径），只净化追加的目录段。
-        var directory      = basePath.Trim().TrimEnd('/', '\\');
-        var subjectSegment = DownloadPathNamePolicy.SanitizePathSegment(subjectName, 100);
-        var namingSegment  = DownloadPathNamePolicy.SanitizePathSegment(namingPreview);
-        var hashSegment    = infoHash.Length >= 8 ? infoHash[..8] : infoHash;
+        return directorySettingsStore is null
+            ? Task.FromResult(DownloadDirectorySettingsStore.Normalize(null, null))
+            : directorySettingsStore.GetAsync(cancellationToken);
+    }
 
-        var middle = string.IsNullOrWhiteSpace(subjectSegment) ? string.Empty : $"/{subjectSegment}";
-        return $"{directory}{middle}/{namingSegment}-{hashSegment}";
+    private string SelectSavePath(string basePath, byte[] torrentBytes, DownloadDirectorySettings directories)
+    {
+        var root = basePath.Trim().Replace('\\', '/').TrimEnd('/');
+        if (!TorrentFileManifestParser.TryParse(torrentBytes, out var manifest))
+            throw new InvalidOperationException("无法读取种子文件清单，不能安全决定下载目录。");
+        var policy = fileClassificationPolicy ?? new DownloadFileClassificationPolicy(aniParser);
+        var hasSeed =
+            manifest.Files.Any(file => policy.Classify(file.Path).Kind == Core.Downloads.DownloadFileKind.Seed);
+        return hasSeed ? root : DownloadPathNamePolicy.JoinSavePath(root, directories.MediaDirectory);
+    }
+
+    private void AddOriginalFiles(DownloadTask task)
+    {
+        if (!TorrentFileManifestParser.TryParse(task.TorrentFile, out var manifest))
+            throw new InvalidOperationException("无法读取种子文件清单，不能记录原始路径。");
+        var policy = fileClassificationPolicy ?? new DownloadFileClassificationPolicy(aniParser);
+        foreach (var file in manifest.Files)
+        {
+            var classification = policy.Classify(file.Path);
+            var extension      = Path.GetExtension(file.Path);
+            var subtitle = extension.Equals(".ass", StringComparison.OrdinalIgnoreCase) ||
+                           extension.Equals(".ssa", StringComparison.OrdinalIgnoreCase) ||
+                           extension.Equals(".srt", StringComparison.OrdinalIgnoreCase) ||
+                           extension.Equals(".sup", StringComparison.OrdinalIgnoreCase);
+            task.Files.Add(new DownloadTaskFile
+            {
+                Id = Guid.NewGuid(), DownloadTaskId = task.Id, FileIndex = file.Index,
+                OriginalRelativePath = file.Path, CurrentRelativePath = file.Path, Size = file.Length,
+                Kind = classification.Kind == Core.Downloads.DownloadFileKind.Seed ? DownloadFileKind.Seed :
+                    subtitle ? DownloadFileKind.Subtitle : DownloadFileKind.Anime,
+                ClassificationReason = classification.Reason, UpdatedAtUtc = timeProvider.GetUtcNow()
+            });
+        }
     }
 
     internal static void AssertDownloadable(FeedItem item)
@@ -872,8 +934,10 @@ public sealed class DownloadIntakeService(
 
         if (string.IsNullOrWhiteSpace(item.NamingPreview)) throw new InvalidOperationException("该条目缺少命名预览，无法创建下载任务。");
     }
+
     /// <summary>已绑定的 Bangumi Subject：Id 与命名用展示名（中文名非空用之，否则原名）。</summary>
     private sealed record SubjectBinding(int SubjectId, string DisplayName);
+
     /// <summary>
     ///     统一同集裁决的结论：登记（可带被顶替的占用者）或跳过（附原因，含占用者命名）；
     ///     SupersededByTaskId 为落选时胜出的现任任务，供调用方落查重用的终止记录。

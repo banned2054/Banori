@@ -11,24 +11,24 @@ namespace MediaManager.Features.Downloads;
 public static class NamingIngredientsComposer
 {
     public static TorrentNamingIngredients Compose(
-        string template, string fileTemplate, ParseResult parsed, string episodeText, string preference,
-        string? siteSource, int bangumiId, string bangumiName, string bangumiNameCn,
-        string bangumiPlatform, string? bangumiDate)
+        string  template,        string  fileTemplate, ParseResult parsed,      string episodeText, string preference,
+        string? siteSource,      int     bangumiId,    string      bangumiName, string bangumiNameCn,
+        string  bangumiPlatform, string? bangumiDate)
     {
         var displayName = string.IsNullOrWhiteSpace(bangumiNameCn) ? bangumiName : bangumiNameCn;
         return new TorrentNamingIngredients(template, displayName, episodeText,
                                             parsed.Version, preference, siteSource,
                                             parsed.Language.ToString(), parsed.Resolution.ToString(),
-                                            FileTemplate: fileTemplate,
-                                            AniMediaType: parsed.MediaType.ToString(),
-                                            AniTitle: parsed.Title,
-                                            AniGroup: parsed.Group, AniGroupType: parsed.GroupType.ToString(),
-                                            AniSubtitleType: parsed.SubtitleType.ToString(),
-                                            AniSource: parsed.Source.ToString(), AniWebSource: parsed.WebSource,
-                                            AniResolution: parsed.Resolution.ToString(),
-                                            AniVideoCodec: parsed.VideoCodec, AniAudioCodec: parsed.AudioCodec,
-                                            AniColorBitDepth: parsed.ColorBitDepth, BangumiId: bangumiId,
-                                            BangumiName: bangumiName, BangumiNameCn: bangumiNameCn,
-                                            BangumiPlatform: bangumiPlatform, BangumiDate: bangumiDate);
+                                            fileTemplate,
+                                            parsed.MediaType.ToString(),
+                                            parsed.Title,
+                                            parsed.Group, parsed.GroupType.ToString(),
+                                            parsed.SubtitleType.ToString(),
+                                            parsed.Source.ToString(), parsed.WebSource,
+                                            parsed.Resolution.ToString(),
+                                            parsed.VideoCodec, parsed.AudioCodec,
+                                            parsed.ColorBitDepth, bangumiId,
+                                            bangumiName, bangumiNameCn,
+                                            bangumiPlatform, bangumiDate);
     }
 }

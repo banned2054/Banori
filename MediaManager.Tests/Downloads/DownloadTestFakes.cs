@@ -1,11 +1,11 @@
-using Microsoft.Extensions.Hosting;
 using Banned.Qbittorrent.Exceptions;
 using MediaManager.Core.Torrents;
-using MediaManager.Features.Settings;
 using MediaManager.Features.Anime;
+using MediaManager.Features.Settings;
 using MediaManager.Features.Subscriptions;
 using MediaManager.Integrations;
 using MediaManager.Integrations.Qbittorrent;
+using Microsoft.Extensions.Hosting;
 using System.Text;
 
 namespace MediaManager.Tests.Downloads;
@@ -59,6 +59,14 @@ public sealed class FakeTorrentStore
     public Dictionary<string, List<string>>    Files    { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string>                     Paused   { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    public Dictionary<string, List<TorrentFileSnapshot>> FileIdentities { get; } =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    public List<(string Hash, string SavePath)> SetLocationCalls { get; } = [];
+    public bool                                 DeferLocation    { get; set; }
+    public Dictionary<string, string>           PendingLocations { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Action?                              AfterRenameFile  { get; set; }
+
     public List<(byte[] Bytes, string SavePath, IReadOnlyList<string> Tags, string? Rename)> AddCalls { get; } = [];
     public List<(string Hash, string Name)> RenameCalls { get; } = [];
     public List<(string Hash, string OldPath, string NewPath)> RenameFileCalls { get; } = [];
@@ -67,6 +75,13 @@ public sealed class FakeTorrentStore
     public List<string> ResumeCalls { get; } = [];
     public List<string> PauseCalls { get; } = [];
     public List<(string Hash, bool DeleteFiles)> DeleteCalls { get; } = [];
+
+    public void CompleteMoves()
+    {
+        foreach (var (hash, path) in PendingLocations)
+            Torrents[hash] = Torrents[hash] with { SavePath = path, IsMoving = false };
+        PendingLocations.Clear();
+    }
 
     public void AddTorrent(string hash, string name, QbittorrentTorrentCategory category, double progress,
                            string savePath, IReadOnlyList<string>? fileNames = null,
@@ -150,9 +165,9 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     {
         if (BeforeFindTorrentsAsync is not null) await BeforeFindTorrentsAsync(infoHashes);
         return infoHashes
-               .Where(hash => store.Torrents.ContainsKey(hash))
-               .Select(SnapshotFor)
-               .ToList();
+              .Where(hash => store.Torrents.ContainsKey(hash))
+              .Select(SnapshotFor)
+              .ToList();
     }
 
 
@@ -163,8 +178,8 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
                                                                     .Where(snapshot => tag is null ||
                                                                                SnapshotFor(snapshot.Hash)
                                                                                   .Tags.Contains(tag,
-                                                                                            StringComparer
-                                                                                               .OrdinalIgnoreCase))
+                                                                                       StringComparer
+                                                                                          .OrdinalIgnoreCase))
                                                                     .Select(snapshot => SnapshotFor(snapshot.Hash))
                                                                     .ToList());
     }
@@ -186,6 +201,34 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         return Task.FromResult<IReadOnlyList<string>>(store.Files.TryGetValue(infoHash, out var names) ? names : []);
     }
 
+
+    public Task<IReadOnlyList<TorrentFileSnapshot>> ListFilesAsync(string            infoHash,
+                                                                   CancellationToken cancellationToken = default)
+    {
+        if (store.FileIdentities.TryGetValue(infoHash, out var files))
+            return Task.FromResult<IReadOnlyList<TorrentFileSnapshot>>(files.ToList());
+        return Task.FromResult<IReadOnlyList<TorrentFileSnapshot>>(store.Files.TryGetValue(infoHash, out var names)
+                                                                       ? names.Select((name, index) =>
+                                                                           new TorrentFileSnapshot(index, name,
+                                                                               1024)).ToList()
+                                                                       : []);
+    }
+
+    public Task SetLocationAsync(string infoHash, string savePath, CancellationToken cancellationToken = default)
+    {
+        store.SetLocationCalls.Add((infoHash, savePath));
+        if (store.DeferLocation)
+        {
+            store.PendingLocations[infoHash] = savePath;
+            store.Torrents[infoHash]         = store.Torrents[infoHash] with { IsMoving = true };
+        }
+        else
+        {
+            store.Torrents[infoHash] = store.Torrents[infoHash] with { SavePath = savePath, IsMoving = false };
+        }
+
+        return Task.CompletedTask;
+    }
 
     public Task PauseAsync(string infoHash, CancellationToken cancellationToken = default)
     {
@@ -216,7 +259,10 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         store.RenameFileCalls.Add((infoHash, oldPath, newPath));
         if (store.Files.TryGetValue(infoHash, out var fileNames))
             store.Files[infoHash] = fileNames.Select(name => name == oldPath ? newPath : name).ToList();
-
+        if (store.FileIdentities.TryGetValue(infoHash, out var files))
+            store.FileIdentities[infoHash] =
+                files.Select(file => file.Path == oldPath ? file with { Path = newPath } : file).ToList();
+        store.AfterRenameFile?.Invoke();
         return Task.CompletedTask;
     }
 
@@ -392,5 +438,7 @@ public sealed class TestHostApplicationLifetime : IHostApplicationLifetime
     public CancellationToken ApplicationStopping => CancellationToken.None;
     public CancellationToken ApplicationStopped  => CancellationToken.None;
 
-    public void StopApplication() { }
+    public void StopApplication()
+    {
+    }
 }

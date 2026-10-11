@@ -12,6 +12,7 @@ namespace MediaManager.Data.Migrations
     [DbContext(typeof(ApplicationDbContext))]
     partial class ApplicationDbContextModelSnapshot : ModelSnapshot
     {
+        /// <inheritdoc />
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
@@ -178,6 +179,10 @@ namespace MediaManager.Data.Migrations
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("DownloadRootPath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
                     b.Property<decimal?>("Episode")
                         .HasColumnType("TEXT");
 
@@ -203,12 +208,20 @@ namespace MediaManager.Data.Migrations
                     b.Property<DateTimeOffset?>("LastSyncedAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("MediaDirectory")
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("NamingIngredients")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("NamingSnapshot")
                         .IsRequired()
                         .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PendingSavePath")
+                        .HasMaxLength(1000)
                         .HasColumnType("TEXT");
 
                     b.Property<double?>("Progress")
@@ -222,6 +235,10 @@ namespace MediaManager.Data.Migrations
 
                     b.Property<string>("SavePath")
                         .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SeedDirectory")
                         .HasMaxLength(1000)
                         .HasColumnType("TEXT");
 
@@ -264,6 +281,70 @@ namespace MediaManager.Data.Migrations
                     b.HasIndex("SubjectId", "Episode", "Status");
 
                     b.ToTable("DownloadTasks", (string)null);
+                });
+
+            modelBuilder.Entity("MediaManager.Data.DownloadTaskFile", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AnimeRelativePathOverride")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ClassificationReason")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CurrentRelativePath")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("DownloadTaskId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal?>("EpisodeEndOverride")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal?>("EpisodeNumberOverride")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("FileIndex")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsManualOverride")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("OriginalRelativePath")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PendingRenameFrom")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PendingRenameTo")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Size")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DownloadTaskId", "FileIndex")
+                        .IsUnique();
+
+                    b.ToTable("DownloadTaskFiles", (string)null);
                 });
 
             modelBuilder.Entity("MediaManager.Data.FeedItem", b =>
@@ -849,6 +930,17 @@ namespace MediaManager.Data.Migrations
                     b.Navigation("Subject");
                 });
 
+            modelBuilder.Entity("MediaManager.Data.DownloadTaskFile", b =>
+                {
+                    b.HasOne("MediaManager.Data.DownloadTask", "DownloadTask")
+                        .WithMany("Files")
+                        .HasForeignKey("DownloadTaskId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("DownloadTask");
+                });
+
             modelBuilder.Entity("MediaManager.Data.FeedItem", b =>
                 {
                     b.HasOne("MediaManager.Data.MediaSubject", "Subject")
@@ -963,7 +1055,7 @@ namespace MediaManager.Data.Migrations
 
                             b1.HasKey("IdentityUserPasskeyCredentialId");
 
-                            b1.ToTable("AspNetUserPasskeys", (string)null);
+                            b1.ToTable("AspNetUserPasskeys");
 
                             b1
                                 .ToJson("Data")
@@ -999,6 +1091,11 @@ namespace MediaManager.Data.Migrations
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("MediaManager.Data.DownloadTask", b =>
+                {
+                    b.Navigation("Files");
                 });
 
             modelBuilder.Entity("MediaManager.Data.MediaSubject", b =>

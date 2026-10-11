@@ -180,12 +180,15 @@ public sealed class FeedItemEvaluator(
         // 命名模板的 {source} 令牌取订阅 feed 的来源站点（mikan/anibt 等）。
         var siteSource     = TorrentSiteSource.FromHost(feedHost);
         var namingTemplate = await namingTemplateStore.GetAsync(cancellationToken);
-        var fileTemplate = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
+        var fileTemplate   = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
         // 预览与命名要素同源生成，且分别快照 AniParser 与 Bangumi 字段。
         var ingredients = NamingIngredientsComposer.Compose(
-            namingTemplate, fileTemplate, parsed,
-            ReleaseNamePreviewPolicy.FormatEpisodeText(correction.Episode), preference, siteSource,
-            subject.Id, subject.Name, subject.NameCn, subject.Platform, subject.AirDate);
+                                                            namingTemplate, fileTemplate, parsed,
+                                                            ReleaseNamePreviewPolicy
+                                                               .FormatEpisodeText(correction.Episode), preference,
+                                                            siteSource,
+                                                            subject.Id, subject.Name, subject.NameCn, subject.Platform,
+                                                            subject.AirDate);
         var namingPreview = namingPolicy.Create(ingredients);
 
         await SaveAnalysisAsync(itemId,

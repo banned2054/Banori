@@ -20,7 +20,11 @@ public sealed record TorrentSnapshot(
     double                     Progress,
     long                       TotalSize,
     string                     SavePath,
-    IReadOnlyList<string>      Tags);
+    IReadOnlyList<string>      Tags,
+    bool                       IsMoving = false);
+
+/// <summary>qB 文件身份；Index 是协议返回的稳定 index，不是列表顺序。</summary>
+public sealed record TorrentFileSnapshot(int Index, string Path, long Size);
 
 /// <summary>
 ///     一个已登录的 qBittorrent 会话。实现负责协议细节（临时文件上传、Hash 规范化、异常翻译）；
@@ -48,6 +52,19 @@ public interface IQbittorrentSession : IAsyncDisposable
 
     /// <summary>列出种子内文件名，用于完成改名时保留原扩展名。</summary>
     Task<IReadOnlyList<string>> ListFileNamesAsync(string infoHash, CancellationToken cancellationToken = default);
+
+    /// <summary>读取可靠的文件 index/path/size；旧会话必须显式支持，禁止用列表位置伪造身份。</summary>
+    Task<IReadOnlyList<TorrentFileSnapshot>> ListFilesAsync(string            infoHash,
+                                                            CancellationToken cancellationToken = default)
+    {
+        throw new NotSupportedException("会话不支持文件身份列表。");
+    }
+
+    /// <summary>请求移动整个种子的保存目录；调用成功不代表移动完成，应随后确认种子快照。</summary>
+    Task SetLocationAsync(string infoHash, string savePath, CancellationToken cancellationToken = default)
+    {
+        throw new NotSupportedException("会话不支持移动保存目录。");
+    }
 
     Task PauseAsync(string infoHash, CancellationToken cancellationToken = default);
 

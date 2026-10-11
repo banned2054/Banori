@@ -9,6 +9,7 @@
 
 @inject ManageQbittorrentSettings      DownloaderSettings
 @inject NamingTemplateStore            NamingTemplates
+@inject DownloadDirectorySettingsStore DirectorySettings
 @inject ManageTelegramSettings         TelegramSettings
 @inject ManageGotifySettings           GotifySettings
 @inject ProxyService                   ProxyService
@@ -76,23 +77,39 @@ else
 						<ValidationMessage For="() => _vm.Downloader.SavePath"/>
 					</div>
 
-						<div class="mb-3">
-							<label for="downloader-naming-template" class="form-label">qB 种子名称模板</label>
-							<InputText id="downloader-naming-template" class="form-control" placeholder="@_vm.DefaultNamingTemplate" @bind-Value="_vm.Downloader.NamingTemplate"/>
-							<ValidationMessage For="() => _vm.Downloader.NamingTemplate"/>
-							<div class="form-text">
-								控制 qBittorrent 中的种子名和保存目录名。兼容旧变量 {title}、{episode}、{version}、{group}、{source}。来源明确变量：AniParser 用 {ani.mediaType}、{ani.title}、{ani.episode}、{ani.version}、{ani.group}、{ani.groupType}、{ani.language}、{ani.subtitleType}、{ani.source}、{ani.webSource}、{ani.resolution}、{ani.videoCodec}、{ani.audioCodec}、{ani.colorBitDepth}；Bangumi 用 {bgm.id}、{bgm.name}、{bgm.nameCn}、{bgm.platform}、{bgm.date}；站点用 {site.source}。留空恢复默认。
+					<div class="mb-3">
+						<div class="row">
+							<div class="col-md-6 mb-3">
+								<label for="downloader-media-directory" class="form-label">媒体目录（相对路径）</label>
+								<InputText id="downloader-media-directory" class="form-control" placeholder="Media/Anime" @bind-Value="_vm.Downloader.MediaDirectory"/>
+								<ValidationMessage For="() => _vm.Downloader.MediaDirectory"/>
+							</div>
+							<div class="col-md-6 mb-3">
+								<label for="downloader-seed-directory" class="form-label">做种目录（相对路径）</label>
+								<InputText id="downloader-seed-directory" class="form-control" placeholder="Seed" @bind-Value="_vm.Downloader.SeedDirectory"/>
+								<ValidationMessage For="() => _vm.Downloader.SeedDirectory"/>
 							</div>
 						</div>
+						<p class="form-text">两个目录均相对于下载器保存路径；留空使用 Media/Anime 和 Seed。不能使用绝对路径、盘符、..，也不能相同或互为父子目录。只影响新任务，已有任务沿用创建时的目录快照。</p>
+					</div>
 
-						<div class="mb-3">
-							<label for="downloader-file-naming-template" class="form-label">种子内文件名称模板</label>
-							<InputText id="downloader-file-naming-template" class="form-control" placeholder="@_vm.DefaultFileNamingTemplate" @bind-Value="_vm.Downloader.FileNamingTemplate"/>
-							<ValidationMessage For="() => _vm.Downloader.FileNamingTemplate"/>
-							<div class="form-text">
-								只控制下载完成后视频、字幕文件的名称，不影响种子名或保存目录。可用与种子模板相同的 AniParser、Bangumi 和站点变量；{ani.episode} 对每个文件按其实际解析集数重新渲染。留空恢复默认。
-							</div>
+					<div class="mb-3">
+						<label for="downloader-naming-template" class="form-label">qB 种子名称模板</label>
+						<InputText id="downloader-naming-template" class="form-control" placeholder="@_vm.DefaultNamingTemplate" @bind-Value="_vm.Downloader.NamingTemplate"/>
+						<ValidationMessage For="() => _vm.Downloader.NamingTemplate"/>
+						<div class="form-text">
+							控制 qBittorrent 中的种子名，不参与保存目录与文件名。兼容旧变量 {title}、{episode}、{version}、{group}、{source}。来源明确变量：AniParser 用 {ani.mediaType}、{ani.title}、{ani.episode}、{ani.version}、{ani.group}、{ani.groupType}、{ani.language}、{ani.subtitleType}、{ani.source}、{ani.webSource}、{ani.resolution}、{ani.videoCodec}、{ani.audioCodec}、{ani.colorBitDepth}；Bangumi 用 {bgm.id}、{bgm.name}、{bgm.nameCn}、{bgm.platform}、{bgm.date}；站点用 {site.source}。支持格式说明符，例如 {ani.episode:ee}（两位集数）、{ani.episode:eee}（三位集数）、{bgm.date:yyyy.MM}（年月）。留空恢复默认。
 						</div>
+					</div>
+
+					<div class="mb-3">
+						<label for="downloader-file-naming-template" class="form-label">种子内文件名称模板</label>
+						<InputText id="downloader-file-naming-template" class="form-control" placeholder="@_vm.DefaultFileNamingTemplate" @bind-Value="_vm.Downloader.FileNamingTemplate"/>
+						<ValidationMessage For="() => _vm.Downloader.FileNamingTemplate"/>
+						<div class="form-text">
+							只控制下载完成后视频、字幕文件的名称，不影响种子名或保存目录。可用与种子模板相同的 AniParser、Bangumi 和站点变量；模板中书写的 / 作为子目录分隔符（如 [{bgm.date:yyyy.MM}]{bgm.nameCn}/S{ani.episode:ee}），令牌取值里的 / 会被转成空格、不会意外建目录；{ani.episode} 对每个文件按其实际解析集数重新渲染，也支持 {ani.episode:ee} 等格式说明符。留空恢复默认。
+						</div>
+					</div>
 
 
 					<div class="mb-3">
@@ -310,7 +327,7 @@ else
 
 	protected override void OnInitialized()
 	{
-		_vm = new SettingsPageViewModel(DownloaderSettings, NamingTemplates, TelegramSettings, GotifySettings,
+		_vm = new SettingsPageViewModel(DownloaderSettings, NamingTemplates, DirectorySettings, TelegramSettings, GotifySettings,
 		                                ProxyService, Logger);
 	}
 
