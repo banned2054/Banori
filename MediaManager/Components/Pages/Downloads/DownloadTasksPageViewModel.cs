@@ -9,9 +9,6 @@ public sealed class DownloadTasksPageViewModel(
     DownloadTaskQueries                 taskQueries,
     ILogger<DownloadTasksPageViewModel> logger)
 {
-    /// <summary>上传种子的大小上限：.torrent 通常远小于该值，超限基本说明选错了文件。</summary>
-    public const long MaxTorrentUploadBytes = 10 * 1024 * 1024;
-
     private readonly HashSet<Guid> _selectedIds = [];
     private Guid[] _bulkConfirmationIds = [];
     private long _bulkRequestId;
@@ -277,7 +274,7 @@ public sealed class DownloadTasksPageViewModel(
             return;
         }
 
-        if (buffer.Length > MaxTorrentUploadBytes)
+        if (buffer.Length > DownloadIntakeService.MaxTorrentUploadBytes)
         {
             NoteFailure("种子文件超过 10 MB，已拒绝。");
             return;

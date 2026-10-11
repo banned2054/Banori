@@ -1,4 +1,5 @@
 using Banned.AniParser;
+using Microsoft.Extensions.Hosting;
 using MediaManager.Core.Rules;
 using MediaManager.Core.Rules.Selection;
 using MediaManager.Core.Subjects;
@@ -888,6 +889,7 @@ public sealed class SubscriptionRefreshTests
         services.AddScoped<DownloadIntakeService>();
         services.AddSingleton<SelectionGroupGate>();
         services.AddSingleton<DownloadCoordinationGate>();
+        services.AddSingleton<IHostApplicationLifetime, TestHostApplicationLifetime>();
         services.AddScoped<CandidateSelectionService>();
         services.AddScoped<SubscriptionService>();
         services.AddScoped<MikanRefreshService>();

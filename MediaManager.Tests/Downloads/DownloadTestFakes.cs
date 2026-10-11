@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Hosting;
 using Banned.Qbittorrent.Exceptions;
 using MediaManager.Core.Torrents;
 using MediaManager.Features.Settings;
@@ -382,4 +383,14 @@ public sealed class NullSubjectLinkResolver : ISubjectLinkResolver
     {
         throw new InvalidOperationException("该测试不应解析条目链接。");
     }
+}
+
+/// <summary>测试用应用生命周期：供依赖 IHostApplicationLifetime 的业务服务在测试中构造。</summary>
+public sealed class TestHostApplicationLifetime : IHostApplicationLifetime
+{
+    public CancellationToken ApplicationStarted  => CancellationToken.None;
+    public CancellationToken ApplicationStopping => CancellationToken.None;
+    public CancellationToken ApplicationStopped  => CancellationToken.None;
+
+    public void StopApplication() { }
 }

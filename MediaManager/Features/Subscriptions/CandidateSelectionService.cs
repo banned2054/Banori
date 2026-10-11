@@ -50,6 +50,7 @@ public sealed class CandidateSelectionService(
     CandidateEligibilityPolicy              eligibilityPolicy,
     CandidateRankingPolicy                  rankingPolicy,
     ManageQbittorrentSettings               qbittorrentSettings,
+    IHostApplicationLifetime                hostLifetime,
     DownloadIntakeService                   intakeService,
     TimeProvider                            timeProvider,
     ILogger<CandidateSelectionService>      logger)
@@ -227,6 +228,23 @@ public sealed class CandidateSelectionService(
         await SelectAndRegisterAsync(groupKeys, false, cancellationToken);
         logger.LogInformation("规则版本变更后整库重选完成，共处理 {Count} 个同集组。", groupKeys.Count);
         return groupKeys.Count;
+    }
+
+    /// <summary>
+    ///     规则保存成功后的整库重选编排：挂应用停机令牌执行，页面离开不中断重选；停机中断时
+    ///     已处理组保持生效，剩余组由恢复扫描按新版本补齐。返回重选组数与是否因停机中断。
+    /// </summary>
+    public async Task<(int ReselectedGroups, bool InterruptedByShutdown)> ReselectAfterRuleSaveAsync()
+    {
+        try
+        {
+            return (await ReselectAllGroupsAsync(hostLifetime.ApplicationStopping), false);
+        }
+        catch (OperationCanceledException) when (hostLifetime.ApplicationStopping.IsCancellationRequested)
+        {
+            logger.LogWarning("规则保存后的整库重选因应用停机中断，剩余组由恢复扫描按新版本补齐。");
+            return (0, true);
+        }
     }
 
     /// <summary>

@@ -398,7 +398,7 @@ else
 		try
 		{
 			await using var stream = file.OpenReadStream(
-			                                             DownloadTasksPageViewModel.MaxTorrentUploadBytes + 1024 * 1024);
+			                                             DownloadIntakeService.MaxTorrentUploadBytes + 1024 * 1024);
 			await _vm.UploadTorrentAsync(stream, _cts.Token);
 		}
 		catch (OperationCanceledException) when (_cts.IsCancellationRequested)

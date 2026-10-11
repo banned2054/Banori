@@ -9,7 +9,6 @@
 
 @inject ManageSelectionRuleSettings          RuleSettings
 @inject CandidateSelectionService            SelectionService
-@inject IHostApplicationLifetime             HostLifetime
 @inject ILogger<SelectionRulesPageViewModel> Logger
 
 <PageTitle>择优规则 - MediaManager</PageTitle>
@@ -305,7 +304,7 @@ else
 
 	protected override void OnInitialized()
 	{
-		_vm = new SelectionRulesPageViewModel(RuleSettings, SelectionService, HostLifetime, Logger);
+		_vm = new SelectionRulesPageViewModel(RuleSettings, SelectionService, Logger);
 	}
 
 	protected override Task OnInitializedAsync()

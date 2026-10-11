@@ -40,6 +40,9 @@ public sealed class DownloadIntakeService(
     /// <summary>所有下载登记的前置门禁：解析 Bangumi 绑定，未绑定返回 null（调用方拒绝下载并要求补 ID）。</summary>
     private const string SubjectUnboundMessage = "未能绑定 Bangumi Subject，请在表单补充 Bangumi ID 后重试。";
 
+    /// <summary>上传种子的大小上限：.torrent 通常远小于该值，超限基本说明选错了文件。服务端入口始终校验。</summary>
+    public const long MaxTorrentUploadBytes = 10 * 1024 * 1024;
+
     public async Task<Guid> CreateForFeedItemAsync(Guid itemId, CancellationToken cancellationToken = default)
     {
         var settings = await qbittorrentSettings.GetAsync(cancellationToken);
@@ -91,6 +94,9 @@ public sealed class DownloadIntakeService(
                                                   CancellationToken cancellationToken = default)
     {
         if (torrentBytes.Length == 0) throw new InvalidOperationException("所选文件为空，请重新选择。");
+
+        if (torrentBytes.Length > MaxTorrentUploadBytes)
+            throw new InvalidOperationException("种子文件超过 10 MB，已拒绝。");
 
         var settings = await qbittorrentSettings.GetAsync(cancellationToken);
         if (!settings.Enabled || !settings.IsConfigured)

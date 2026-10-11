@@ -47,7 +47,6 @@ public sealed record CombinedRuleDraftEntry(string? Group, EnumLanguage? Languag
 public sealed class SelectionRulesPageViewModel(
     ManageSelectionRuleSettings          ruleSettings,
     CandidateSelectionService            selectionService,
-    IHostApplicationLifetime             hostLifetime,
     ILogger<SelectionRulesPageViewModel> logger)
 {
     public SelectionRuleDraft Draft { get; } = new();
@@ -96,21 +95,17 @@ public sealed class SelectionRulesPageViewModel(
         {
             var result = await ruleSettings.SaveAsync(config, cancellationToken);
             ApplyConfig(result.Config);
-            if (result.Changed)
-                // 重选挂应用停机令牌而非页面令牌：规则已落库，页面离开不应中断重选留下
-                // 半新半旧的选择结果；只有应用停机能打断，中断部分由恢复扫描按新版本补齐。
-                try
-                {
-                    var reselected = await selectionService.ReselectAllGroupsAsync(hostLifetime.ApplicationStopping);
-                    StatusMessage = $"规则已保存为版本 {result.Config.Version}，已重选 {reselected} 个同集组";
-                }
-                catch (OperationCanceledException) when (hostLifetime.ApplicationStopping.IsCancellationRequested)
-                {
-                    StatusMessage =
-                        $"规则已保存为版本 {result.Config.Version}，重选因应用停机中断，已处理部分生效，剩余由恢复扫描补齐。";
-                }
-            else
+            if (!result.Changed)
+            {
                 StatusMessage = $"规则内容未变化，版本保持 {result.Config.Version}";
+                return;
+            }
+
+            // 持久化成功后的重选编排（含取消边界）在业务服务内：页面离开不中断，停机中断由恢复扫描补齐。
+            var (reselected, interrupted) = await selectionService.ReselectAfterRuleSaveAsync();
+            StatusMessage = interrupted
+                ? $"规则已保存为版本 {result.Config.Version}，重选因应用停机中断，已处理部分生效，剩余由恢复扫描补齐。"
+                : $"规则已保存为版本 {result.Config.Version}，已重选 {reselected} 个同集组";
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

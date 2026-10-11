@@ -234,6 +234,7 @@ public sealed class SelectionRulesPageViewModelTests
         var directory = Directory.CreateTempSubdirectory("MediaManager.P4.RulesPage.Tests.");
         var timestamp = new DateTimeOffset(2026, 9, 27, 4, 0, 0, TimeSpan.Zero);
         var services  = new ServiceCollection();
+        var lifetime = new FakeHostApplicationLifetime();
         services.AddLogging();
         services.AddDbContextFactory<ApplicationDbContext>(options =>
                                                                options
@@ -269,6 +270,7 @@ public sealed class SelectionRulesPageViewModelTests
         services.AddScoped<ISelectionRuleProvider>(provider =>
                                                        provider.GetRequiredService<SettingsBackedRuleProvider>());
         services.AddSingleton<SelectionGroupGate>();
+        services.AddSingleton<IHostApplicationLifetime>(lifetime);
         services.AddScoped<CandidateSelectionService>();
         // 与应用及订阅/设置测试保持一致的 Identity 模型配置：Identity 服务注册影响
         // ApplicationDbContext 模型缓存的行为，缺注册会与先构建模型的测试产生顺序依赖。
@@ -288,7 +290,7 @@ public sealed class SelectionRulesPageViewModelTests
             await db.SaveChangesAsync();
         }
 
-        return new SelectionRulesHarness(directory, timestamp, provider);
+        return new SelectionRulesHarness(directory, timestamp, provider, lifetime);
     }
 
     /// <summary>测试用规则提供者：从规则设置服务读取当前生效配置，保存后立即生效。</summary>
@@ -331,14 +333,15 @@ public sealed class SelectionRulesPageViewModelTests
     private sealed class SelectionRulesHarness(
         DirectoryInfo   directory,
         DateTimeOffset  timestamp,
-        ServiceProvider provider) : IDisposable
+        ServiceProvider provider,
+        FakeHostApplicationLifetime lifetime) : IDisposable
     {
         public DirectoryInfo Directory { get; } = directory;
 
         public DateTimeOffset Timestamp { get; } = timestamp;
 
-        /// <summary>测试用应用生命周期：控制规则保存后重选的停机令牌。</summary>
-        public FakeHostApplicationLifetime Lifetime { get; } = new();
+        /// <summary>测试用应用生命周期：控制规则保存后重选的停机令牌；与 DI 注册是同一实例。</summary>
+        public FakeHostApplicationLifetime Lifetime { get; } = lifetime;
 
         public void Dispose()
         {
@@ -362,7 +365,7 @@ public sealed class SelectionRulesPageViewModelTests
             return new
                 SelectionRulesPageViewModel(scope.ServiceProvider.GetRequiredService<ManageSelectionRuleSettings>(),
                                             scope.ServiceProvider.GetRequiredService<CandidateSelectionService>(),
-                                            Lifetime, NullLogger<SelectionRulesPageViewModel>.Instance);
+                                            NullLogger<SelectionRulesPageViewModel>.Instance);
         }
 
         /// <summary>插入同一同集组的两个合格候选：ANi 与 LoliHouse（默认规则优胜 LoliHouse）。</summary>

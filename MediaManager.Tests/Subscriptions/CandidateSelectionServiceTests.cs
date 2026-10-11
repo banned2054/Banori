@@ -913,8 +913,8 @@ public sealed class CandidateSelectionServiceTests
             return new CandidateSelectionService(dbFactory, selectionRuleProvider, gate,
                                                  provider.GetRequiredService<DownloadCoordinationGate>(),
                                                  new CandidateEligibilityPolicy(), new CandidateRankingPolicy(),
-                                                 qbSettings, intakeService, fixedTime,
-                                                 NullLogger<CandidateSelectionService>.Instance);
+                                                 qbSettings, new TestHostApplicationLifetime(), intakeService,
+                                                 fixedTime, NullLogger<CandidateSelectionService>.Instance);
         }
 
         var harness = new SelectionHarness(directory, timestamp, provider, downloadService, intakeService,
