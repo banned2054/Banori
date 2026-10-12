@@ -1,0 +1,164 @@
+@using Banori.Data
+@using Banori.Features.Proxies
+@implements IDisposable
+
+@inject ProxyService                  ProxyService
+@inject ILogger<ProxiesPageViewModel> Logger
+
+<div class="card proxy-card">
+	<div class="card-body">
+		@if (!string.IsNullOrEmpty(_vm.StatusMessage))
+		{
+			<div class="alert @(_vm.OperationSucceeded ? "alert-success" : "alert-danger")" role="status">@_vm.StatusMessage</div>
+		}
+
+		@if (_vm.Editing)
+		{
+			<h3 class="h5 card-title">@(_vm.Draft.Id is null ? "新建代理" : "编辑代理")</h3>
+			<EditForm Model="_vm.Draft" OnValidSubmit="SaveAsync" FormName="proxy-editor">
+				<DataAnnotationsValidator/>
+				<div class="row g-3">
+					<div class="col-md-4">
+						<label class="form-label" for="proxy-name">名称</label>
+						<InputText id="proxy-name" class="form-control" placeholder="例如：家里的小猫" @bind-Value="_vm.Draft.Name"/>
+						<ValidationMessage For="() => _vm.Draft.Name"/>
+					</div>
+					<div class="col-md-4">
+						<label class="form-label" for="proxy-protocol">协议</label>
+						<select id="proxy-protocol" class="form-select" @bind="_vm.Draft.Protocol">
+							<option value="@ProxyProtocol.Http">HTTP</option>
+							<option value="@ProxyProtocol.Socks4">SOCKS4</option>
+							<option value="@ProxyProtocol.Socks5">SOCKS5</option>
+						</select>
+					</div>
+					<div class="col-md-4">
+						<label class="form-label" for="proxy-port">端口</label>
+						<InputNumber id="proxy-port" class="form-control" @bind-Value="_vm.Draft.Port"/>
+						<ValidationMessage For="() => _vm.Draft.Port"/>
+					</div>
+					<div class="col-md-6">
+						<label class="form-label" for="proxy-host">主机</label>
+						<InputText id="proxy-host" class="form-control" placeholder="127.0.0.1" @bind-Value="_vm.Draft.Host"/>
+						<ValidationMessage For="() => _vm.Draft.Host"/>
+					</div>
+					<div class="col-md-6">
+						<label class="form-label" for="proxy-username">用户名（可选）</label>
+						<InputText id="proxy-username" class="form-control" autocomplete="off" @bind-Value="_vm.Draft.Username"/>
+					</div>
+					<div class="col-md-6">
+						<label class="form-label" for="proxy-password">密码（可选）</label>
+						<InputText type="password" id="proxy-password" class="form-control" placeholder="@(_vm.Draft.Id is null ? "无密码" : "留空表示不修改")" @bind-Value="_vm.Draft.Password"/>
+					</div>
+				</div>
+				<div class="form-text mb-3">SOCKS4 协议本身没有标准认证，账号密码仅对 HTTP 与 SOCKS5 生效。</div>
+				<button type="submit" class="btn btn-primary" disabled="@_vm.Saving">@(_vm.Saving ? "正在保存…" : "保存")</button>
+				<button type="button" class="btn btn-outline-secondary ms-2" @onclick="_vm.CancelEdit">取消</button>
+			</EditForm>
+			<hr class="my-4"/>
+		}
+
+		@if (!_vm.Loaded)
+		{
+			<p class="mb-0">正在加载…</p>
+		}
+		else if (_vm.Proxies.Count == 0)
+		{
+			<p class="text-body-secondary mb-3">还没有代理。新建一个代理后，即可在订阅、下载器与通知渠道的设置里选用。</p>
+			<button type="button" class="btn btn-primary" @onclick="_vm.BeginCreate">新建代理</button>
+		}
+		else
+		{
+			<div class="table-responsive mb-3">
+				<table class="table table-sm align-middle mb-0">
+					<thead>
+					<tr>
+						<th>名称</th><th>协议</th><th>地址</th><th>凭据</th><th class="text-end">操作</th>
+					</tr>
+					</thead>
+					<tbody>
+					@foreach (var proxy in _vm.Proxies)
+					{
+						<tr>
+							<td>@proxy.Name</td>
+							<td>@ProtocolLabel(proxy.Protocol)</td>
+							<td>
+								<code>@(proxy.Host):@(proxy.Port)</code>
+							</td>
+							<td>@(proxy.HasPassword ? "账号密码" : proxy.Username is null ? "无" : "仅用户名")</td>
+							<td class="text-end">
+								<button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => _vm.BeginEdit(proxy)">编辑</button>
+								<button type="button" class="btn btn-sm btn-outline-danger" @onclick="() => DeleteAsync(proxy)">删除</button>
+							</td>
+						</tr>
+					}
+					</tbody>
+				</table>
+			</div>
+			<button type="button" class="btn btn-primary" @onclick="_vm.BeginCreate">新建代理</button>
+		}
+	</div>
+</div>
+
+@code {
+
+	/// <summary>代理增删改成功后触发，供同页的代理下拉刷新。</summary>
+	[Parameter]
+	public EventCallback OnChanged { get; set; }
+
+	private string ProtocolLabel(ProxyProtocol protocol)
+	{
+		return protocol switch
+		{
+			ProxyProtocol.Socks4 => "SOCKS4",
+			ProxyProtocol.Socks5 => "SOCKS5",
+			_                    => "HTTP"
+		};
+	}
+
+	private Task SaveAsync()
+	{
+		return RunAsync(async token =>
+		{
+			await _vm.SaveAsync(token);
+			if (_vm.OperationSucceeded) await OnChanged.InvokeAsync();
+		});
+	}
+
+	private Task DeleteAsync(ProxyView proxy)
+	{
+		return RunAsync(async token =>
+		{
+			await _vm.DeleteAsync(proxy, token);
+			if (_vm.OperationSucceeded) await OnChanged.InvokeAsync();
+		});
+	}
+
+	private readonly CancellationTokenSource _cts = new();
+	private          ProxiesPageViewModel    _vm  = null!;
+
+	protected override void OnInitialized()
+	{
+		_vm = new ProxiesPageViewModel(ProxyService, Logger);
+	}
+
+	protected override Task OnInitializedAsync() => RunAsync(_vm.LoadAsync);
+
+	/// <summary>页面离开后取消进行中的查询属于预期，不向线路报错。</summary>
+	private async Task RunAsync(Func<CancellationToken, Task> operation)
+	{
+		try
+		{
+			await operation(_cts.Token);
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+	}
+
+	public void Dispose()
+	{
+		_cts.Cancel();
+		_cts.Dispose();
+	}
+
+}

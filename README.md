@@ -1,21 +1,21 @@
-# MediaManager
+# Banori
 
-MediaManager 是面向个人或家庭媒体库的动漫 RSS 管理面板。当前已完成 P0、P1、P2、P2R 和 P3：可以管理 Mikan 订阅、持久化刷新任务、去重保存条目、关联 Bangumi Subject，展示筛选理由与命名预览，评估优胜的条目自动登记为下载任务，由后台提交 qBittorrent、按 info-hash 对账直至完成改名。
+Banori 是面向个人或家庭媒体库的动漫 RSS 管理面板。当前已完成 P0、P1、P2、P2R 和 P3：可以管理 Mikan 订阅、持久化刷新任务、去重保存条目、关联 Bangumi Subject，展示筛选理由与命名预览，评估优胜的条目自动登记为下载任务，由后台提交 qBittorrent、按 info-hash 对账直至完成改名。
 
 当前工作见 [结构整理计划](plan.md)；已实现阶段、历史设计与验收边界见 [历史计划归档](past-plan.md)。
 
 ## 项目结构
 
 ```text
-MediaManager.Core/        标题归一化、筛选、集数修正、命名预览、info-hash 提取、路径净化等纯规则，可独立测试
-MediaManager/
+Banori.Core/        标题归一化、筛选、集数修正、命名预览、info-hash 提取、路径净化等纯规则，可独立测试
+Banori/
   Components/Pages/       订阅、下载任务、设置页面及页面 ViewModel
   Features/               业务服务：订阅管理、Mikan 刷新、条目评估、下载登记（DownloadIntakeService）、
                           下载执行与生命周期（DownloadService）、任务列表查询（DownloadTaskQueries）、通知、设置
   Data/                   EF Core 实体与双 provider 迁移（SQLite 默认 / MySQL）
   Integrations/           Mikan、Bangumi、qBittorrent 客户端与种子下载
   Workers/                周期调度 Worker（订阅刷新、下载对账、通知投递）
-MediaManager.Tests/       规则单元测试、SQLite 行为测试
+Banori.Tests/       规则单元测试、SQLite 行为测试
 ```
 
 刷新链路：订阅页 / 到期调度 → `SubscriptionService` 入队 → `MikanRefreshService` 执行（读 RSS、去重入库、评估遗留条目）→ `FeedItemEvaluator`（AniParser 解析、Subject 关联、Core 规则决策、命名预览与命名要素）→ 保存结果与下次刷新时间。
@@ -33,10 +33,10 @@ PowerShell 示例：
 ```powershell
 $env:BootstrapAdmin__Email = "admin@example.com"
 $env:BootstrapAdmin__Password = "请替换为强密码"
-dotnet run --project MediaManager/MediaManager.csproj
+dotnet run --project Banori/Banori.csproj
 ```
 
-首次创建完成后应从运行环境移除 `BootstrapAdmin__Password`。默认数据库位于 `MediaManager/App_Data/mediamanager.db`，Data Protection 密钥位于 `MediaManager/App_Data/keys`；部署时二者都需要持久化和备份。
+首次创建完成后应从运行环境移除 `BootstrapAdmin__Password`。默认数据库位于 `Banori/App_Data/mediamanager.db`，Data Protection 密钥位于 `Banori/App_Data/keys`；部署时二者都需要持久化和备份。
 
 连接字符串中的普通相对数据库路径以应用内容根目录（`ContentRootPath`）为基准，不随进程工作目录变化；绝对路径保持原位置，SQLite `file:` URI 和内存数据库保留原有语义。注册确认页面已移除，不提供公开的邮箱确认链接。
 
@@ -63,9 +63,9 @@ MySQL 配置示例：
 MySQL 下的迁移工具命令（快照文件的位置由工具自动管理，执行后请用 `git status` 检查 `Data/Migrations/ApplicationDbContextModelSnapshot.cs` 是否被重写为 MySQL 模型——工具会把快照写在默认位置；如被重写，从 git 恢复 SQLite 快照，并按 `Data/Migrations/MySql/` 内快照的提取方式同步 MySQL 快照）：
 
 ```powershell
-dotnet ef migrations add <名称> --project MediaManager --startup-project MediaManager --namespace MediaManager.Data.Migrations --output-dir Data/Migrations
-dotnet ef migrations add <名称> --project MediaManager --startup-project MediaManager --namespace MediaManager.Data.Migrations.MySql --output-dir Data/Migrations/MySql -- --Database:Provider=MySql
-dotnet ef database update --project MediaManager --startup-project MediaManager -- --Database:Provider=MySql "ConnectionStrings:DefaultConnection=..."
+dotnet ef migrations add <名称> --project Banori --startup-project Banori --namespace Banori.Data.Migrations --output-dir Data/Migrations
+dotnet ef migrations add <名称> --project Banori --startup-project Banori --namespace Banori.Data.Migrations.MySql --output-dir Data/Migrations/MySql -- --Database:Provider=MySql
+dotnet ef database update --project Banori --startup-project Banori -- --Database:Provider=MySql "ConnectionStrings:DefaultConnection=..."
 ```
 
 schema 变更需要同时为两个 provider 各加一个迁移（模型唯一，迁移集两份）；用 `dotnet ef migrations has-pending-model-changes`（加同样的 `--` 参数）可以只读校验某一 provider 的快照是否与模型一致。
@@ -75,8 +75,8 @@ schema 变更需要同时为两个 provider 各加一个迁移（模型唯一，
 ## 验证
 
 ```powershell
-dotnet build MediaManager.slnx
-dotnet test MediaManager.Tests/MediaManager.Tests.csproj
+dotnet build Banori.slnx
+dotnet test Banori.Tests/Banori.Tests.csproj
 ```
 
 刷新任务持久化在数据库中：重复请求会复用等待中或执行中的工作；进程重启时把遗留的执行中工作恢复为待执行，已入库但未评估的条目会在下次刷新时继续处理，即使它们已不在最新 RSS 中。RSS 抓取失败不影响遗留条目的恢复，但本次任务会如实记录抓取失败。

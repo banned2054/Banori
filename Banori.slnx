@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Banori.Core/Banori.Core.csproj" />
+  <Project Path="Banori.Tests/Banori.Tests.csproj" />
+  <Project Path="Banori/Banori.csproj" />
+</Solution>

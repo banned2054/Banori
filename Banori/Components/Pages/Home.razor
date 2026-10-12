@@ -1,0 +1,69 @@
+@page "/"
+@using Banori.Components.Pages.HomeForms
+@using Banori.Features.Dashboard
+@rendermode InteractiveServer
+@attribute [Authorize]
+@inject DashboardQueries DashboardService
+
+@* 总览页：下载登记表单在 DownloadForms 组件内（自带忙碌与结果状态），页面只负责仪表盘快照。 *@
+
+<PageTitle>总览 - Banori</PageTitle>
+
+<h1>总览</h1>
+
+<p class="lead">RSS 抓取评估与下载闭环正在运行；优胜条目自动登记下载任务。</p>
+
+<DownloadForms/>
+
+<div class="row g-3">
+	<div class="col-md-3">
+		<div class="card h-100">
+			<div class="card-body">
+				<h2 class="h5">订阅</h2>
+				<p class="display-6 mb-1">@(_snapshot?.EnabledSubscriptions ?? 0)</p>
+				<p class="text-body-secondary mb-0">已启用的 RSS 订阅</p>
+			</div>
+		</div>
+	</div>
+	<div class="col-md-3">
+		<div class="card h-100">
+			<div class="card-body">
+				<h2 class="h5">已选择条目</h2>
+				<p class="display-6 mb-1">@(_snapshot?.AcceptedItems ?? 0)</p>
+				<p class="text-body-secondary mb-0">评估通过的优胜候选</p>
+			</div>
+		</div>
+	</div>
+	<div class="col-md-3">
+		<div class="card h-100">
+			<div class="card-body">
+				<h2 class="h5">进行中下载</h2>
+				<p class="display-6 mb-1">@(_snapshot?.ActiveDownloads ?? 0)</p>
+				<p class="text-body-secondary mb-0">待提交、下载中或已暂停</p>
+			</div>
+		</div>
+	</div>
+	<div class="col-md-3">
+		<div class="card h-100">
+			<div class="card-body">
+				<h2 class="h5">待处理</h2>
+				<p class="display-6 mb-1">@(_snapshot?.NeedsAttentionItems ?? 0)</p>
+				<p class="text-body-secondary mb-0">无法解析、关联失败或多集合集</p>
+			</div>
+		</div>
+	</div>
+</div>
+
+<div class="mt-3 text-body-secondary small">
+	队列中任务：@(_snapshot?.PendingWorkItems ?? 0) · 最近刷新：@(_snapshot?.LastRefreshAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "尚未刷新")
+</div>
+
+@code {
+	private DashboardSnapshot? _snapshot;
+
+	protected override async Task OnInitializedAsync()
+	{
+		_snapshot = await DashboardService.GetSnapshotAsync();
+	}
+
+}

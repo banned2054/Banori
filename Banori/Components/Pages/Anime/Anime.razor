@@ -1,0 +1,156 @@
+@page "/anime"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using System.Globalization
+@using Banori.Features.Anime
+@using Banori.Features.Downloads
+@implements IDisposable
+
+@inject AnimeQueries Queries
+
+<PageTitle>动画 - Banori</PageTitle>
+
+<h1>动画</h1>
+<p class="text-body-secondary">按 Bangumi Subject 汇总下载任务；点击封面或标题展开单集列表，每集仅显示当前任务，被替换的旧版本不显示。</p>
+
+@if (!_vm.Loaded)
+{
+	<p>正在加载…</p>
+}
+else if (_vm.Animes.Count == 0)
+{
+	<div class="empty-state">还没有已关联 Subject 的条目。</div>
+}
+else
+{
+	var expandedIndex = -1;
+	<div class="anime-grid">
+		@for (var i = 0; i < _vm.Animes.Count; i++)
+		{
+			var anime                   = _vm.Animes[i];
+			var expanded                = _vm.ExpandedSubjectId == anime.SubjectId;
+			if (expanded) expandedIndex = i;
+			<div class="card anime-card @(expanded ? "anime-card-active" : null)" style="order: @(i * 2)" role="button"
+			     tabindex="0" aria-expanded="@expanded" @onclick="() => Toggle(anime.SubjectId)">
+				<div class="poster-frame">
+					@if (!string.IsNullOrEmpty(anime.ImageUrl))
+					{
+						<img class="poster-img" src="@anime.ImageUrl" alt="@anime.DisplayName" loading="lazy"
+						     referrerpolicy="no-referrer"/>
+					}
+					else
+					{
+						<div class="poster-img poster-placeholder">
+							<span class="bi bi-film-fill"></span>
+						</div>
+					}
+				</div>
+				<div class="anime-name" title="@anime.DisplayName">@anime.DisplayName</div>
+			</div>
+		}
+		@if (expandedIndex >= 0)
+		{
+			var expandedAnime = _vm.Animes[expandedIndex];
+			<div class="anime-panel" style="order: @(expandedIndex * 2 + 1); --i: @expandedIndex">
+				<div class="anime-panel-box">
+					<div class="anime-episodes">
+						@foreach (var episode in expandedAnime.Episodes)
+						{
+							var final = episode.Final;
+							<div class="anime-episode @(EpisodeRowClass(final.Status))">
+								<span class="anime-episode-status">
+									<span class="bi @StatusIcon(final.Status)" title="@StatusText(final.Status)"></span>
+								</span>
+								<span class="anime-episode-no">E@(FormatEpisode(episode.Episode))</span>
+								<span>@(final.Group)</span>
+								@if (!string.IsNullOrWhiteSpace(final.Language))
+								{
+									<span>@(final.Language)</span>
+								}
+								@if (final.Version > 1)
+								{
+									<span>v@(final.Version)</span>
+								}
+								<span class="anime-episode-date">@(final.CreatedAtUtc.ToLocalTime().ToString("MM-dd HH:mm"))</span>
+							</div>
+						}
+					</div>
+				</div>
+			</div>
+		}
+	</div>
+}
+
+@code {
+	private readonly CancellationTokenSource _cts = new();
+	private          AnimePageViewModel      _vm  = null!;
+
+	protected override void OnInitialized()
+	{
+		_vm = new AnimePageViewModel(Queries);
+	}
+
+	protected override Task OnInitializedAsync() => RunAsync(_vm.LoadAsync);
+
+	private void Toggle(int subjectId)
+	{
+		_vm.Toggle(subjectId);
+	}
+
+	private static string FormatEpisode(decimal episode) =>
+		episode == decimal.Truncate(episode)
+			? ((int)episode).ToString(CultureInfo.InvariantCulture)
+			: episode.ToString(CultureInfo.InvariantCulture);
+
+	/// <summary>状态图标与行高亮按任务状态区分：绿勾已下载、红叉失败、灰色为等待/进行/暂停/丢失。</summary>
+	private static string EpisodeRowClass(DownloadTaskStatus status) => status switch
+	{
+		DownloadTaskStatus.Completed => "is-completed",
+		DownloadTaskStatus.Failed    => "is-failed",
+		_                            => null!
+	};
+
+	private static string StatusIcon(DownloadTaskStatus status) => status switch
+	{
+		DownloadTaskStatus.Completed     => "bi-check-circle-fill is-completed",
+		DownloadTaskStatus.Failed        => "bi-x-circle-fill is-failed",
+		DownloadTaskStatus.Downloading   => "bi-arrow-repeat is-active",
+		DownloadTaskStatus.Submitting    => "bi-arrow-repeat is-active",
+		DownloadTaskStatus.PendingSubmit => "bi-hourglass-split is-idle",
+		DownloadTaskStatus.Paused        => "bi-pause-circle-fill is-idle",
+		DownloadTaskStatus.Lost          => "bi-question-circle-fill is-idle",
+		_                                => "bi-question-circle-fill is-idle"
+	};
+
+	private static string StatusText(DownloadTaskStatus status) => status switch
+	{
+		DownloadTaskStatus.PendingSubmit => "等待提交",
+		DownloadTaskStatus.Submitting    => "提交确认中",
+		DownloadTaskStatus.Downloading   => "下载中",
+		DownloadTaskStatus.Paused        => "已暂停",
+		DownloadTaskStatus.Completed     => "已完成",
+		DownloadTaskStatus.Failed        => "下载失败",
+		DownloadTaskStatus.Lost          => "下载器中丢失",
+		DownloadTaskStatus.Replaced      => "已被替换",
+		_                                => status.ToString()
+	};
+
+	/// <summary>页面离开后取消进行中的查询属于预期，不向线路报错。</summary>
+	private async Task RunAsync(Func<CancellationToken, Task> operation)
+	{
+		try
+		{
+			await operation(_cts.Token);
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+	}
+
+	public void Dispose()
+	{
+		_cts.Cancel();
+		_cts.Dispose();
+	}
+
+}

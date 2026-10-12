@@ -1,0 +1,183 @@
+@using Banori.Features.Downloads
+<div class="download-task-files p-3 bg-body-tertiary" aria-label="任务文件详情">
+	@if (State.Loading)
+	{
+		<p role="status">正在加载文件…</p>
+	}
+	@if (!string.IsNullOrEmpty(State.Error))
+	{
+		<div class="alert alert-danger" role="alert">@State.Error</div>
+	}
+	@if (!string.IsNullOrEmpty(State.Message))
+	{
+		<div class="alert alert-success" role="status">@State.Message</div>
+	}
+	@if (State.Details is null && !State.Loading)
+	{
+		<button type="button" class="btn btn-sm btn-outline-secondary" @onclick="ReloadAsync">重新加载文件</button>
+	}
+	@if (State.Details is { } details)
+	{
+		<div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+			<div class="small">当前 torrent 根目录：<code class="text-break">@details.CurrentRootPath</code></div>
+			<button type="button" class="btn btn-sm btn-outline-secondary flex-shrink-0" disabled="@(State.Busy || State.Loading)"
+			        @onclick="ReloadAsync">
+				刷新文件
+			</button>
+		</div>
+		@foreach (var animeGroup in new[] { true, false })
+		{
+			var files = details.Files.Where(file => file.Kind != DownloadFileKind.Seed == animeGroup).ToArray();
+			<section class="mb-3" aria-label="@(animeGroup ? "动画与字幕" : "Seed / 未识别与被过滤文件")">
+				<h2 class="h6">@(animeGroup ? "动画与字幕" : "Seed / 未识别与被过滤文件")（@files.Length）</h2>
+				@if (files.Length == 0)
+				{
+					<p class="small text-body-secondary mb-0">暂无文件。</p>
+				}
+				@foreach (var file in files)
+				{
+					var key   = $"{TaskId:N}-{file.Index}";
+					var draft = State.Drafts.GetValueOrDefault(file.Index);
+					<div @key="file.Index" class="border rounded p-2 mb-2 download-file" data-file-index="@file.Index">
+						<div class="d-flex justify-content-between align-items-start gap-2">
+							<div class="small flex-grow-1" style="min-width: 0;">
+								<div>原始路径：<code class="text-break">@file.OriginalPath</code></div>
+								<div>当前路径：<code class="text-break">@file.CurrentPath</code></div>
+								<div class="mt-1">
+									<span class="badge text-bg-secondary me-2">@KindText(file.Kind)</span>
+									分类原因：@file.ClassificationReason
+									<span class="ms-2">集数：@EpisodeText(file)</span>
+								</div>
+							</div>
+							@if (draft is null)
+							{
+								<button type="button" class="btn btn-sm btn-outline-primary flex-shrink-0" disabled="@(State.Busy || State.Loading)"
+								        aria-label="修改 @file.OriginalPath" @onclick="() => ViewModel.BeginFileEdit(TaskId, file.Index)">
+									修改
+								</button>
+							}
+						</div>
+						@if (draft is not null)
+						{
+							<div class="border-top mt-2 pt-2 file-edit" aria-label="文件编辑">
+								<fieldset disabled="@(State.Busy || State.Loading)">
+									<div class="row g-2">
+										<div class="col-sm-3">
+											<label class="form-label small" for="kind-@key">文件分类</label>
+											<select id="kind-@key" class="form-select form-select-sm" @bind="draft.Kind">
+												<option value="@DownloadFileKind.Anime">动画 / 字幕</option>
+												<option value="@DownloadFileKind.Seed">Seed</option>
+											</select>
+										</div>
+										@if (draft.Kind == DownloadFileKind.Anime)
+										{
+											<div class="col-sm-3">
+												<label class="form-label small" for="episode-@key">集数更正</label>
+												<input id="episode-@key" class="form-control form-control-sm" type="number" step="any" @bind="draft.Episode"/>
+											</div>
+											<div class="col-sm-3">
+												<label class="form-label small" for="episode-end-@key">结束集数（范围，可留空）</label>
+												<input id="episode-end-@key" class="form-control form-control-sm" type="number" step="any" @bind="draft.EpisodeEnd"/>
+											</div>
+											<div class="col-12">
+												<label class="form-label small" for="anime-path-@key">手工动画相对路径（相对动画根目录，可留空）</label>
+												<input id="anime-path-@key" class="form-control form-control-sm" type="text" @bind="draft.AnimeRelativePath" @bind:event="oninput"/>
+												<div class="form-text">例如：作品目录/文件名.mkv，无需重复添加动画根目录。留空按命名规则生成；字幕保留复合语言后缀。完整目标路径以下方预览为准。</div>
+											</div>
+										}
+									</div>
+									<div class="form-check my-2">
+										<input id="reidentify-@key" class="form-check-input" type="checkbox" @bind="draft.ReidentifyOriginalName"/>
+										<label class="form-check-label small" for="reidentify-@key">从原始文件名重新识别（清空已有集数与手工路径，可再填写更正）</label>
+									</div>
+									<div class="d-flex gap-2">
+										<button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => PreviewAsync(file.Index)">预览</button>
+										<button type="button" class="btn btn-sm btn-primary" disabled="@(!draft.CanApply)" @onclick="() => ApplyAsync(file.Index)">应用</button>
+										<button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => ViewModel.CancelFileEdit(TaskId, file.Index)">取消</button>
+									</div>
+								</fieldset>
+								@if (draft.Preview is { } preview)
+								{
+									<div class="alert alert-info mt-2 mb-0 small file-preview" role="status">
+										<div>当前完整路径：<code class="text-break">@preview.CurrentPath</code></div>
+										<div>目标完整路径：<code class="text-break">@preview.TargetPath</code></div>
+										@if (preview.RequiresRootRename)
+										{
+											<div class="text-warning-emphasis fw-semibold mt-1">需要更改 torrent 根目录，可能影响同任务下其他文件。</div>
+											<div>当前根目录：<code class="text-break">@preview.CurrentRootPath</code></div>
+											<div>目标根目录：<code class="text-break">@preview.TargetRootPath</code></div>
+										}
+										@if (!string.IsNullOrEmpty(preview.Warning))
+										{
+											<div class="text-warning-emphasis mt-1">@preview.Warning</div>
+										}
+									</div>
+								}
+							</div>
+						}
+					</div>
+				}
+			</section>
+		}
+	}
+</div>
+
+@code {
+
+	[Parameter]
+	[EditorRequired]
+	public Guid TaskId { get; set; }
+
+	[Parameter]
+	[EditorRequired]
+	public DownloadTasksPageViewModel ViewModel { get; set; } = null!;
+
+	[Parameter]
+	public CancellationToken CancellationToken { get; set; }
+
+	private DownloadTaskFilesState State => ViewModel.FileState(TaskId);
+
+	private Task ReloadAsync()
+	{
+		return RunAsync(() => ViewModel.LoadFilesAsync(TaskId, CancellationToken));
+	}
+
+	private Task PreviewAsync(int index)
+	{
+		return RunAsync(() => ViewModel.PreviewFileAsync(TaskId, index, CancellationToken));
+	}
+
+	private Task ApplyAsync(int index)
+	{
+		return RunAsync(() => ViewModel.ApplyFileAsync(TaskId, index, CancellationToken));
+	}
+
+	private async Task RunAsync(Func<Task> operation)
+	{
+		try
+		{
+			await operation();
+		}
+		catch (OperationCanceledException) when (CancellationToken.IsCancellationRequested)
+		{
+		}
+	}
+
+	private static string KindText(DownloadFileKind kind)
+	{
+		return kind switch
+		{
+			DownloadFileKind.Anime    => "动画",
+			DownloadFileKind.Subtitle => "字幕",
+			_                         => "Seed"
+		};
+	}
+
+	private static string EpisodeText(DownloadFileView file) =>
+		file.Episode is not { } episode
+			? "—"
+			: file.EpisodeEnd is { } end
+				? $"{episode:0.##}–{end:0.##}"
+				: $"{episode:0.##}";
+
+}

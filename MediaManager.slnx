@@ -1,5 +1,0 @@
-<Solution>
-  <Project Path="MediaManager.Core/MediaManager.Core.csproj" />
-  <Project Path="MediaManager/MediaManager.csproj" />
-  <Project Path="MediaManager.Tests/MediaManager.Tests.csproj" />
-</Solution>

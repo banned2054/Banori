@@ -1,0 +1,182 @@
+@page "/Account/Manage/Passkeys"
+@using System.Buffers.Text
+@using Banori.Data
+@using Microsoft.AspNetCore.Identity
+
+@inject UserManager<ApplicationUser>   UserManager
+@inject SignInManager<ApplicationUser> SignInManager
+@inject IdentityRedirectManager        RedirectManager
+
+<PageTitle>通行密钥管理 - Banori</PageTitle>
+
+<h3>通行密钥管理</h3>
+
+<StatusMessage/>
+
+@if (currentPasskeys is { Count: > 0 })
+{
+	<table class="table">
+		<tbody>
+		@foreach (var passkey in currentPasskeys)
+		{
+			<tr>
+				<td>@(passkey.Name ?? "未命名通行密钥")</td>
+				<td>
+					@{
+						var credentialId = Base64Url.EncodeToString(passkey.CredentialId);
+					}
+					<form @formname="@($"update-passkey-{credentialId}")" @onsubmit="UpdatePasskey" method="post">
+						<AntiforgeryToken/>
+						<div>
+							<input type="hidden" name="CredentialId" value="@credentialId"/>
+							<button type="submit" name="Action" value="rename" class="btn btn-primary" title="重命名此通行密钥">重命名</button>
+							<button type="submit" name="Action" value="delete" class="btn btn-danger" title="从你的账户中移除此通行密钥">删除</button>
+						</div>
+					</form>
+				</td>
+			</tr>
+		}
+		</tbody>
+	</table>
+}
+else
+{
+	<p>尚未注册任何通行密钥。</p>
+}
+
+<form @formname="add-passkey" @onsubmit="AddPasskey" method="post">
+	<AntiforgeryToken/>
+	@if (currentPasskeys is { Count: >= MaxPasskeyCount })
+	{
+		<p class="text-danger">已达通行密钥数量上限。请先删除一个，再添加新的通行密钥。</p>
+	}
+	else
+	{
+		<PasskeySubmit Operation="PasskeyOperation.Create" Name="Input" class="btn btn-primary">添加新通行密钥</PasskeySubmit>
+	}
+
+</form>
+
+@code {
+	private const int MaxPasskeyCount = 100;
+
+	private ApplicationUser?        user;
+	private IList<UserPasskeyInfo>? currentPasskeys;
+
+	[CascadingParameter]
+	private HttpContext HttpContext { get; set; } = default!;
+
+	[SupplyParameterFromForm]
+	private string? Action { get; set; }
+
+	[SupplyParameterFromForm]
+	private string? CredentialId { get; set; }
+
+	[SupplyParameterFromForm(FormName = "add-passkey")]
+	private PasskeyInputModel Input { get; set; } = default!;
+
+	protected override async Task OnInitializedAsync()
+	{
+		Input ??= new PasskeyInputModel();
+
+		user = await UserManager.GetUserAsync(HttpContext.User);
+		if (user is null)
+		{
+			RedirectManager.RedirectToInvalidUser(UserManager, HttpContext);
+			return;
+		}
+
+		currentPasskeys = await UserManager.GetPasskeysAsync(user);
+	}
+
+	private async Task AddPasskey()
+	{
+		if (user is null)
+		{
+			RedirectManager.RedirectToInvalidUser(UserManager, HttpContext);
+			return;
+		}
+
+		if (!string.IsNullOrEmpty(Input.Error))
+		{
+			RedirectManager.RedirectToCurrentPageWithStatus($"错误：{Input.Error}", HttpContext);
+			return;
+		}
+
+		if (string.IsNullOrEmpty(Input.CredentialJson))
+		{
+			RedirectManager.RedirectToCurrentPageWithStatus("错误：浏览器未提供通行密钥。", HttpContext);
+			return;
+		}
+
+		if (currentPasskeys!.Count >= MaxPasskeyCount)
+		{
+			RedirectManager.RedirectToCurrentPageWithStatus("错误：已达通行密钥数量上限。", HttpContext);
+			return;
+		}
+
+		var attestationResult = await SignInManager.PerformPasskeyAttestationAsync(Input.CredentialJson);
+		if (!attestationResult.Succeeded)
+		{
+			RedirectManager.RedirectToCurrentPageWithStatus($"错误：添加通行密钥失败：{attestationResult.Failure.Message}", HttpContext);
+			return;
+		}
+
+		var addPasskeyResult = await UserManager.AddOrUpdatePasskeyAsync(user, attestationResult.Passkey);
+		if (!addPasskeyResult.Succeeded)
+		{
+			RedirectManager.RedirectToCurrentPageWithStatus("错误：通行密钥添加到账户失败。", HttpContext);
+			return;
+		}
+
+		// Immediately prompt the user to enter a name for the credential
+		var credentialIdBase64Url = Base64Url.EncodeToString(attestationResult.Passkey.CredentialId);
+		RedirectManager.RedirectTo($"Account/Manage/RenamePasskey/{credentialIdBase64Url}");
+	}
+
+	private async Task UpdatePasskey()
+	{
+		switch (Action)
+		{
+			case "rename" :
+				RedirectManager.RedirectTo($"Account/Manage/RenamePasskey/{CredentialId}");
+				break;
+			case "delete" :
+				await DeletePasskey();
+				break;
+			default :
+				RedirectManager.RedirectToCurrentPageWithStatus($"错误：未知操作“{Action}”。", HttpContext);
+				break;
+		}
+	}
+
+	private async Task DeletePasskey()
+	{
+		if (user is null)
+		{
+			RedirectManager.RedirectToInvalidUser(UserManager, HttpContext);
+			return;
+		}
+
+		byte[] credentialId;
+		try
+		{
+			credentialId = Base64Url.DecodeFromChars(CredentialId);
+		}
+		catch (FormatException)
+		{
+			RedirectManager.RedirectToCurrentPageWithStatus("错误：指定的通行密钥 ID 格式无效。", HttpContext);
+			return;
+		}
+
+		var result = await UserManager.RemovePasskeyAsync(user, credentialId);
+		if (!result.Succeeded)
+		{
+			RedirectManager.RedirectToCurrentPageWithStatus("错误：通行密钥删除失败。", HttpContext);
+			return;
+		}
+
+		RedirectManager.RedirectToCurrentPageWithStatus("通行密钥已删除。", HttpContext);
+	}
+
+}

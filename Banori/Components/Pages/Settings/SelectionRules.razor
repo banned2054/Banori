@@ -1,0 +1,334 @@
+@page "/selection-rules"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using Banned.AniParser.Models.Enums
+@using Banori.Core.Rules.Selection
+@using Banori.Features.Settings
+@using Banori.Features.Subscriptions
+@implements IDisposable
+
+@inject ManageSelectionRuleSettings          RuleSettings
+@inject CandidateSelectionService            SelectionService
+@inject ILogger<SelectionRulesPageViewModel> Logger
+
+<PageTitle>择优规则 - Banori</PageTitle>
+
+<h1 class="d-flex align-items-center gap-2">
+	择优规则
+	@if (_vm.Loaded)
+	{
+		<span class="badge text-bg-secondary">版本 @_vm.CurrentVersion</span>
+	}
+</h1>
+
+<p class="text-body-secondary">配置同集条目的择优标准。保存后按新版本重新选择全部同集组的优胜。</p>
+
+@if (!_vm.Loaded)
+{
+	<p>正在加载…</p>
+}
+else
+{
+	<EditForm Model="_vm.Draft" OnValidSubmit="SaveAsync" FormName="selection-rules">
+		<DataAnnotationsValidator/>
+
+		<div class="card settings-card">
+			<div class="card-body">
+				<h2 class="h5 card-title">匹配模式</h2>
+				<div class="mb-3">
+					<div class="form-check">
+						<input class="form-check-input" type="radio" id="mode-independent" name="mode"
+						       checked="@(_vm.Draft.Mode == SelectionMode.Independent)"
+						       @onchange="@(() => _vm.Draft.Mode = SelectionMode.Independent)"/>
+						<label class="form-check-label" for="mode-independent">独立优先级</label>
+					</div>
+					<div class="form-check">
+						<input class="form-check-input" type="radio" id="mode-combined" name="mode"
+						       checked="@(_vm.Draft.Mode == SelectionMode.Combined)"
+						       @onchange="@(() => _vm.Draft.Mode = SelectionMode.Combined)"/>
+						<label class="form-check-label" for="mode-combined">组合优先级</label>
+					</div>
+				</div>
+
+				@if (_vm.Draft.Mode == SelectionMode.Independent)
+				{
+					<div class="row g-3 mb-3">
+						<div class="col-lg-6">
+							<h3 class="h6">字幕组顺序</h3>
+							<ol class="list-group list-group-numbered">
+								@for (var i = 0; i < _vm.Draft.GroupOrder.Count; i++)
+								{
+									var index = i;
+									<li class="list-group-item d-flex justify-content-between align-items-center">
+										<span>@_vm.Draft.GroupOrder[index]</span>
+										<span class="btn-group btn-group-sm">
+											<button type="button" class="btn btn-outline-secondary"
+											        disabled="@(index == 0)" @onclick="() => _vm.MoveGroup(index, -1)">
+												上移
+											</button>
+											<button type="button" class="btn btn-outline-secondary"
+											        disabled="@(index == _vm.Draft.GroupOrder.Count - 1)"
+											        @onclick="() => _vm.MoveGroup(index, 1)">
+												下移
+											</button>
+											<button type="button" class="btn btn-outline-danger"
+											        @onclick="() => _vm.RemoveGroup(index)">
+												删除
+											</button>
+										</span>
+									</li>
+								}
+							</ol>
+							<div class="input-group input-group-sm mt-2">
+								<InputText class="form-control" placeholder="字幕组名称" @bind-Value="_vm.Draft.NewGroupName"/>
+								<button type="button" class="btn btn-outline-primary" @onclick="() => _vm.AddGroup()">添加</button>
+							</div>
+						</div>
+						<div class="col-lg-6">
+							<h3 class="h6">语言组合顺序</h3>
+							<ol class="list-group list-group-numbered">
+								@for (var i = 0; i < _vm.Draft.LanguageOrder.Count; i++)
+								{
+									var index = i;
+									<li class="list-group-item d-flex justify-content-between align-items-center">
+										<span>@SelectionRuleDisplay.LanguageText(_vm.Draft.LanguageOrder[index])</span>
+										<span class="btn-group btn-group-sm">
+											<button type="button" class="btn btn-outline-secondary"
+											        disabled="@(index == 0)" @onclick="() => _vm.MoveLanguage(index, -1)">
+												上移
+											</button>
+											<button type="button" class="btn btn-outline-secondary"
+											        disabled="@(index == _vm.Draft.LanguageOrder.Count - 1)"
+											        @onclick="() => _vm.MoveLanguage(index, 1)">
+												下移
+											</button>
+											<button type="button" class="btn btn-outline-danger"
+											        @onclick="() => _vm.RemoveLanguage(index)">
+												删除
+											</button>
+										</span>
+									</li>
+								}
+							</ol>
+							<div class="input-group input-group-sm mt-2">
+								<InputSelect class="form-select" @bind-Value="_vm.Draft.NewLanguage">
+									<option value="">选择语言…</option>
+									@foreach (var language in SelectionRuleDisplay.LanguageChoices)
+									{
+										<option value="@language">@SelectionRuleDisplay.LanguageText(language)</option>
+									}
+								</InputSelect>
+								<button type="button" class="btn btn-outline-primary" @onclick="() => _vm.AddLanguage()">添加</button>
+							</div>
+						</div>
+					</div>
+
+					<div class="mb-3">
+						<label for="dimension-order" class="form-label">维度顺序</label>
+						<InputSelect id="dimension-order" class="form-select" @bind-Value="_vm.Draft.DimensionOrder">
+							<option value="@SelectionDimensionOrder.GroupFirst">先比较字幕组</option>
+							<option value="@SelectionDimensionOrder.LanguageFirst">先比较语言</option>
+						</InputSelect>
+					</div>
+
+					<p class="form-text mb-0">匹配不区分大小写；未列出的字幕组/语言按未命中策略处理。</p>
+				}
+				else
+				{
+					<h3 class="h6">组合条件顺序</h3>
+					<ol class="list-group list-group-numbered mb-2">
+						@for (var i = 0; i < _vm.Draft.CombinedEntries.Count; i++)
+						{
+							var index = i;
+							var entry = _vm.Draft.CombinedEntries[index];
+							<li class="list-group-item d-flex justify-content-between align-items-center">
+								<span>
+									字幕组：@(string.IsNullOrWhiteSpace(entry.Group) ? "（通配）" : entry.Group)
+									｜语言：@(entry.Language is { } language ? SelectionRuleDisplay.LanguageText(language) : "（通配）")
+								</span>
+								<span class="btn-group btn-group-sm">
+									<button type="button" class="btn btn-outline-secondary"
+									        disabled="@(index == 0)" @onclick="() => _vm.MoveCombinedEntry(index, -1)">
+										上移
+									</button>
+									<button type="button" class="btn btn-outline-secondary"
+									        disabled="@(index == _vm.Draft.CombinedEntries.Count - 1)"
+									        @onclick="() => _vm.MoveCombinedEntry(index, 1)">
+										下移
+									</button>
+									<button type="button" class="btn btn-outline-danger"
+									        @onclick="() => _vm.RemoveCombinedEntry(index)">
+										删除
+									</button>
+								</span>
+							</li>
+						}
+					</ol>
+					<div class="row g-2">
+						<div class="col-sm-5">
+							<InputText class="form-control form-control-sm" placeholder="字幕组（留空=通配）"
+							           @bind-Value="_vm.Draft.NewEntryGroup"/>
+						</div>
+						<div class="col-sm-5">
+							<InputSelect class="form-select form-select-sm" @bind-Value="_vm.Draft.NewEntryLanguage">
+								<option value="">语言（留空=通配）</option>
+								@foreach (var language in SelectionRuleDisplay.LanguageChoices)
+								{
+									<option value="@language">@SelectionRuleDisplay.LanguageText(language)</option>
+								}
+							</InputSelect>
+						</div>
+						<div class="col-sm-2">
+							<button type="button" class="btn btn-outline-primary btn-sm w-100" @onclick="() => _vm.AddCombinedEntry()">添加</button>
+						</div>
+					</div>
+					<p class="form-text mb-0">首个命中的条件决定优先级；可在末尾放通配兜底。</p>
+				}
+			</div>
+		</div>
+
+		<div class="card settings-card mt-3">
+			<div class="card-body">
+				<h2 class="h5 card-title">语言匹配方式</h2>
+				<div class="mb-2">
+					<InputSelect class="form-select" @bind-Value="_vm.Draft.LanguageMatch">
+						<option value="@LanguageMatchMode.Exact">完全匹配</option>
+						<option value="@LanguageMatchMode.Contains">包含指定语言</option>
+					</InputSelect>
+				</div>
+				<p class="form-text">包含匹配：配置“简日”可命中“简繁日”。</p>
+			</div>
+		</div>
+
+		<div class="card settings-card mt-3">
+			<div class="card-body">
+				<h2 class="h5 card-title">未命中处理</h2>
+				<InputSelect class="form-select" @bind-Value="_vm.Draft.Unmatched">
+					<option value="@UnmatchedPolicy.NeedsReview">进入待确认，不参与自动胜负</option>
+					<option value="@UnmatchedPolicy.LowestPriority">兜底参与，排最后</option>
+				</InputSelect>
+			</div>
+		</div>
+
+		<div class="card settings-card mt-3">
+			<div class="card-body">
+				<h2 class="h5 card-title">允许分辨率</h2>
+				<div class="row">
+					@foreach (var resolution in Enum.GetValues<EnumResolution>())
+					{
+						var value = resolution;
+						<div class="col-6 col-md-3">
+							<div class="form-check">
+								<input type="checkbox" class="form-check-input" id="resolution-@value"
+								       checked="@_vm.Draft.AllowedResolutions.Contains(value)"
+								       @onchange="() => _vm.ToggleResolution(value)"/>
+								<label class="form-check-label" for="resolution-@value">@SelectionRuleDisplay.ResolutionText(value)</label>
+							</div>
+						</div>
+					}
+				</div>
+				<p class="form-text mb-0">全不选表示不限制分辨率。</p>
+			</div>
+		</div>
+
+		<div class="mt-3">
+			<button type="submit" class="btn btn-primary" disabled="@_vm.Saving">
+				@(_vm.Saving ? "正在保存…" : "保存")
+			</button>
+			<button type="button" class="btn btn-outline-secondary ms-2" disabled="@_vm.Saving" @onclick="RunPreviewAsync">
+				比较预览
+			</button>
+		</div>
+	</EditForm>
+}
+
+@if (!string.IsNullOrEmpty(_vm.StatusMessage))
+{
+	<div class="alert @(_vm.HasError ? "alert-danger" : "alert-success") mt-3" role="status">
+		@_vm.StatusMessage
+	</div>
+}
+
+@if (_vm.Preview is { } preview)
+{
+	<div class="card mt-3">
+		<div class="card-body">
+			<h2 class="h5 card-title">比较预览</h2>
+			<p>共 @preview.GroupCount 个同集组，@preview.ChangedCount 组优胜将变化。</p>
+			<table class="table table-sm align-middle">
+				<thead>
+				<tr>
+					<th>同集组</th>
+					<th>当前优胜</th>
+					<th>新优胜</th>
+					<th>变化</th>
+				</tr>
+				</thead>
+				<tbody>
+				@foreach (var group in preview.Groups)
+				{
+					<tr>
+						<td>
+							@group.SubjectName
+							第 @group.Key.Episode 集
+							@if (group.Key.MediaType != "SingleEpisode")
+							{
+								<span class="text-body-secondary">（@group.Key.MediaType）</span>
+							}
+						</td>
+						<td>@(group.CurrentWinnerTitle ?? "（无）")</td>
+						<td>@(group.DraftWinnerTitle ?? "（无）")</td>
+						<td>
+							@if (group.WinnerChanged)
+							{
+								<span class="badge text-bg-warning">将更换</span>
+							}
+							else
+							{
+								<span class="badge text-bg-secondary">保持</span>
+							}
+						</td>
+					</tr>
+				}
+				</tbody>
+			</table>
+			<p class="form-text mb-0">仍有待评估条目的组不参与预览与保存重选；预览与保存执行使用同一套比较规则。</p>
+		</div>
+	</div>
+}
+
+@code {
+
+	private readonly CancellationTokenSource     _cts = new();
+	private          SelectionRulesPageViewModel _vm  = null!;
+
+	protected override void OnInitialized()
+	{
+		_vm = new SelectionRulesPageViewModel(RuleSettings, SelectionService, Logger);
+	}
+
+	protected override Task OnInitializedAsync() => RunAsync(_vm.LoadAsync);
+
+	private Task SaveAsync() => RunAsync(_vm.SaveAsync);
+
+	private Task RunPreviewAsync() => RunAsync(_vm.RunPreviewAsync);
+
+	/// <summary>页面离开后取消进行中的查询属于预期，不向线路报错。</summary>
+	private async Task RunAsync(Func<CancellationToken, Task> operation)
+	{
+		try
+		{
+			await operation(_cts.Token);
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+	}
+
+	public void Dispose()
+	{
+		_cts.Cancel();
+		_cts.Dispose();
+	}
+
+}

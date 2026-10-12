@@ -1,0 +1,40 @@
+@page "/Error"
+@using System.Diagnostics
+
+<PageTitle>错误 - Banori</PageTitle>
+
+<h1 class="text-danger">错误。</h1>
+<h2 class="text-danger">处理你的请求时发生了错误。</h2>
+
+@if (ShowRequestId)
+{
+	<p>
+		<strong>请求 ID:</strong> <code>@RequestId</code>
+	</p>
+}
+
+<h3>开发模式</h3>
+<p>
+	切换到 <strong>Development</strong>（开发）环境会显示有关所发生错误的更多详细信息。
+</p>
+<p>
+	<strong>开发环境不应在已部署的应用程序中启用。</strong>
+	它可能导致向最终用户显示来自异常的敏感信息。
+	对于本地调试，请将 <strong>ASPNETCORE_ENVIRONMENT</strong> 环境变量设置为 <strong>Development</strong>
+	并重启应用程序以启用开发环境。
+</p>
+
+@code{
+
+	[CascadingParameter]
+	private HttpContext? HttpContext { get; set; }
+
+	private string? RequestId     { get; set; }
+	private bool    ShowRequestId => !string.IsNullOrEmpty(RequestId);
+
+	protected override void OnInitialized()
+	{
+		RequestId = Activity.Current?.Id ?? HttpContext?.TraceIdentifier;
+	}
+
+}

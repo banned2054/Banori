@@ -1,0 +1,336 @@
+@page "/settings"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using Banori.Data
+@using Banori.Features.Downloads
+@using Banori.Features.Proxies
+@using Banori.Features.Settings
+@implements IDisposable
+
+@inject ManageQbittorrentSettings      DownloaderSettings
+@inject NamingTemplateStore            NamingTemplates
+@inject DownloadDirectorySettingsStore DirectorySettings
+@inject ManageTelegramSettings         TelegramSettings
+@inject ManageGotifySettings           GotifySettings
+@inject ProxyService                   ProxyService
+@inject ILogger<SettingsPageViewModel> Logger
+
+<PageTitle>设置 - Banori</PageTitle>
+
+<h1 class="mb-2">设置</h1>
+
+<p class="text-body-secondary">这里保存 qBittorrent 下载器、通知渠道与网络代理配置。媒体库（Jellyfin）配置将在对应阶段加入。</p>
+
+@if (!string.IsNullOrEmpty(_vm.StatusMessage))
+{
+	<div class="alert @(_vm.SaveSucceeded ? "alert-success" : "alert-danger")" role="status">
+		@_vm.StatusMessage
+	</div>
+}
+
+@if (!string.IsNullOrEmpty(_vm.TestMessage))
+{
+	<div class="alert @(_vm.TestSucceeded ? "alert-success" : "alert-danger")" role="status">
+		@_vm.TestMessage
+	</div>
+}
+
+@if (!_vm.Loaded)
+{
+	<p>正在加载…</p>
+}
+else
+{
+	<section id="qbittorrent" class="mt-4">
+		<h2 class="h4 mb-3">qBittorrent 下载器</h2>
+		<EditForm Model="_vm.Downloader" OnValidSubmit="SaveAsync" FormName="downloader-settings">
+			<DataAnnotationsValidator/>
+			<div class="card settings-card">
+				<div class="card-body">
+					<p class="text-body-secondary small">下载器路径与应用本地路径分开，按下载器所在机器的实际路径填写。种子按隔离子目录提交，完成后按命名快照改名。</p>
+
+					<div class="form-check form-switch mb-3">
+						<InputCheckbox class="form-check-input" id="downloader-enabled" @bind-Value="_vm.Downloader.Enabled"/>
+						<label class="form-check-label" for="downloader-enabled">启用下载器</label>
+					</div>
+
+					<div class="mb-3">
+						<label for="downloader-url" class="form-label">下载器地址</label>
+						<InputText id="downloader-url" class="form-control" placeholder="http://nas:8080" @bind-Value="_vm.Downloader.BaseUrl"/>
+						<ValidationMessage For="() => _vm.Downloader.BaseUrl"/>
+					</div>
+
+					<div class="row">
+						<div class="col-md-6 mb-3">
+							<label for="downloader-username" class="form-label">用户名</label>
+							<InputText id="downloader-username" class="form-control" @bind-Value="_vm.Downloader.Username"/>
+						</div>
+						<div class="col-md-6 mb-3">
+							<label for="downloader-password" class="form-label">密码</label>
+							<InputText type="password" id="downloader-password" class="form-control" placeholder="留空表示不修改" @bind-Value="_vm.Downloader.Password"/>
+						</div>
+					</div>
+
+					<div class="mb-3">
+						<label for="downloader-savepath" class="form-label">下载器保存路径</label>
+						<InputText id="downloader-savepath" class="form-control" placeholder="/downloads 或 D:\Downloads" @bind-Value="_vm.Downloader.SavePath"/>
+						<ValidationMessage For="() => _vm.Downloader.SavePath"/>
+					</div>
+
+					<div class="mb-3">
+						<div class="row">
+							<div class="col-md-6 mb-3">
+								<label for="downloader-media-directory" class="form-label">媒体目录（相对路径）</label>
+								<InputText id="downloader-media-directory" class="form-control" placeholder="Media/Anime" @bind-Value="_vm.Downloader.MediaDirectory"/>
+								<ValidationMessage For="() => _vm.Downloader.MediaDirectory"/>
+							</div>
+							<div class="col-md-6 mb-3">
+								<label for="downloader-seed-directory" class="form-label">做种目录（相对路径）</label>
+								<InputText id="downloader-seed-directory" class="form-control" placeholder="Seed" @bind-Value="_vm.Downloader.SeedDirectory"/>
+								<ValidationMessage For="() => _vm.Downloader.SeedDirectory"/>
+							</div>
+						</div>
+						<p class="form-text">两个目录均相对于下载器保存路径；留空使用 Media/Anime 和 Seed。不能使用绝对路径、盘符、..，也不能相同或互为父子目录。只影响新任务，已有任务沿用创建时的目录快照。</p>
+					</div>
+
+					<div class="mb-3">
+						<label for="downloader-naming-template" class="form-label">qB 种子名称模板</label>
+						<InputText id="downloader-naming-template" class="form-control" placeholder="@_vm.DefaultNamingTemplate" @bind-Value="_vm.Downloader.NamingTemplate"/>
+						<ValidationMessage For="() => _vm.Downloader.NamingTemplate"/>
+						<div class="form-text">
+							控制 qBittorrent 中的种子名，不参与保存目录与文件名。兼容旧变量 {title}、{episode}、{version}、{group}、{source}。来源明确变量：AniParser 用 {ani.mediaType}、{ani.title}、{ani.episode}、{ani.version}、{ani.group}、{ani.groupType}、{ani.language}、{ani.subtitleType}、{ani.source}、{ani.webSource}、{ani.resolution}、{ani.videoCodec}、{ani.audioCodec}、{ani.colorBitDepth}；Bangumi 用 {bgm.id}、{bgm.name}、{bgm.nameCn}、{bgm.platform}、{bgm.date}；站点用 {site.source}。支持格式说明符，例如 {ani.episode:ee}（两位集数）、{ani.episode:eee}（三位集数）、{bgm.date:yyyy.MM}（年月）。留空恢复默认。
+						</div>
+					</div>
+
+					<div class="mb-3">
+						<label for="downloader-file-naming-template" class="form-label">种子内文件名称模板</label>
+						<InputText id="downloader-file-naming-template" class="form-control" placeholder="@_vm.DefaultFileNamingTemplate" @bind-Value="_vm.Downloader.FileNamingTemplate"/>
+						<ValidationMessage For="() => _vm.Downloader.FileNamingTemplate"/>
+						<div class="form-text">
+							只控制下载完成后视频、字幕文件的名称，不影响种子名或保存目录。可用与种子模板相同的 AniParser、Bangumi 和站点变量；模板中书写的 / 作为子目录分隔符（如 [{bgm.date:yyyy.MM}]{bgm.nameCn}/S{ani.episode:ee}），令牌取值里的 / 会被转成空格、不会意外建目录；{ani.episode} 对每个文件按其实际解析集数重新渲染，也支持 {ani.episode:ee} 等格式说明符。留空恢复默认。
+						</div>
+					</div>
+
+
+					<div class="mb-3">
+						<label for="downloader-proxy" class="form-label">代理（可选）</label>
+						<select id="downloader-proxy" class="form-select" @bind="_vm.Downloader.ProxyId">
+							<option value="">不使用代理</option>
+							@foreach (var proxy in _vm.Proxies)
+							{
+								<option value="@proxy.Id">@proxy.Name（@(proxy.Host):@(proxy.Port)）</option>
+							}
+						</select>
+						<div class="form-text">应用到本机与下载器之间的 API 请求；代理在下方「网络代理」中维护。</div>
+					</div>
+
+					<div class="mb-3">
+						<label for="downloader-hook-base" class="form-label">钩子回调地址（可选）</label>
+						<InputText id="downloader-hook-base" class="form-control" placeholder="http://mediamanager:8080" @bind-Value="_vm.Downloader.HookBaseUrl"/>
+						<div class="form-text">qBittorrent 访问本应用所用的地址（容器桥接网络填容器名地址）。填写并生成令牌后，把下方两条命令分别粘贴到 qBittorrent 的“Torrent 添加时 / 完成时运行外部程序”，下载完成即可即时触发对账；15 秒轮询始终作为兜底。</div>
+					</div>
+
+					@if (_vm.HookCommands is { } hookCommands)
+					{
+						<div class="mb-3">
+							<span class="form-label d-block">粘贴到 qBittorrent 的命令行</span>
+							<code class="d-block border rounded p-2 text-break user-select-all mb-1">@hookCommands.Added</code>
+							<code class="d-block border rounded p-2 text-break user-select-all">@hookCommands.Completed</code>
+						</div>
+					}
+
+					<button type="submit" class="btn btn-primary" disabled="@_vm.Saving">
+						@(_vm.Saving ? "正在保存…" : "保存")
+					</button>
+					<button type="button" class="btn btn-outline-secondary ms-2" disabled="@_vm.Testing" @onclick="TestDownloaderAsync">
+						@(_vm.Testing ? "正在测试…" : "测试连接")
+					</button>
+					<button type="button" class="btn btn-outline-secondary ms-2" @onclick="RegenerateHookTokenAsync">
+						@(_vm.HookCommands is null ? "生成钩子令牌" : "重新生成钩子令牌")
+					</button>
+				</div>
+			</div>
+		</EditForm>
+	</section>
+
+	<section id="notifications" class="mt-4">
+		<h2 class="h4 mb-3">通知</h2>
+
+		<EditForm Model="_vm.Telegram" OnValidSubmit="SaveAsync" FormName="telegram-settings">
+			<DataAnnotationsValidator/>
+			<div class="card settings-card">
+				<div class="card-body">
+					<h3 class="h5 card-title">Telegram</h3>
+					<p class="text-body-secondary small">通过 Telegram Bot 发送通知。发送目标为私聊或群组的数字 Chat ID，也可以是公开频道的 @@频道用户名。</p>
+
+					<div class="form-check form-switch mb-3">
+						<InputCheckbox class="form-check-input" id="telegram-enabled" @bind-Value="_vm.Telegram.Enabled"/>
+						<label class="form-check-label" for="telegram-enabled">启用 Telegram 通知</label>
+					</div>
+
+					<div class="row">
+						<div class="col-md-6 mb-3">
+							<label for="telegram-token" class="form-label">Bot Token</label>
+							<InputText type="password" id="telegram-token" class="form-control" placeholder="留空表示不修改" @bind-Value="_vm.Telegram.BotToken"/>
+						</div>
+						<div class="col-md-6 mb-3">
+							<label for="telegram-chatid" class="form-label">发送目标 Chat ID</label>
+							<InputText id="telegram-chatid" class="form-control" placeholder="数字 Chat ID 或公开频道用户名" @bind-Value="_vm.Telegram.ChatId"/>
+							<ValidationMessage For="() => _vm.Telegram.ChatId"/>
+						</div>
+					</div>
+
+					<div class="mb-3">
+						<label for="telegram-proxy" class="form-label">代理（可选）</label>
+						<select id="telegram-proxy" class="form-select" @bind="_vm.Telegram.ProxyId">
+							<option value="">不使用代理（沿用系统代理）</option>
+							@foreach (var proxy in _vm.Proxies)
+							{
+								<option value="@proxy.Id">@proxy.Name（@ProtocolLabel(proxy.Protocol)）</option>
+							}
+						</select>
+						<div class="form-text">代理在下方「网络代理」中维护。</div>
+					</div>
+
+					<div class="mb-3">
+						<span class="form-label d-block">通知事件</span>
+						<div class="form-check form-check-inline">
+							<InputCheckbox class="form-check-input" id="telegram-ev-started" @bind-Value="_vm.Telegram.NotifyDownloadStarted"/>
+							<label class="form-check-label" for="telegram-ev-started">下载开始</label>
+						</div>
+						<div class="form-check form-check-inline">
+							<InputCheckbox class="form-check-input" id="telegram-ev-failed" @bind-Value="_vm.Telegram.NotifyDownloadFailed"/>
+							<label class="form-check-label" for="telegram-ev-failed">下载失败</label>
+						</div>
+					</div>
+
+					<button type="submit" class="btn btn-primary" disabled="@_vm.Saving">
+						@(_vm.Saving ? "正在保存…" : "保存")
+					</button>
+					<button type="button" class="btn btn-outline-secondary ms-2" disabled="@_vm.Testing" @onclick="TestTelegramAsync">
+						@(_vm.Testing ? "正在发送…" : "发送测试消息")
+					</button>
+				</div>
+			</div>
+		</EditForm>
+
+		<EditForm Model="_vm.Gotify" OnValidSubmit="SaveAsync" FormName="gotify-settings">
+			<DataAnnotationsValidator/>
+			<div class="card settings-card mt-3">
+				<div class="card-body">
+					<h3 class="h5 card-title">Gotify</h3>
+					<p class="text-body-secondary small">推送到自托管 Gotify 服务。每个应用 Token 在客户端里显示为独立的应用分组，按需创建即可。</p>
+
+					<div class="form-check form-switch mb-3">
+						<InputCheckbox class="form-check-input" id="gotify-enabled" @bind-Value="_vm.Gotify.Enabled"/>
+						<label class="form-check-label" for="gotify-enabled">启用 Gotify 通知</label>
+					</div>
+
+					<div class="row">
+						<div class="col-md-6 mb-3">
+							<label for="gotify-url" class="form-label">Gotify 地址</label>
+							<InputText id="gotify-url" class="form-control" placeholder="http://nas:8090" @bind-Value="_vm.Gotify.BaseUrl"/>
+							<ValidationMessage For="() => _vm.Gotify.BaseUrl"/>
+						</div>
+						<div class="col-md-6 mb-3">
+							<label for="gotify-token" class="form-label">应用 Token</label>
+							<InputText type="password" id="gotify-token" class="form-control" placeholder="留空表示不修改" @bind-Value="_vm.Gotify.AppToken"/>
+						</div>
+					</div>
+
+					<div class="mb-3">
+						<label for="gotify-proxy" class="form-label">代理（可选）</label>
+						<select id="gotify-proxy" class="form-select" @bind="_vm.Gotify.ProxyId">
+							<option value="">不使用代理（直连）</option>
+							@foreach (var proxy in _vm.Proxies)
+							{
+								<option value="@proxy.Id">@proxy.Name（@ProtocolLabel(proxy.Protocol)）</option>
+							}
+						</select>
+						<div class="form-text">Gotify 通常自托管在局域网，默认直连；跨网段访问时才需要代理。代理在下方「网络代理」中维护。</div>
+					</div>
+
+					<div class="mb-3">
+						<span class="form-label d-block">通知事件</span>
+						<div class="form-check form-check-inline">
+							<InputCheckbox class="form-check-input" id="gotify-ev-started" @bind-Value="_vm.Gotify.NotifyDownloadStarted"/>
+							<label class="form-check-label" for="gotify-ev-started">下载开始</label>
+						</div>
+						<div class="form-check form-check-inline">
+							<InputCheckbox class="form-check-input" id="gotify-ev-failed" @bind-Value="_vm.Gotify.NotifyDownloadFailed"/>
+							<label class="form-check-label" for="gotify-ev-failed">下载失败</label>
+						</div>
+					</div>
+
+					<button type="submit" class="btn btn-primary" disabled="@_vm.Saving">
+						@(_vm.Saving ? "正在保存…" : "保存")
+					</button>
+					<button type="button" class="btn btn-outline-secondary ms-2" disabled="@_vm.Testing" @onclick="TestGotifyAsync">
+						@(_vm.Testing ? "正在发送…" : "发送测试消息")
+					</button>
+				</div>
+			</div>
+		</EditForm>
+	</section>
+
+	<section id="network-proxy" class="mt-4">
+		<h2 class="h4 mb-3">网络代理</h2>
+		<p class="text-body-secondary small">命名的代理可被订阅、qBittorrent 下载器与通知渠道选用；密码加密保存。改动会即时反映到上方的代理下拉。</p>
+		<ProxyManager OnChanged="ReloadProxiesAsync"/>
+	</section>
+}
+
+@code {
+
+	private static string ProtocolLabel(ProxyProtocol protocol)
+	{
+		return protocol switch
+		{
+			ProxyProtocol.Socks4 => "SOCKS4",
+			ProxyProtocol.Socks5 => "SOCKS5",
+			_                    => "HTTP"
+		};
+	}
+
+	private Task SaveAsync() => RunAsync(_vm.SaveAsync);
+
+	private Task TestDownloaderAsync() => RunAsync(_vm.TestDownloaderAsync);
+
+	private Task RegenerateHookTokenAsync() => RunAsync(_vm.RegenerateHookTokenAsync);
+
+	private Task TestTelegramAsync() => RunAsync(_vm.TestTelegramAsync);
+
+	private Task TestGotifyAsync() => RunAsync(_vm.TestGotifyAsync);
+
+	private Task ReloadProxiesAsync() => RunAsync(_vm.ReloadProxiesAsync);
+
+	private readonly CancellationTokenSource _cts = new();
+	private          SettingsPageViewModel   _vm  = null!;
+
+	protected override void OnInitialized()
+	{
+		_vm = new SettingsPageViewModel(DownloaderSettings, NamingTemplates, DirectorySettings, TelegramSettings, GotifySettings,
+		                                ProxyService, Logger);
+	}
+
+	protected override Task OnInitializedAsync() => RunAsync(_vm.LoadAsync);
+
+	/// <summary>页面离开后取消进行中的查询属于预期，不向线路报错。</summary>
+	private async Task RunAsync(Func<CancellationToken, Task> operation)
+	{
+		try
+		{
+			await operation(_cts.Token);
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+	}
+
+	public void Dispose()
+	{
+		_cts.Cancel();
+		_cts.Dispose();
+	}
+
+}
