@@ -1,46 +1,51 @@
+using MediaManager.Core.Torrents;
 using MediaManager.Data;
-using MediaManager.Features.Subscriptions;
+using MediaManager.Features.Downloads;
 using Microsoft.EntityFrameworkCore;
 
 namespace MediaManager.Features.Anime;
 
-/// <summary>动画总览页的一张卡片：Subject 的展示名、封面与其下全部单集候选。</summary>
+/// <summary>动画总览页的一张卡片：Subject 的展示名、封面与其下全部单集现任任务。</summary>
 public sealed record AnimeCard(
     int                         SubjectId,
     string                      DisplayName,
     string?                     ImageUrl,
     IReadOnlyList<AnimeEpisode> Episodes);
 
-/// <summary>一个同集（按条目上记录的集数分组）及其最终版本：优胜优先，其次更高版本。</summary>
+/// <summary>一个同集（按任务上记录的集数分组）及其现任任务；被替换的旧版本不参与聚合。</summary>
 public sealed record AnimeEpisode(decimal Episode, AnimeEpisodeLine Final);
 
-/// <summary>单集下的一条候选：字幕组、语言、版本与发布时间；胜负标记取自最近一次组内择优。</summary>
+/// <summary>单集的现任下载任务：字幕组、语言、版本与登记时间取自任务快照，状态取自执行链。</summary>
 public sealed record AnimeEpisodeLine(
-    Guid             FeedItemId,
-    string           Group,
-    string?          Language,
-    int              Version,
-    DateTimeOffset?  PublishedAtUtc,
-    SelectionOutcome Outcome);
+    Guid               TaskId,
+    string             Group,
+    string?            Language,
+    int                Version,
+    DateTimeOffset     CreatedAtUtc,
+    DownloadTaskStatus Status);
 
-/// <summary>动画总览查询：把已关联 Subject 的条目按 Subject 与集数聚合为封面墙数据。</summary>
+/// <summary>
+///     动画总览查询：把下载任务按 Subject 与集数聚合为封面墙数据。
+///     只要有任务才出现：未产生下载的 RSS 条目不显示；被替换的旧版本任务也不显示，每集只剩现任。
+/// </summary>
 public sealed class AnimeQueries(IDbContextFactory<ApplicationDbContext> dbContextFactory)
 {
     public async Task<IReadOnlyList<AnimeCard>> ListAsync(CancellationToken cancellationToken = default)
     {
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var rows = await db.FeedItems.AsNoTracking()
-                           .Where(item => item.SubjectId != null && item.Episode != null)
-                           .Select(item => new
+        var rows = await db.DownloadTasks.AsNoTracking()
+                           .Where(task => task.SubjectId != null &&
+                                          task.Episode   != null &&
+                                          task.Status    != DownloadTaskStatus.Replaced)
+                           .Select(task => new
                             {
-                                SubjectId = item.SubjectId!.Value,
-                                Episode   = item.Episode!.Value,
-                                item.Id,
-                                Group = item.Group ?? string.Empty,
-                                item.Language,
-                                item.Version,
-                                Published = item.PublishedAtUtc ?? item.FirstSeenAtUtc,
-                                item.SelectionOutcome
+                                SubjectId = task.SubjectId!.Value,
+                                Episode   = task.Episode!.Value,
+                                task.Id,
+                                task.NamingIngredients,
+                                task.Version,
+                                task.Status,
+                                task.CreatedAtUtc
                             })
                            .ToListAsync(cancellationToken);
         if (rows.Count == 0) return [];
@@ -62,21 +67,23 @@ public sealed class AnimeQueries(IDbContextFactory<ApplicationDbContext> dbConte
                                                   .OrderBy(episode => episode.Key)
                                                   .Select(episode => new AnimeEpisode(
                                                            episode.Key,
-                                                           episode.Select(row => new AnimeEpisodeLine(
-                                                                           row.Id,
-                                                                           string.IsNullOrWhiteSpace(row.Group)
-                                                                               ? "未知字幕组"
-                                                                               : row.Group,
-                                                                           row.Language, row.Version,
-                                                                           row.Published, row.SelectionOutcome))
-                                                                  .OrderByDescending(line =>
-                                                                       line.Outcome ==
-                                                                       SelectionOutcome.Winner)
-                                                                  .ThenByDescending(line => line.Version)
-                                                                  .ThenBy(line => line.Group,
-                                                                          StringComparer.CurrentCulture)
-                                                                  .ThenBy(line => line.Language,
-                                                                          StringComparer.CurrentCulture)
+                                                           episode.Select(row =>
+                                                                   {
+                                                                       // 字幕组与语言取任务自带的命名要素快照；旧行没有合法 JSON 时回退占位字幕组。
+                                                                       var ingredients =
+                                                                           TorrentNamingIngredients.FromJson(row
+                                                                              .NamingIngredients);
+                                                                       var group = ingredients?.Group;
+                                                                       return new AnimeEpisodeLine(
+                                                                        row.Id,
+                                                                        string.IsNullOrWhiteSpace(group)
+                                                                            ? "未知字幕组"
+                                                                            : group,
+                                                                        ingredients?.Language, row.Version,
+                                                                        row.CreatedAtUtc, row.Status);
+                                                                   })
+                                                                  .OrderByDescending(line => line.Version)
+                                                                  .ThenByDescending(line => line.CreatedAtUtc)
                                                                   .First()))
                                                   .ToList());
                     })

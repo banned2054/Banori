@@ -110,7 +110,7 @@
     padding: 0.9rem;
 }
 
-/* 单集列表：一集一行竖排，仅显示每集最终版本 */
+/* 单集列表：一集一行竖排，仅显示每集当前任务 */
 .anime-episodes {
     display: flex;
     flex-direction: column;
@@ -134,8 +134,12 @@
     display: inline-flex;
     justify-content: center;
     font-size: 0.8rem;
-    color: var(--bs-success);
 }
+
+.anime-episode-status .is-completed { color: var(--bs-success); }
+.anime-episode-status .is-failed    { color: var(--bs-danger); }
+.anime-episode-status .is-active    { color: var(--bs-primary); }
+.anime-episode-status .is-idle      { color: var(--bs-secondary-color); }
 
 .anime-episode-no {
     flex: none;
@@ -149,6 +153,10 @@
     font-size: 0.8rem;
 }
 
-.anime-episode.is-winner {
+.anime-episode.is-completed {
     border-color: var(--bs-success);
+}
+
+.anime-episode.is-failed {
+    border-color: var(--bs-danger);
 }

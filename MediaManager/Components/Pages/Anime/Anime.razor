@@ -3,7 +3,7 @@
 @attribute [Authorize]
 @using System.Globalization
 @using MediaManager.Features.Anime
-@using MediaManager.Features.Subscriptions
+@using MediaManager.Features.Downloads
 @implements IDisposable
 
 @inject AnimeQueries Queries
@@ -11,7 +11,7 @@
 <PageTitle>动画 - MediaManager</PageTitle>
 
 <h1>动画</h1>
-<p class="text-body-secondary">按 Bangumi Subject 汇总已识别的条目；点击封面或标题展开单集列表，每集仅显示当前最终版本。</p>
+<p class="text-body-secondary">按 Bangumi Subject 汇总下载任务；点击封面或标题展开单集列表，每集仅显示当前任务，被替换的旧版本不显示。</p>
 
 @if (!_vm.Loaded)
 {
@@ -57,12 +57,9 @@ else
 						@foreach (var episode in expandedAnime.Episodes)
 						{
 							var final = episode.Final;
-							<div class="anime-episode @(final.Outcome == SelectionOutcome.Winner ? "is-winner" : null)">
+							<div class="anime-episode @(EpisodeRowClass(final.Status))">
 								<span class="anime-episode-status">
-									@if (final.Outcome == SelectionOutcome.Winner)
-									{
-										<span class="bi bi-check-circle-fill" title="当前优胜"></span>
-									}
+									<span class="bi @StatusIcon(final.Status)" title="@StatusText(final.Status)"></span>
 								</span>
 								<span class="anime-episode-no">E@(FormatEpisode(episode.Episode))</span>
 								<span>@(final.Group)</span>
@@ -74,7 +71,7 @@ else
 								{
 									<span>v@(final.Version)</span>
 								}
-								<span class="anime-episode-date">@(final.PublishedAtUtc?.ToLocalTime().ToString("MM-dd HH:mm") ?? "—")</span>
+								<span class="anime-episode-date">@(final.CreatedAtUtc.ToLocalTime().ToString("MM-dd HH:mm"))</span>
 							</div>
 						}
 					</div>
@@ -104,6 +101,39 @@ else
 		episode == decimal.Truncate(episode)
 			? ((int)episode).ToString(CultureInfo.InvariantCulture)
 			: episode.ToString(CultureInfo.InvariantCulture);
+
+	/// <summary>状态图标与行高亮按任务状态区分：绿勾已下载、红叉失败、灰色为等待/进行/暂停/丢失。</summary>
+	private static string EpisodeRowClass(DownloadTaskStatus status) => status switch
+	{
+		DownloadTaskStatus.Completed => "is-completed",
+		DownloadTaskStatus.Failed    => "is-failed",
+		_                            => null!
+	};
+
+	private static string StatusIcon(DownloadTaskStatus status) => status switch
+	{
+		DownloadTaskStatus.Completed     => "bi-check-circle-fill is-completed",
+		DownloadTaskStatus.Failed        => "bi-x-circle-fill is-failed",
+		DownloadTaskStatus.Downloading   => "bi-arrow-repeat is-active",
+		DownloadTaskStatus.Submitting    => "bi-arrow-repeat is-active",
+		DownloadTaskStatus.PendingSubmit => "bi-hourglass-split is-idle",
+		DownloadTaskStatus.Paused        => "bi-pause-circle-fill is-idle",
+		DownloadTaskStatus.Lost          => "bi-question-circle-fill is-idle",
+		_                                => "bi-question-circle-fill is-idle"
+	};
+
+	private static string StatusText(DownloadTaskStatus status) => status switch
+	{
+		DownloadTaskStatus.PendingSubmit => "等待提交",
+		DownloadTaskStatus.Submitting    => "提交确认中",
+		DownloadTaskStatus.Downloading   => "下载中",
+		DownloadTaskStatus.Paused        => "已暂停",
+		DownloadTaskStatus.Completed     => "已完成",
+		DownloadTaskStatus.Failed        => "下载失败",
+		DownloadTaskStatus.Lost          => "下载器中丢失",
+		DownloadTaskStatus.Replaced      => "已被替换",
+		_                                => status.ToString()
+	};
 
 	/// <summary>页面离开后取消进行中的查询属于预期，不向线路报错。</summary>
 	private async Task RunAsync(Func<CancellationToken, Task> operation)
