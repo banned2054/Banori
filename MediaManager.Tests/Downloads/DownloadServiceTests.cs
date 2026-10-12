@@ -2771,9 +2771,9 @@ public sealed class DownloadServiceTests
 
         public Task<int?> ResolveSubjectIdAsync(Uri               episodeUri, Guid? proxyId = null,
                                                 CancellationToken cancellationToken = default) =>
-            Task.FromResult(ResolvedLinks.TryGetValue(episodeUri.AbsoluteUri, out var subjectId)
-                                ? subjectId
-                                : null);
+            Task.FromResult<int?>(ResolvedLinks.TryGetValue(episodeUri.AbsoluteUri, out var subjectId)
+                                      ? subjectId
+                                      : null);
     }
 
     /// <summary>条目 stableId 与种子名的注册表；种子字节按种子名确定性生成，同名单同 hash。</summary>
