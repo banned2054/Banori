@@ -583,10 +583,13 @@ public sealed class DownloadService(
         if (downloadFileService is null || string.IsNullOrWhiteSpace(task.DownloadRootPath)) return;
         bool untouched;
         await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
+        {
             untouched = await db.DownloadTaskFiles.AsNoTracking()
                                 .AnyAsync(file => file.DownloadTaskId      == task.Id &&
                                                   file.CurrentRelativePath == file.OriginalRelativePath,
                                           cancellationToken);
+        }
+
         if (!untouched) return;
         await SaveTorrentFileTitleMappingsAsync(task.TorrentFile, task.SubjectId, cancellationToken);
         await downloadFileService.SettleNamingUnderGateAsync(session, task.Id, snapshot, cancellationToken);

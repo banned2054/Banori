@@ -133,10 +133,84 @@ public sealed class DownloadFileService(
         if (HasPending(task)) return await ExecutePendingAsync(db, session, task, cancellationToken);
         await EnsureNamingIngredientsAsync(task, cancellationToken);
         var plan = Plan(task);
-        await ValidatePlanAsync(db, session, task, plan, cancellationToken);
+        if (!await MoveConflictingReplacementFilesAsideAsync(db, session, task, plan, snapshot, cancellationToken))
+            return false;
+        await ValidatePlanAsync(db, session, task, plan, cancellationToken,
+                                snapshot.Progress >= 1);
         Stage(task, plan);
         await db.SaveChangesAsync(cancellationToken);
         return await ExecutePendingAsync(db, session, task, cancellationToken);
+    }
+
+    /// <summary>
+    ///     新任务已完成且需要覆盖已完成替换任务的不同大小文件时，先把旧文件移入隐藏备份目录。
+    ///     这样旧 torrent 在替换完成前仍能做种；文件操作沿用现有持久化日志，进程重启后可恢复。
+    ///     下载中只预检路径，不移动旧成片。
+    /// </summary>
+    private async Task<bool> MoveConflictingReplacementFilesAsideAsync(ApplicationDbContext db,
+                                                                       IQbittorrentSession session, DownloadTask task,
+                                                                       FilePlan plan, TorrentSnapshot snapshot,
+                                                                       CancellationToken ct)
+    {
+        if (snapshot.Progress < 1) return true;
+
+        var replacementId = await DownloadTaskLookups.FindReplacementTargetAsync(
+         db, task.SubjectId, task.Episode, task.InfoHash, task.Version, ct);
+        if (replacementId is null) return true;
+
+        var incumbent = await db.DownloadTasks.Include(value => value.Files)
+                                .SingleOrDefaultAsync(value => value.Id == replacementId, ct);
+        if (incumbent is null                      || incumbent.Status      != DownloadTaskStatus.Completed ||
+            incumbent.ReplacedByTaskId is not null || incumbent.Files.Count == 0) return true;
+
+        // Finish an interrupted move before deciding which old paths still collide.
+        if (HasPending(incumbent) && !await ExecutePendingAsync(db, session, incumbent, ct)) return false;
+
+        var targets = plan.Paths.Values.SelectMany(path => new[] { Join(plan.Root, path), Join(task.SavePath, path) })
+                          .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var targetSizes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        var sizeByIndex = task.Files.ToDictionary(file => file.FileIndex, file => file.Size);
+        foreach (var pair in plan.Paths)
+        {
+            targetSizes[Join(plan.Root, pair.Value)]     = sizeByIndex[pair.Key];
+            targetSizes[Join(task.SavePath, pair.Value)] = sizeByIndex[pair.Key];
+        }
+
+        var replacementPaths = incumbent.Files.ToDictionary(file => file.FileIndex, file => file.CurrentRelativePath);
+        var filesToMoveAside = new HashSet<int>();
+        foreach (var file in incumbent.Files)
+        {
+            var occupied = Join(incumbent.SavePath, file.CurrentRelativePath);
+            foreach (var target in targets)
+            {
+                if (!PathsOverlap(target, occupied)) continue;
+                var sameFile = EqualPath(target, occupied)                           &&
+                               targetSizes.TryGetValue(target, out var expectedSize) && expectedSize == file.Size;
+                if (!sameFile) filesToMoveAside.Add(file.FileIndex);
+            }
+        }
+
+        if (filesToMoveAside.Count == 0) return true;
+
+        // A completed incumbent may have been removed from qBittorrent outside this app.
+        // In that case there is no torrent through which we can move its old file aside;
+        // the completed replacement may still claim the exact target path below.
+        var incumbentSnapshot = (await session.FindTorrentsAsync([incumbent.InfoHash], ct)).SingleOrDefault();
+        if (incumbentSnapshot is null) return true;
+        if (incumbentSnapshot.IsMoving) return false;
+
+        foreach (var file in incumbent.Files.Where(file => filesToMoveAside.Contains(file.FileIndex)))
+        {
+            var extension = Path.GetExtension(file.CurrentRelativePath);
+            replacementPaths[file.FileIndex] = RelativeDownloadPathPolicy.Normalize(
+             $".replaced/{incumbent.Id:N}/{task.Id:N}-{file.FileIndex}{extension}");
+        }
+
+        var replacementPlan = new FilePlan(incumbent.SavePath, replacementPaths);
+        await ValidatePlanAsync(db, session, incumbent, replacementPlan, ct);
+        Stage(incumbent, replacementPlan);
+        await db.SaveChangesAsync(ct);
+        return await ExecutePendingAsync(db, session, incumbent, ct);
     }
 
     /// <summary>调用方必须持有同一个 DownloadCoordinationGate；仅恢复已持久化日志，不重新分类或规划。</summary>
@@ -372,8 +446,9 @@ public sealed class DownloadFileService(
             : (episode, file.EpisodeEndOverride ?? end);
     }
 
-    private async Task ValidatePlanAsync(
-        ApplicationDbContext db, IQbittorrentSession session, DownloadTask task, FilePlan plan, CancellationToken ct)
+    private async Task ValidatePlanAsync(ApplicationDbContext db,   IQbittorrentSession session, DownloadTask task,
+                                         FilePlan             plan, CancellationToken   ct,
+                                         bool                 allowCompletedReplacementCollision = false)
     {
         var snapshot = await SnapshotAsync(session, task.InfoHash, ct);
         if (snapshot.IsMoving || !SameRoot(snapshot.SavePath, task.SavePath))
@@ -390,12 +465,13 @@ public sealed class DownloadFileService(
                 throw new InvalidOperationException("目标路径占用另一文件当前路径，不能安全执行改名。");
         }
 
-        await ValidateTargetOccupancyAsync(db, session, task, plan, remote, ct);
+        await ValidateTargetOccupancyAsync(db, session, task, plan, remote, ct, allowCompletedReplacementCollision);
     }
 
-    private async Task ValidateTargetOccupancyAsync(ApplicationDbContext               db, IQbittorrentSession session,
-                                                    DownloadTask                       task, FilePlan plan,
-                                                    IReadOnlyList<TorrentFileSnapshot> remote, CancellationToken ct)
+    private async Task ValidateTargetOccupancyAsync(ApplicationDbContext db, IQbittorrentSession session,
+                                                    DownloadTask task, FilePlan plan,
+                                                    IReadOnlyList<TorrentFileSnapshot> remote, CancellationToken ct,
+                                                    bool allowCompletedReplacementCollision = false)
     {
         if (remote.Count != task.Files.Count || remote.Select(file => file.Index).Distinct().Count() != remote.Count)
             throw new InvalidOperationException("下载器文件身份列表不完整或重复。");
@@ -429,6 +505,13 @@ public sealed class DownloadFileService(
                                                      StringComparer.OrdinalIgnoreCase);
         foreach (var other in others)
         {
+            var hasPendingFileOperation = other.PendingSavePath is not null ||
+                                          other.Files.Any(file => file.PendingRenameFrom is not null ||
+                                                                  file.PendingRenameTo is not null);
+            if (other is { Status: DownloadTaskStatus.Replaced, CompletedAtUtc: null } &&
+                !hasPendingFileOperation)
+                continue;
+
             if (other.Files.Count == 0 && targets.Any(path => IsWithin(path, other.SavePath)))
                 throw new InvalidOperationException("目标目录可能被其他尚未初始化的任务占用。");
             foreach (var file in other.Files)
@@ -447,10 +530,14 @@ public sealed class DownloadFileService(
                 foreach (var path in occupied)
                 {
                     if (!PathsOverlap(target, path)) continue;
-                    var matchingReplacementFile = other.Id == replacementTargetId                       &&
-                                                  EqualPath(target, path)                               &&
-                                                  targetSizes.TryGetValue(target, out var expectedSize) &&
-                                                  expectedSize == file.Size;
+                    var matchingReplacementFile = allowCompletedReplacementCollision &&
+                                                  other.Id == replacementTargetId    &&
+                                                  other is
+                                                  {
+                                                      Status: DownloadTaskStatus.Completed, ReplacedByTaskId: null
+                                                  }                        &&
+                                                  !hasPendingFileOperation &&
+                                                  EqualPath(target, path);
                     if (matchingReplacementFile) continue;
                     var owner = string.IsNullOrWhiteSpace(other.NamingSnapshot)
                         ? other.Id.ToString()
@@ -542,7 +629,8 @@ public sealed class DownloadFileService(
 
         var pendingPlan =
             new FilePlan(targetRoot, task.Files.ToDictionary(file => file.FileIndex, file => file.PendingRenameTo!));
-        await ValidateTargetOccupancyAsync(db, session, task, pendingPlan, remote, ct);
+        await ValidateTargetOccupancyAsync(db, session, task, pendingPlan, remote, ct,
+                                           snapshot.Progress >= 1);
         foreach (var file in task.Files.OrderBy(value => value.FileIndex))
         {
             var observed = remote.SingleOrDefault(value => value.Index == file.FileIndex);
@@ -559,7 +647,8 @@ public sealed class DownloadFileService(
         if (task.Files.Any(file => !remote.Any(observed => observed.Index == file.FileIndex &&
                                                            observed.Size  == file.Size      &&
                                                            observed.Path  == file.PendingRenameTo))) return false;
-        await ValidateTargetOccupancyAsync(db, session, task, pendingPlan, remote, ct);
+        await ValidateTargetOccupancyAsync(db, session, task, pendingPlan, remote, ct,
+                                           snapshot.Progress >= 1);
         if (!SameRoot(snapshot.SavePath, targetRoot)) await session.SetLocationAsync(task.InfoHash, targetRoot, ct);
         snapshot = await SnapshotAsync(session, task.InfoHash, ct);
         if (snapshot.IsMoving || !SameRoot(snapshot.SavePath, targetRoot)) return false;
