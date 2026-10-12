@@ -105,8 +105,6 @@ public sealed class ManageSelectionRuleSettingsTests
         return (service, store);
     }
 
-    private static string StoredJson(MemoryApplicationSettingStore store)
-    {
-        return store.Values[ManageSelectionRuleSettings.SettingKey].Value;
-    }
+    private static string StoredJson(MemoryApplicationSettingStore store) =>
+        store.Values[ManageSelectionRuleSettings.SettingKey].Value;
 }

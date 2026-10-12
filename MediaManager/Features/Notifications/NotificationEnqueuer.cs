@@ -44,9 +44,8 @@ public sealed class NotificationEnqueuer(
     }
 
     private NotificationDelivery CreateDelivery(NotificationChannel channel, NotificationEventType eventType,
-                                                string              title,   string                message)
-    {
-        return new NotificationDelivery
+                                                string              title,   string                message) =>
+        new()
         {
             Id           = Guid.NewGuid(),
             Channel      = channel,
@@ -56,7 +55,6 @@ public sealed class NotificationEnqueuer(
             Status       = NotificationDeliveryStatus.Pending,
             CreatedAtUtc = timeProvider.GetUtcNow()
         };
-    }
 
     private static string Truncate(string text, int maxLength)
     {

@@ -87,9 +87,6 @@ public sealed class EfApplicationSettingStoreTests
 
     private sealed class FixedTimeProvider(DateTimeOffset timestamp) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow()
-        {
-            return timestamp;
-        }
+        public override DateTimeOffset GetUtcNow() => timestamp;
     }
 }

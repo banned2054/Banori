@@ -27,17 +27,13 @@ public enum DownloadTaskStatus
 
 public static class DownloadTaskStatusExtensions
 {
-    public static bool IsActive(this DownloadTaskStatus status)
-    {
-        return status is DownloadTaskStatus.PendingSubmit
-                      or DownloadTaskStatus.Submitting or DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused;
-    }
+    public static bool IsActive(this DownloadTaskStatus status) =>
+        status is DownloadTaskStatus.PendingSubmit
+               or DownloadTaskStatus.Submitting or DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused;
 
-    public static bool IsFinal(this DownloadTaskStatus status)
-    {
-        return status is DownloadTaskStatus.Completed
-                      or DownloadTaskStatus.Failed or DownloadTaskStatus.Lost or DownloadTaskStatus.Replaced;
-    }
+    public static bool IsFinal(this DownloadTaskStatus status) =>
+        status is DownloadTaskStatus.Completed
+               or DownloadTaskStatus.Failed or DownloadTaskStatus.Lost or DownloadTaskStatus.Replaced;
 }
 
 /// <summary>下载任务列表投影。</summary>

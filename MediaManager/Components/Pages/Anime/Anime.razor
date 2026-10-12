@@ -93,22 +93,17 @@ else
 		_vm = new AnimePageViewModel(Queries);
 	}
 
-	protected override Task OnInitializedAsync()
-	{
-		return RunAsync(_vm.LoadAsync);
-	}
+	protected override Task OnInitializedAsync() => RunAsync(_vm.LoadAsync);
 
 	private void Toggle(int subjectId)
 	{
 		_vm.Toggle(subjectId);
 	}
 
-	private static string FormatEpisode(decimal episode)
-	{
-		return episode == decimal.Truncate(episode)
+	private static string FormatEpisode(decimal episode) =>
+		episode == decimal.Truncate(episode)
 			? ((int)episode).ToString(CultureInfo.InvariantCulture)
 			: episode.ToString(CultureInfo.InvariantCulture);
-	}
 
 	/// <summary>页面离开后取消进行中的查询属于预期，不向线路报错。</summary>
 	private async Task RunAsync(Func<CancellationToken, Task> operation)

@@ -23,9 +23,8 @@ public sealed class FeedItemQueries(IDbContextFactory<ApplicationDbContext> dbCo
                     .ToList();
     }
 
-    private static FeedItemView ToView(FeedItem item)
-    {
-        return new FeedItemView
+    private static FeedItemView ToView(FeedItem item) =>
+        new()
         {
             Id               = item.Id,
             SubscriptionId   = item.SubscriptionId,
@@ -52,5 +51,4 @@ public sealed class FeedItemQueries(IDbContextFactory<ApplicationDbContext> dbCo
             NamingPreview    = item.NamingPreview,
             SelectionOutcome = item.SelectionOutcome
         };
-    }
 }

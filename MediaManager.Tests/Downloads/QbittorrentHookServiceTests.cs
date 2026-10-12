@@ -106,15 +106,11 @@ public sealed class QbittorrentHookServiceTests
 
     private sealed class StubQbittorrentSessionFactory : IQbittorrentSessionFactory
     {
-        public Task<IQbittorrentSession> CreateAsync(CancellationToken cancellationToken = default)
-        {
+        public Task<IQbittorrentSession> CreateAsync(CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("钩子测试不应创建下载器会话。");
-        }
 
         public Task<IQbittorrentSession> CreateAsync(QbittorrentSettings settings, string? password,
-                                                     CancellationToken   cancellationToken = default)
-        {
+                                                     CancellationToken   cancellationToken = default) =>
             throw new InvalidOperationException("钩子测试不应创建下载器会话。");
-        }
     }
 }

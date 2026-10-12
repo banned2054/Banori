@@ -74,14 +74,12 @@ public sealed class DownloadTaskFilesMigrationTests
         }
     }
 
-    private static DownloadTaskFile CreateFile(Guid taskId)
-    {
-        return new DownloadTaskFile
+    private static DownloadTaskFile CreateFile(Guid taskId) =>
+        new()
         {
             Id = Guid.NewGuid(), DownloadTaskId = taskId, FileIndex = 0,
             OriginalRelativePath = "Original/Subs/episode01.chi.ass",
             CurrentRelativePath = "Seed/Original/Subs/episode01.chi.ass",
             Kind = DownloadFileKind.Seed, ClassificationReason = "未识别", UpdatedAtUtc = DateTimeOffset.UtcNow
         };
-    }
 }

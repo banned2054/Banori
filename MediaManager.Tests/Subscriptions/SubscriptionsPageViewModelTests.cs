@@ -161,12 +161,10 @@ public sealed class SubscriptionsPageViewModelTests
         }
     }
 
-    private static SubscriptionsPageViewModel CreateViewModel(IServiceScope scope)
-    {
-        return new SubscriptionsPageViewModel(scope.ServiceProvider.GetRequiredService<SubscriptionService>(),
-                                              scope.ServiceProvider.GetRequiredService<ProxyService>(),
-                                              NullLogger<SubscriptionsPageViewModel>.Instance);
-    }
+    private static SubscriptionsPageViewModel CreateViewModel(IServiceScope scope) =>
+        new(scope.ServiceProvider.GetRequiredService<SubscriptionService>(),
+            scope.ServiceProvider.GetRequiredService<ProxyService>(),
+            NullLogger<SubscriptionsPageViewModel>.Instance);
 
     private static async Task EnsureCreatedAsync(IServiceScope scope)
     {
@@ -199,9 +197,6 @@ public sealed class SubscriptionsPageViewModelTests
 
     private sealed class FixedTimeProvider(DateTimeOffset timestamp) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow()
-        {
-            return timestamp;
-        }
+        public override DateTimeOffset GetUtcNow() => timestamp;
     }
 }

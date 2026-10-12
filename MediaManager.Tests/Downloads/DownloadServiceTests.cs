@@ -608,17 +608,12 @@ public sealed class DownloadServiceTests
     }
 
     /// <summary>构造喵萌奶茶屋式发布名：全角斜杠保留标题分隔含义，同时是合法单级种子文件名。</summary>
-    private static string NekoTitle(string language, string resolution = "1080p", int episode = 12)
-    {
-        return $"【喵萌奶茶屋】★07月新番★[{NekoSeriesTitle.Replace(" ", " ／ ")}][{episode}][{resolution}]" +
-               $"[{language}].mp4";
-    }
+    private static string NekoTitle(string language, string resolution = "1080p", int episode = 12) =>
+        $"【喵萌奶茶屋】★07月新番★[{NekoSeriesTitle.Replace(" ", " ／ ")}][{episode}][{resolution}]" +
+        $"[{language}].mp4";
 
     /// <summary>解析器对喵萌式发布名产出的系列标题（含 " ／ " 分隔符）：标题映射键与评估器同源。</summary>
-    private static string NekoParsedTitle()
-    {
-        return new AniParser().Parse(NekoTitle("简日双语"))!.Title;
-    }
+    private static string NekoParsedTitle() => new AniParser().Parse(NekoTitle("简日双语"))!.Title;
 
     private static void AddNekoFeedItem(TestHarness harness, string stableId, string title)
     {
@@ -979,22 +974,18 @@ public sealed class DownloadServiceTests
     }
 
     /// <summary>测试规则：喵萌奶茶屋列入组序，语言序沿用默认（简日 JpSc 优先）。</summary>
-    private static SelectionRuleConfig NekoRules(params EnumLanguage[] languageOrder)
-    {
-        return SelectionRuleConfig.CreateDefault() with
+    private static SelectionRuleConfig NekoRules(params EnumLanguage[] languageOrder) =>
+        SelectionRuleConfig.CreateDefault() with
         {
             GroupOrder = ["喵萌奶茶屋"],
             LanguageOrder = languageOrder.Length > 0 ? languageOrder : [EnumLanguage.JpSc, EnumLanguage.Sc]
         };
-    }
 
-    private static FeedSourceItem RssItem(string stableId, string title, string torrentUrl)
-    {
-        return new FeedSourceItem($"guid:{stableId}", stableId, title,
-                                  new Uri($"https://example.com/posts/{stableId}"),
-                                  new Uri(torrentUrl),
-                                  new DateTimeOffset(2026, 10, 5, 0, 0, 0, TimeSpan.Zero));
-    }
+    private static FeedSourceItem RssItem(string stableId, string title, string torrentUrl) =>
+        new($"guid:{stableId}", stableId, title,
+            new Uri($"https://example.com/posts/{stableId}"),
+            new Uri(torrentUrl),
+            new DateTimeOffset(2026, 10, 5, 0, 0, 0, TimeSpan.Zero));
 
     private static async Task<int> CountTasksAsync(TestHarness harness)
     {
@@ -1783,7 +1774,8 @@ public sealed class DownloadServiceTests
     }
 
     [Fact]
-    public async Task Reconcile_SharedOriginalPathConflict_FirstTaskRenamesEarly_SecondFailsAtCompletionWithoutOverwrite()
+    public async Task
+        Reconcile_SharedOriginalPathConflict_FirstTaskRenamesEarly_SecondFailsAtCompletionWithoutOverwrite()
     {
         using var    harness  = await CreateHarnessAsync(enableFileArchive : true);
         const string original = "Unparseable original.mkv";
@@ -1873,12 +1865,15 @@ public sealed class DownloadServiceTests
             ("Original Pack/Video/" + title, "Library/Anime/测试作品 E12.mp4"),
             ("Original Pack/Extras/notes.txt", "Seeding/Originals/Original Pack/Extras/notes.txt")
         ], harness.Store.RenameFileCalls.Select(call => (call.OldPath, call.NewPath)).ToList());
-        await using var db      = await harness.CreateDbContextAsync();
-        var             settled = await db.DownloadTaskFiles.AsNoTracking()
-                                                  .Where(file => file.DownloadTaskId == taskId)
-                                                  .OrderBy(file => file.FileIndex).ToListAsync();
-        Assert.Equal(new[] { "Library/Anime/测试作品 E12.mp4",
-                             "Seeding/Originals/Original Pack/Extras/notes.txt" },
+        await using var db = await harness.CreateDbContextAsync();
+        var settled = await db.DownloadTaskFiles.AsNoTracking()
+                              .Where(file => file.DownloadTaskId == taskId)
+                              .OrderBy(file => file.FileIndex).ToListAsync();
+        Assert.Equal(new[]
+                     {
+                         "Library/Anime/测试作品 E12.mp4",
+                         "Seeding/Originals/Original Pack/Extras/notes.txt"
+                     },
                      settled.Select(file => file.CurrentRelativePath));
         Assert.All(settled, file => Assert.Null(file.PendingRenameTo));
 
@@ -1899,10 +1894,10 @@ public sealed class DownloadServiceTests
         using var harness = await CreateHarnessAsync(enableFileArchive : true);
         await harness.SaveNamingTemplateAsync("{title}");
         await harness.SaveFileNamingTemplateAsync("{title} E{episode}/{title}");
-        var title       = NekoTitle("简日双语");
-        var taskId      = await harness.CreateUploadAsync(TestTorrentBytes.Create(title));
-        var registered  = await harness.GetTaskAsync(taskId);
-        var hash        = registered.InfoHash;
+        var title      = NekoTitle("简日双语");
+        var taskId     = await harness.CreateUploadAsync(TestTorrentBytes.Create(title));
+        var registered = await harness.GetTaskAsync(taskId);
+        var hash       = registered.InfoHash;
         await harness.ReconcileAsync();
         harness.Store.FileIdentities[hash] = [new TorrentFileSnapshot(0, title, 1024)];
         harness.Store.Files[hash]          = [title];
@@ -1947,6 +1942,13 @@ public sealed class DownloadServiceTests
         var archivedPath = taskA.NamingSnapshot + ".mp4";
         Assert.Equal(archivedPath, Assert.Single(harness.Store.Files[taskA.InfoHash]));
 
+        // A 再占用目标路径后，B 的提前整理会失败；该异常不能阻止本轮保存下载器进度。
+        harness.Store.Torrents[taskB.InfoHash] = harness.Store.Torrents[taskB.InfoHash] with { Progress = 0.42 };
+        await harness.ReconcileAsync();
+        var stillDownloading = await harness.GetTaskAsync(taskIdB);
+        Assert.Equal(DownloadTaskStatus.Downloading, stillDownloading.Status);
+        Assert.Equal(0.42, stillDownloading.Progress);
+
         CompleteTorrent(harness, taskB.InfoHash);
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                                                                                 harness.Provider
@@ -1959,6 +1961,8 @@ public sealed class DownloadServiceTests
         Assert.Equal(DownloadTaskStatus.Failed, failed.Status);
         Assert.Equal("文件整理", failed.FailedStep);
         Assert.Contains("占用", failed.Error);
+        Assert.Contains(taskIdA.ToString(), failed.Error);
+        Assert.Equal(1.0, failed.Progress);
         Assert.Null(failed.CompletedAtUtc);
         Assert.Null(failed.PendingSavePath);
         Assert.Equal(archivedPath, Assert.Single(harness.Store.Files[taskA.InfoHash]));
@@ -2577,10 +2581,7 @@ public sealed class DownloadServiceTests
 
     private static byte[] CreateMultiFileTorrent(string name, params (string Path, long Size)[] files)
     {
-        static string Encode(string value)
-        {
-            return $"{Encoding.UTF8.GetByteCount(value)}:{value}";
-        }
+        static string Encode(string value) => $"{Encoding.UTF8.GetByteCount(value)}:{value}";
 
         var entries = string.Concat(files.Select(file =>
                                                      $"d6:lengthi{file.Size}e4:pathl{string.Concat(file.Path.Split('/').Select(Encode))}ee"));
@@ -2601,12 +2602,10 @@ public sealed class DownloadServiceTests
     }
 
     /// <summary>与命名预览同源生成的命名要素：渲染结果必须恰好等于 naming（"测试作品 E01 [Sc]" 形态）。</summary>
-    private static string BuildNamingIngredients(decimal episode, int version)
-    {
-        return new TorrentNamingIngredients("{title} E{episode} {version} [{group}]", "测试作品",
-                                            ReleaseNamePreviewPolicy.FormatEpisodeText(episode), version, "Sc",
-                                            null).ToJson();
-    }
+    private static string BuildNamingIngredients(decimal episode, int version) =>
+        new TorrentNamingIngredients("{title} E{episode} {version} [{group}]", "测试作品",
+                                     ReleaseNamePreviewPolicy.FormatEpisodeText(episode), version, "Sc",
+                                     null).ToJson();
 
     private static async Task SeedSubjectAsync(TestHarness harness, int subjectId)
     {
@@ -2665,10 +2664,7 @@ public sealed class DownloadServiceTests
         return itemId;
     }
 
-    internal static Task<TestHarness> CreateHarnessForPageTestsAsync()
-    {
-        return CreateHarnessAsync();
-    }
+    internal static Task<TestHarness> CreateHarnessForPageTestsAsync() => CreateHarnessAsync();
 
     private static async Task<TestHarness> CreateHarnessAsync(bool configureDownloader = true,
                                                               bool enableFileArchive   = false)
@@ -2752,10 +2748,7 @@ public sealed class DownloadServiceTests
 
     private sealed class FixedTimeProvider(DateTimeOffset timestamp) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow()
-        {
-            return timestamp;
-        }
+        public override DateTimeOffset GetUtcNow() => timestamp;
     }
 
     /// <summary>Bangumi 元数据替身：未特制时按 Id 生成确定性元数据（中文名优先供命名断言）。</summary>
@@ -2763,14 +2756,12 @@ public sealed class DownloadServiceTests
     {
         public Dictionary<int, SubjectMetadata> Overrides { get; } = [];
 
-        public Task<SubjectMetadata> GetAsync(int subjectId, CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(Overrides.TryGetValue(subjectId, out var metadata)
-                                       ? metadata
-                                       : new SubjectMetadata(subjectId, $"Subject {subjectId}",
-                                                             $"测试作品{subjectId}", "TV", "2026-01-01", null,
-                                                             timestamp));
-        }
+        public Task<SubjectMetadata> GetAsync(int subjectId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Overrides.TryGetValue(subjectId, out var metadata)
+                                ? metadata
+                                : new SubjectMetadata(subjectId, $"Subject {subjectId}",
+                                                      $"测试作品{subjectId}", "TV", "2026-01-01", null,
+                                                      timestamp));
     }
 
     /// <summary>条目链接解析替身：按绝对地址精确返回配置的 Subject ID，未配置视为解析不出。</summary>
@@ -2779,12 +2770,10 @@ public sealed class DownloadServiceTests
         public Dictionary<string, int> ResolvedLinks { get; } = new(StringComparer.Ordinal);
 
         public Task<int?> ResolveSubjectIdAsync(Uri               episodeUri, Guid? proxyId = null,
-                                                CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(ResolvedLinks.TryGetValue(episodeUri.AbsoluteUri, out var subjectId)
-                                       ? subjectId
-                                       : (int?)null);
-        }
+                                                CancellationToken cancellationToken = default) =>
+            Task.FromResult(ResolvedLinks.TryGetValue(episodeUri.AbsoluteUri, out var subjectId)
+                                ? subjectId
+                                : null);
     }
 
     /// <summary>条目 stableId 与种子名的注册表；种子字节按种子名确定性生成，同名单同 hash。</summary>
@@ -2828,25 +2817,18 @@ public sealed class DownloadServiceTests
             }
         }
 
-        public Task<Guid> CreateDownloadAsync(Guid itemId)
-        {
-            return Intake.CreateForFeedItemAsync(itemId);
-        }
+        public Task<Guid> CreateDownloadAsync(Guid itemId) => Intake.CreateForFeedItemAsync(itemId);
 
         /// <summary>
         ///     上传包装：默认绑定预置 Subject 42（多数用例只关心登记后的管线行为）；
         ///     门禁相关用例显式传 subjectId 覆盖（null 表示不绑定）。
         /// </summary>
-        public Task<Guid> CreateUploadAsync(byte[] torrentBytes, string? siteSource = null, int? subjectId = 42)
-        {
-            return Intake.CreateFromUploadAsync(torrentBytes, siteSource, subjectId);
-        }
+        public Task<Guid> CreateUploadAsync(byte[] torrentBytes, string? siteSource = null, int? subjectId = 42) =>
+            Intake.CreateFromUploadAsync(torrentBytes, siteSource, subjectId);
 
         public Task<RssDownloadResult> CreateFromRssFeedAsync(string feedUrl, Guid? proxyId = null,
-                                                              int?   subjectId = null)
-        {
-            return Intake.CreateFromRssFeedAsync(feedUrl, proxyId, subjectId);
-        }
+                                                              int?   subjectId = null) =>
+            Intake.CreateFromRssFeedAsync(feedUrl, proxyId, subjectId);
 
         /// <summary>落 Subject 元数据与标题映射：rawTitles 用评估器同源归一化，供绑定门禁命中。</summary>
         public async Task SeedSubjectMappingAsync(int             subjectId, string name, string nameCn,
@@ -2870,10 +2852,7 @@ public sealed class DownloadServiceTests
             await db.SaveChangesAsync();
         }
 
-        public Task ReconcileAsync()
-        {
-            return Service.ReconcileAsync();
-        }
+        public Task ReconcileAsync() => Service.ReconcileAsync();
 
         public async Task<DownloadTask> GetTaskAsync(Guid taskId)
         {

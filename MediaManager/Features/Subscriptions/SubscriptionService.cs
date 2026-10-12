@@ -225,11 +225,9 @@ public sealed class SubscriptionService(
     {
         return MatchesHost(host, "mikanani.me") || MatchesHost(host, "anibt.net");
 
-        static bool MatchesHost(string value, string baseHost)
-        {
-            return value.Equals(baseHost, StringComparison.OrdinalIgnoreCase) ||
-                   value.EndsWith($".{baseHost}", StringComparison.OrdinalIgnoreCase);
-        }
+        static bool MatchesHost(string value, string baseHost) =>
+            value.Equals(baseHost, StringComparison.OrdinalIgnoreCase) ||
+            value.EndsWith($".{baseHost}", StringComparison.OrdinalIgnoreCase);
     }
 
     private SubscriptionView ToView(MediaSubscription item, RefreshWorkStatus? latestStatus)

@@ -97,7 +97,8 @@ public sealed class ReleaseNamePreviewPolicyTests
     {
         var ingredients = new TorrentNamingIngredients(
                                                        "[Anime]{title}/{source}", "测试作品", "02", 1, "Sc", "mikan",
-                                                       FileTemplate : "[{bgm.date:yyyy.MM}]{bgm.nameCn}/{bgm.nameCn} E{ani.episode:ee} {source}",
+                                                       FileTemplate :
+                                                       "[{bgm.date:yyyy.MM}]{bgm.nameCn}/{bgm.nameCn} E{ani.episode:ee} {source}",
                                                        BangumiDate : "2026-04-05", BangumiNameCn : "测试/作品");
 
         var policy = new ReleaseNamePreviewPolicy();

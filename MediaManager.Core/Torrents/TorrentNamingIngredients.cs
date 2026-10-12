@@ -32,10 +32,7 @@ public sealed record TorrentNamingIngredients(
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public string ToJson()
-    {
-        return JsonSerializer.Serialize(this, JsonOptions);
-    }
+    public string ToJson() => JsonSerializer.Serialize(this, JsonOptions);
 
     /// <summary>旧行或脏数据没有合法要素 JSON 时返回 null，调用方回退按命名快照改名。</summary>
     public static TorrentNamingIngredients? FromJson(string? json)

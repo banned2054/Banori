@@ -46,9 +46,6 @@ public sealed class DownloadFileClassificationPolicy(AniParser aniParser)
             return new DownloadFileClassification(normalized, DownloadFileKind.Seed, parsed, "AniParser 未解析到集数");
         return new DownloadFileClassification(normalized, DownloadFileKind.Content, parsed, "AniParser 已解析到集数");
 
-        DownloadFileClassification Seed(string reason)
-        {
-            return new DownloadFileClassification(normalized, DownloadFileKind.Seed, null, reason);
-        }
+        DownloadFileClassification Seed(string reason) => new(normalized, DownloadFileKind.Seed, null, reason);
     }
 }

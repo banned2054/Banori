@@ -29,15 +29,11 @@ public sealed class MemoryApplicationSettingStore : IApplicationSettingStore
         return Task.FromResult(Values.TryGetValue(key, out var value) ? value.Value : null);
     }
 
-    public Task SetAsync(string key, string value, CancellationToken cancellationToken = default)
-    {
-        return SetCore(key, value, false);
-    }
+    public Task SetAsync(string key, string value, CancellationToken cancellationToken = default) =>
+        SetCore(key, value, false);
 
-    public Task SetProtectedAsync(string key, string value, CancellationToken cancellationToken = default)
-    {
-        return SetCore(key, value, true);
-    }
+    public Task SetProtectedAsync(string key, string value, CancellationToken cancellationToken = default) =>
+        SetCore(key, value, true);
 
     public Task RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
@@ -196,10 +192,8 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
 
 
     public Task<IReadOnlyList<string>> ListFileNamesAsync(
-        string infoHash, CancellationToken cancellationToken = default)
-    {
-        return Task.FromResult<IReadOnlyList<string>>(store.Files.TryGetValue(infoHash, out var names) ? names : []);
-    }
+        string infoHash, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<string>>(store.Files.TryGetValue(infoHash, out var names) ? names : []);
 
 
     public Task<IReadOnlyList<TorrentFileSnapshot>> ListFilesAsync(string            infoHash,
@@ -298,10 +292,7 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         return Task.CompletedTask;
     }
 
-    public ValueTask DisposeAsync()
-    {
-        return ValueTask.CompletedTask;
-    }
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     private TorrentSnapshot SnapshotFor(string hash)
     {
@@ -324,11 +315,9 @@ public sealed class FakeQbittorrentSessionFactory(FakeTorrentStore store) : IQbi
 
     public FakeQbittorrentSession LastSession { get; private set; } = null!;
 
-    public Task<IQbittorrentSession> CreateAsync(CancellationToken cancellationToken = default)
-    {
-        return CreateAsync(new QbittorrentSettings("http://qb.test", "admin", "/downloads", true), "secret",
-                           cancellationToken);
-    }
+    public Task<IQbittorrentSession> CreateAsync(CancellationToken cancellationToken = default) =>
+        CreateAsync(new QbittorrentSettings("http://qb.test", "admin", "/downloads", true), "secret",
+                    cancellationToken);
 
     public Task<IQbittorrentSession> CreateAsync(QbittorrentSettings settings, string? password,
                                                  CancellationToken   cancellationToken = default)
@@ -396,17 +385,12 @@ public static class TestTorrentBytes
                                       "ee");
     }
 
-    public static string InfoHashOf(string name)
-    {
-        return TorrentInfoHashExtractor.TryExtractInfoHash(Create(name), out var hash)
+    public static string InfoHashOf(string name) =>
+        TorrentInfoHashExtractor.TryExtractInfoHash(Create(name), out var hash)
             ? hash
             : throw new InvalidOperationException("测试种子字节无效。");
-    }
 
-    private static string Encode(string value)
-    {
-        return $"{Encoding.UTF8.GetByteCount(value)}:{value}";
-    }
+    private static string Encode(string value) => $"{Encoding.UTF8.GetByteCount(value)}:{value}";
 }
 
 /// <summary>Subject 绑定解析的空实现替身：不触达绑定链路的测试 harness 只为满足 DownloadService 构造签名。</summary>
@@ -414,10 +398,8 @@ public sealed class NullSubjectMetadataProvider : ISubjectMetadataProvider
 {
     public static readonly NullSubjectMetadataProvider Instance = new();
 
-    public Task<SubjectMetadata> GetAsync(int subjectId, CancellationToken cancellationToken = default)
-    {
+    public Task<SubjectMetadata> GetAsync(int subjectId, CancellationToken cancellationToken = default) =>
         throw new InvalidOperationException("该测试不应读取 Bangumi 元数据。");
-    }
 }
 
 public sealed class NullSubjectLinkResolver : ISubjectLinkResolver
@@ -425,10 +407,8 @@ public sealed class NullSubjectLinkResolver : ISubjectLinkResolver
     public static readonly NullSubjectLinkResolver Instance = new();
 
     public Task<int?> ResolveSubjectIdAsync(Uri               episodeUri, Guid? proxyId = null,
-                                            CancellationToken cancellationToken = default)
-    {
+                                            CancellationToken cancellationToken = default) =>
         throw new InvalidOperationException("该测试不应解析条目链接。");
-    }
 }
 
 /// <summary>测试用应用生命周期：供依赖 IHostApplicationLifetime 的业务服务在测试中构造。</summary>

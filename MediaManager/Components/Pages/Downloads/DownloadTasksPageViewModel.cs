@@ -10,10 +10,11 @@ public sealed class DownloadTasksPageViewModel(
     ILogger<DownloadTasksPageViewModel> logger,
     IDownloadFileService?               fileService = null)
 {
-    private readonly Dictionary<Guid, DownloadTaskFilesState> _fileStates          = [];
-    private readonly HashSet<Guid>                            _selectedIds         = [];
-    private          Guid[]                                   _bulkConfirmationIds = [];
-    private          long                                     _bulkRequestId;
+    private readonly Dictionary<Guid, DownloadTaskFilesState> _fileStates = [];
+
+    private readonly HashSet<Guid> _selectedIds         = [];
+    private          Guid[]        _bulkConfirmationIds = [];
+    private          long          _bulkRequestId;
 
     private bool _deleteFiles;
 
@@ -106,7 +107,7 @@ public sealed class DownloadTasksPageViewModel(
     {
         var state = FileState(taskId);
         state.Expanded = !state.Expanded;
-        if (state.Expanded && state.Details is null)
+        if (state is { Expanded: true, Details: null })
             await LoadFilesAsync(taskId, cancellationToken);
     }
 
@@ -171,8 +172,9 @@ public sealed class DownloadTasksPageViewModel(
         try
         {
             var preview = await RequireFileService().PreviewAsync(taskId, fileIndex, request, cancellationToken);
-            if (IsCurrentFileState(taskId, state) && state.Drafts.GetValueOrDefault(fileIndex) == draft &&
-                draft.Request                                                                  == request)
+            if (IsCurrentFileState(taskId, state)                  &&
+                state.Drafts.GetValueOrDefault(fileIndex) == draft &&
+                draft.Request                             == request)
             {
                 draft.Preview        = preview;
                 draft.PreviewRequest = request;
@@ -231,15 +233,11 @@ public sealed class DownloadTasksPageViewModel(
         }
     }
 
-    private IDownloadFileService RequireFileService()
-    {
-        return fileService ?? throw new InvalidOperationException("文件详情服务尚未启用。");
-    }
+    private IDownloadFileService RequireFileService() =>
+        fileService ?? throw new InvalidOperationException("文件详情服务尚未启用。");
 
-    private bool IsCurrentFileState(Guid taskId, DownloadTaskFilesState state)
-    {
-        return _fileStates.GetValueOrDefault(taskId) == state;
-    }
+    private bool IsCurrentFileState(Guid taskId, DownloadTaskFilesState state) =>
+        _fileStates.GetValueOrDefault(taskId) == state;
 
     public void ToggleBatchMode()
     {
@@ -256,10 +254,7 @@ public sealed class DownloadTasksPageViewModel(
         InvalidateBulkPanel();
     }
 
-    public bool IsSelected(Guid taskId)
-    {
-        return _selectedIds.Contains(taskId);
-    }
+    public bool IsSelected(Guid taskId) => _selectedIds.Contains(taskId);
 
     public void ToggleSelectAll()
     {
@@ -385,11 +380,9 @@ public sealed class DownloadTasksPageViewModel(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            if (requestId == _deleteRequestId && DeleteTarget?.Id == task.Id)
-            {
-                DeleteTarget        = null;
-                TorrentInDownloader = null;
-            }
+            if (requestId != _deleteRequestId || DeleteTarget?.Id != task.Id) throw;
+            DeleteTarget        = null;
+            TorrentInDownloader = null;
 
             throw;
         }
@@ -415,8 +408,7 @@ public sealed class DownloadTasksPageViewModel(
         DeleteTarget = null;
         await RunOperationAsync(taskId,
                                 () => downloadService.DeleteAsync(taskId, deleteFromDownloader, deleteFiles,
-                                                                  cancellationToken),
-                                "任务已删除。", cancellationToken);
+                                                                  cancellationToken), "任务已删除。", cancellationToken);
     }
 
     /// <summary>上传种子登记：读取浏览器流后交给服务校验与去重，创建即等待提交。</summary>
@@ -424,23 +416,21 @@ public sealed class DownloadTasksPageViewModel(
     {
         using var buffer = new MemoryStream();
         await torrentStream.CopyToAsync(buffer, cancellationToken);
-        if (buffer.Length == 0)
+        switch (buffer.Length)
         {
-            NoteFailure("所选文件为空，请重新选择。");
-            return;
+            case 0 :
+                NoteFailure("所选文件为空，请重新选择。");
+                return;
+            case > DownloadIntakeService.MaxTorrentUploadBytes :
+                NoteFailure("种子文件超过 10 MB，已拒绝。");
+                return;
+            default :
+                await RunCoreAsync(() => intakeService.CreateFromUploadAsync(buffer.ToArray(), UploadSiteSource,
+                                                                             UploadSubjectId, cancellationToken),
+                                   "上传种子已登记，等待提交下载器。", cancellationToken,
+                                   exception => logger.LogWarning(exception, "上传种子登记失败。"));
+                break;
         }
-
-        if (buffer.Length > DownloadIntakeService.MaxTorrentUploadBytes)
-        {
-            NoteFailure("种子文件超过 10 MB，已拒绝。");
-            return;
-        }
-
-        await RunCoreAsync(
-                           () => intakeService.CreateFromUploadAsync(buffer.ToArray(), UploadSiteSource,
-                                                                     UploadSubjectId, cancellationToken),
-                           "上传种子已登记，等待提交下载器。", cancellationToken,
-                           exception => logger.LogWarning(exception, "上传种子登记失败。"));
     }
 
     /// <summary>浏览器文件读取失败（超过传输上限或流中断）时直接提示，不触发服务调用。</summary>
@@ -475,8 +465,8 @@ public sealed class DownloadTasksPageViewModel(
                            exception => logger.LogWarning(exception, "下载任务 {TaskId} 操作失败。", taskId));
     }
 
-    private async Task RunCoreAsync(Func<Task> operation, string successMessage, CancellationToken cancellationToken,
-                                    Action<Exception> logFailure)
+    private async Task RunCoreAsync(
+        Func<Task> operation, string successMessage, CancellationToken cancellationToken, Action<Exception> logFailure)
     {
         Busy    = true;
         Message = null;
@@ -511,13 +501,14 @@ public sealed class DownloadTasksPageViewModel(
 /// <summary>仅属于页面生命周期的文件详情与编辑草稿。</summary>
 public sealed class DownloadTaskFilesState
 {
-    public bool                                   Expanded { get; internal set; }
-    public bool                                   Loading  { get; internal set; }
-    public bool                                   Busy     { get; internal set; }
-    public string?                                Error    { get; internal set; }
-    public string?                                Message  { get; internal set; }
-    public DownloadTaskFilesView?                 Details  { get; internal set; }
-    public Dictionary<int, DownloadFileEditDraft> Drafts   { get; } = [];
+    public bool    Expanded { get; internal set; }
+    public bool    Loading  { get; internal set; }
+    public bool    Busy     { get; internal set; }
+    public string? Error    { get; internal set; }
+    public string? Message  { get; internal set; }
+
+    public DownloadTaskFilesView?                 Details { get; internal set; }
+    public Dictionary<int, DownloadFileEditDraft> Drafts  { get; } = [];
 }
 
 public sealed class DownloadFileEditDraft(DownloadFileView file)
@@ -536,11 +527,9 @@ public sealed class DownloadFileEditDraft(DownloadFileView file)
         get => _kind;
         set
         {
-            if (_kind != value)
-            {
-                _kind = value;
-                InvalidatePreview();
-            }
+            if (_kind == value) return;
+            _kind = value;
+            InvalidatePreview();
         }
     }
 
@@ -568,11 +557,9 @@ public sealed class DownloadFileEditDraft(DownloadFileView file)
         get => _episode;
         set
         {
-            if (_episode != value)
-            {
-                _episode = value;
-                InvalidatePreview();
-            }
+            if (_episode == value) return;
+            _episode = value;
+            InvalidatePreview();
         }
     }
 
@@ -581,11 +568,9 @@ public sealed class DownloadFileEditDraft(DownloadFileView file)
         get => _episodeEnd;
         set
         {
-            if (_episodeEnd != value)
-            {
-                _episodeEnd = value;
-                InvalidatePreview();
-            }
+            if (_episodeEnd == value) return;
+            _episodeEnd = value;
+            InvalidatePreview();
         }
     }
 
@@ -594,11 +579,9 @@ public sealed class DownloadFileEditDraft(DownloadFileView file)
         get => _animeRelativePath;
         set
         {
-            if (_animeRelativePath != value)
-            {
-                _animeRelativePath = value;
-                InvalidatePreview();
-            }
+            if (_animeRelativePath == value) return;
+            _animeRelativePath = value;
+            InvalidatePreview();
         }
     }
 
@@ -609,7 +592,8 @@ public sealed class DownloadFileEditDraft(DownloadFileView file)
 
     public   DownloadFilePreview?     Preview        { get; internal set; }
     internal DownloadFileEditRequest? PreviewRequest { get; set; }
-    public   bool                     CanApply       => Preview is not null && PreviewRequest == Request;
+
+    public bool CanApply => Preview is not null && PreviewRequest == Request;
 
     public void InvalidatePreview()
     {

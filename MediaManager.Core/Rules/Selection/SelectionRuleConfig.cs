@@ -72,9 +72,8 @@ public sealed record SelectionRuleConfig
     ///     内置默认规则：LoliHouse 先于 ANi，简日先于简中，仅接受 1080p。
     ///     未列出的字幕组与语言参与竞争但排最后，不提前排除。
     /// </summary>
-    public static SelectionRuleConfig CreateDefault()
-    {
-        return new SelectionRuleConfig
+    public static SelectionRuleConfig CreateDefault() =>
+        new()
         {
             Mode               = SelectionMode.Independent,
             GroupOrder         = ["LoliHouse", "ANi"],
@@ -85,5 +84,4 @@ public sealed record SelectionRuleConfig
             Unmatched          = UnmatchedPolicy.LowestPriority,
             AllowedResolutions = [EnumResolution.R1080P]
         };
-    }
 }

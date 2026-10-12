@@ -949,14 +949,12 @@ public sealed class CandidateSelectionServiceTests
         var gate      = new SelectionGroupGate();
         var fixedTime = provider.GetRequiredService<TimeProvider>();
 
-        CandidateSelectionService CreateService()
-        {
-            return new CandidateSelectionService(dbFactory, selectionRuleProvider, gate,
-                                                 provider.GetRequiredService<DownloadCoordinationGate>(),
-                                                 new CandidateEligibilityPolicy(), new CandidateRankingPolicy(),
-                                                 qbSettings, new TestHostApplicationLifetime(), intakeService,
-                                                 fixedTime, NullLogger<CandidateSelectionService>.Instance);
-        }
+        CandidateSelectionService CreateService() =>
+            new(dbFactory, selectionRuleProvider, gate,
+                provider.GetRequiredService<DownloadCoordinationGate>(),
+                new CandidateEligibilityPolicy(), new CandidateRankingPolicy(),
+                qbSettings, new TestHostApplicationLifetime(), intakeService,
+                fixedTime, NullLogger<CandidateSelectionService>.Instance);
 
         var harness = new SelectionHarness(directory, timestamp, provider, downloadService, intakeService,
                                            CreateService(), CreateService(), ruleSettings, brokenStableIds,
@@ -976,10 +974,7 @@ public sealed class CandidateSelectionServiceTests
 
     private sealed class FixedTimeProvider(DateTimeOffset timestamp) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow()
-        {
-            return timestamp;
-        }
+        public override DateTimeOffset GetUtcNow() => timestamp;
     }
 
     private sealed class TorrentFetchCounter
@@ -998,19 +993,14 @@ public sealed class CandidateSelectionServiceTests
 
         internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public bool TryAcquire()
-        {
-            return Interlocked.CompareExchange(ref _acquired, 1, 0) == 0;
-        }
+        public bool TryAcquire() => Interlocked.CompareExchange(ref _acquired, 1, 0) == 0;
     }
 
     /// <summary>固定返回指定规则配置的提供者，用于测试 NeedsReview 等非默认政策。</summary>
     private sealed class FixedRuleProvider(SelectionRuleConfig config) : ISelectionRuleProvider
     {
-        public ValueTask<SelectionRuleConfig> GetAsync(CancellationToken cancellationToken = default)
-        {
-            return ValueTask.FromResult(config);
-        }
+        public ValueTask<SelectionRuleConfig> GetAsync(CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(config);
     }
 
     /// <summary>
@@ -1265,10 +1255,8 @@ public sealed class CandidateSelectionServiceTests
     {
         public static readonly UnusedSubjectProvider Instance = new();
 
-        public Task<SubjectMetadata> GetAsync(int subjectId, CancellationToken cancellationToken = default)
-        {
+        public Task<SubjectMetadata> GetAsync(int subjectId, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("订阅路径不应读取 Bangumi 元数据。");
-        }
     }
 
     private sealed class UnusedSubjectLinkResolver : ISubjectLinkResolver
@@ -1276,9 +1264,7 @@ public sealed class CandidateSelectionServiceTests
         public static readonly UnusedSubjectLinkResolver Instance = new();
 
         public Task<int?> ResolveSubjectIdAsync(Uri               episodeUri, Guid? proxyId = null,
-                                                CancellationToken cancellationToken = default)
-        {
+                                                CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("订阅路径不应解析条目链接。");
-        }
     }
 }

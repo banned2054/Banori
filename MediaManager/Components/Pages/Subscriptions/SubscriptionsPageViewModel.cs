@@ -164,9 +164,7 @@ public sealed class SubscriptionDraft
         IsEnabled              = subscription.IsEnabled;
     }
 
-    public SaveSubscriptionRequest ToRequest()
-    {
-        return new SaveSubscriptionRequest(Id, Name, FeedUrl, IsEnabled, RefreshIntervalMinutes, FixedSubjectId,
-                                           Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null);
-    }
+    public SaveSubscriptionRequest ToRequest() =>
+        new(Id, Name, FeedUrl, IsEnabled, RefreshIntervalMinutes, FixedSubjectId,
+            Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null);
 }

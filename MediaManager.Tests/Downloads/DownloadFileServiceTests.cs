@@ -344,6 +344,44 @@ public sealed class DownloadFileServiceTests
     }
 
     [Fact]
+    public async Task ReplacedCompletedTaskWithoutQbTorrentDoesNotBlockMatchingArchiveFile()
+    {
+        await using var h           = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
+        var             incumbentId = Guid.NewGuid();
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            db.Add(new MediaSubject { Id = 123, Name = "Test Anime", NameCn = "Test Anime", Platform = "TV" });
+            await db.SaveChangesAsync();
+        }
+
+        await h.Update(task =>
+        {
+            task.SubjectId      = 123;
+            task.Version        = 2;
+            task.ReplacesTaskId = incumbentId;
+        });
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var incumbent = new DownloadTask
+            {
+                Id        = incumbentId, InfoHash = new string('a', 40), SavePath = "/downloads/Media/Anime",
+                SubjectId = 123, Episode          = 1, Version = 1, Status = DownloadTaskStatus.Completed
+            };
+            incumbent.Files.Add(new DownloadTaskFile
+            {
+                Id                   = Guid.NewGuid(), DownloadTaskId = incumbent.Id, FileIndex = 0,
+                OriginalRelativePath = "old.mkv", CurrentRelativePath = "E01.mkv", Size         = 1024
+            });
+            db.Add(incumbent);
+            await db.SaveChangesAsync();
+        }
+
+        Assert.True(await h.Service.ArchiveCompletedAsync(h.Task.Id));
+        Assert.Equal("E01.mkv", (await h.Load()).Files.Single().CurrentRelativePath);
+        Assert.Single(h.Store.RenameFileCalls);
+    }
+
+    [Fact]
     public async Task UnmanagedQbTorrentAllTagsOccupiedFileBlocksPlan()
     {
         await using var h    = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
@@ -572,10 +610,7 @@ public sealed class DownloadFileServiceTests
 
         private static byte[] MultiTorrent(string[] names)
         {
-            static string B(string text)
-            {
-                return Encoding.UTF8.GetByteCount(text) + ":" + text;
-            }
+            static string B(string text) => Encoding.UTF8.GetByteCount(text) + ":" + text;
 
             var files = string.Concat(names.Select((name, index) =>
                                                        "d6:lengthi" + (1024 + index) + "e4:pathl" +

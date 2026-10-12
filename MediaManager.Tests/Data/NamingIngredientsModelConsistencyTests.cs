@@ -36,7 +36,7 @@ public sealed class NamingIngredientsModelConsistencyTests
 
         var assembly      = db.GetService<IMigrationsAssembly>();
         var snapshot      = Assert.IsAssignableFrom<ModelSnapshot>(assembly.ModelSnapshot);
-        var snapshotModel = db.GetService<IModelRuntimeInitializer>().Initialize(snapshot.Model, true);
+        var snapshotModel = db.GetService<IModelRuntimeInitializer>().Initialize(snapshot.Model);
         var designModel   = db.GetService<IDesignTimeModel>().Model;
         var differ        = db.GetService<IMigrationsModelDiffer>();
         var differences   = differ.GetDifferences(snapshotModel.GetRelationalModel(), designModel.GetRelationalModel());

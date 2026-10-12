@@ -148,9 +148,9 @@ public sealed class NotificationHookTests
                                                               provider
                                                                  .GetRequiredService<FakeQbittorrentSessionFactory>());
         services.AddSingleton<ITorrentFileSource>(_ => new FakeTorrentFileSource(uri =>
-                                                               TestTorrentBytes
-                                                                  .Create(Path.GetFileNameWithoutExtension(uri.Segments
-                                                                                       [^1]))));
+                                                      TestTorrentBytes
+                                                         .Create(Path.GetFileNameWithoutExtension(uri.Segments
+                                                                     [^1]))));
         services.AddScoped<ManageQbittorrentSettings>();
         services.AddDataProtection();
         services.AddNotificationTestFakes();
@@ -200,10 +200,7 @@ public sealed class NotificationHookTests
 
     private sealed class FixedTimeProvider(DateTimeOffset timestamp) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow()
-        {
-            return timestamp;
-        }
+        public override DateTimeOffset GetUtcNow() => timestamp;
     }
 
     private sealed class HookHarness(
@@ -239,17 +236,13 @@ public sealed class NotificationHookTests
             }
         }
 
-        public Task EnableTelegramAsync(IReadOnlyList<NotificationEventType> events)
-        {
-            return new ManageTelegramSettings(SettingsStore, Telegram)
+        public Task EnableTelegramAsync(IReadOnlyList<NotificationEventType> events) =>
+            new ManageTelegramSettings(SettingsStore, Telegram)
                .SaveAsync(new TelegramSettings("42", null, true, events), "bot-token");
-        }
 
-        public Task EnableGotifyAsync(IReadOnlyList<NotificationEventType> events)
-        {
-            return new ManageGotifySettings(SettingsStore, Gotify)
+        public Task EnableGotifyAsync(IReadOnlyList<NotificationEventType> events) =>
+            new ManageGotifySettings(SettingsStore, Gotify)
                .SaveAsync(new GotifySettings("http://gotify.test", null, true, events), "app-token");
-        }
 
         /// <summary>播种一条优胜条目并创建下载任务，返回任务 ID。</summary>
         public async Task<Guid> SeedAndCreateAsync(string stableId = "item-1")
@@ -288,9 +281,9 @@ public sealed class NotificationHookTests
             return await db.DownloadTasks.AsNoTracking().SingleAsync(value => value.Id == taskId);
         }
 
-        public Task<ApplicationDbContext> CreateDbContextAsync()
-        {
-            return provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>().CreateDbContextAsync();
-        }
+        public Task<ApplicationDbContext> CreateDbContextAsync() => provider
+                                                                   .GetRequiredService<
+                                                                        IDbContextFactory<ApplicationDbContext>>()
+                                                                   .CreateDbContextAsync();
     }
 }

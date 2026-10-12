@@ -188,15 +188,11 @@ public sealed class NotificationDeliveryService(
     }
 
     /// <summary>指数退避：第 n 次失败后等待 2^(n-1) 分钟，封顶 30 分钟。</summary>
-    internal static int BackoffMinutes(int attemptCount)
-    {
-        return (int)Math.Min(Math.Pow(2, attemptCount - 1), BackoffCapMinutes);
-    }
+    internal static int BackoffMinutes(int attemptCount) =>
+        (int)Math.Min(Math.Pow(2, attemptCount - 1), BackoffCapMinutes);
 
-    private static string FormatText(NotificationDelivery delivery)
-    {
-        return string.IsNullOrWhiteSpace(delivery.Title)
+    private static string FormatText(NotificationDelivery delivery) =>
+        string.IsNullOrWhiteSpace(delivery.Title)
             ? delivery.Message
             : $"{delivery.Title}\n{delivery.Message}";
-    }
 }

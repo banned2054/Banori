@@ -11,9 +11,8 @@ public sealed class CandidateRankingPolicyTests
     private static EpisodeCandidate Candidate(string          group, EnumLanguage? language, int version = 1,
                                               EnumResolution  resolution     = EnumResolution.R1080P,
                                               DateTimeOffset? publishedAtUtc = null,
-                                              string?         stableId       = null, Guid? itemId = null)
-    {
-        return new EpisodeCandidate
+                                              string?         stableId       = null, Guid? itemId = null) =>
+        new()
         {
             FeedItemId     = itemId ?? Guid.NewGuid(),
             SubjectId      = 100,
@@ -26,16 +25,14 @@ public sealed class CandidateRankingPolicyTests
             PublishedAtUtc = publishedAtUtc,
             StableId       = stableId ?? $"guid:{group}-{language}-v{version}"
         };
-    }
 
     private static SelectionRuleConfig IndependentConfig(
         SelectionDimensionOrder order         = SelectionDimensionOrder.GroupFirst,
         LanguageMatchMode       match         = LanguageMatchMode.Exact,
         UnmatchedPolicy         unmatched     = UnmatchedPolicy.LowestPriority,
         EnumLanguage[]?         languageOrder = null,
-        int                     version       = 1)
-    {
-        return new SelectionRuleConfig
+        int                     version       = 1) =>
+        new()
         {
             Mode               = SelectionMode.Independent,
             GroupOrder         = ["LoliHouse", "ANi"],
@@ -47,14 +44,12 @@ public sealed class CandidateRankingPolicyTests
             AllowedResolutions = [EnumResolution.R1080P],
             Version            = version
         };
-    }
 
     private static SelectionRuleConfig CombinedConfig(
         IReadOnlyList<CombinedRuleEntry> entries,
         LanguageMatchMode                match     = LanguageMatchMode.Exact,
-        UnmatchedPolicy                  unmatched = UnmatchedPolicy.NeedsReview)
-    {
-        return new SelectionRuleConfig
+        UnmatchedPolicy                  unmatched = UnmatchedPolicy.NeedsReview) =>
+        new()
         {
             Mode               = SelectionMode.Combined,
             GroupOrder         = [],
@@ -65,7 +60,6 @@ public sealed class CandidateRankingPolicyTests
             Unmatched          = unmatched,
             AllowedResolutions = [EnumResolution.R1080P]
         };
-    }
 
     [Fact]
     public void Select_AnivalsHigherGroup_AnyInputOrderPicksSameWinner()

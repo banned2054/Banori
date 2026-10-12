@@ -31,15 +31,15 @@ public sealed class DownloadSubmissionPathValidator(IDbContextFactory<Applicatio
         var probe = await db.DownloadTasks.AsNoTracking()
                             .Where(value => value.Id != task.Id)
                             .Select(value => new
-                            {
-                                value.Id, value.InfoHash, value.Status, value.SavePath, value.PendingSavePath
-                            })
+                             {
+                                 value.Id, value.InfoHash, value.Status, value.SavePath, value.PendingSavePath
+                             })
                             .ToListAsync(ct);
         var root = Root(task.SavePath);
-        var ids  = probe.Where(value => !SameHash(value.InfoHash, task.InfoHash))
-                        .Where(value => RootsOverlap(root, value.SavePath, value.PendingSavePath))
-                        .Select(value => value.Id)
-                        .ToList();
+        var ids = probe.Where(value => !SameHash(value.InfoHash, task.InfoHash))
+                       .Where(value => RootsOverlap(root, value.SavePath, value.PendingSavePath))
+                       .Select(value => value.Id)
+                       .ToList();
         if (ids.Count == 0) return;
 
         var tasks = await db.DownloadTasks.Include(value => value.Files).AsNoTracking()
@@ -48,9 +48,10 @@ public sealed class DownloadSubmissionPathValidator(IDbContextFactory<Applicatio
         {
             ct.ThrowIfCancellationRequested();
             var source = $"数据库下载任务 {other.Id}（{other.InfoHash}）";
-            var roots  = new[] { other.SavePath, other.PendingSavePath }
-                        .Where(value => value is not null).Select(value => value!).Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToArray();
+            var roots = new[] { other.SavePath, other.PendingSavePath }
+                       .Where(value => value is not null).Select(value => value!)
+                       .Distinct(StringComparer.OrdinalIgnoreCase)
+                       .ToArray();
             if (other.Files.Count != 0)
             {
                 foreach (var file in other.Files)
@@ -107,17 +108,13 @@ public sealed class DownloadSubmissionPathValidator(IDbContextFactory<Applicatio
         }
     }
 
-    private static bool SameHash(string left, string right)
-    {
-        return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-    }
+    private static bool SameHash(string left, string right) =>
+        string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
 
-    private static bool Conflicts(string left, string right)
-    {
-        return string.Equals(left, right, StringComparison.OrdinalIgnoreCase)   ||
-               left.StartsWith(right + "/", StringComparison.OrdinalIgnoreCase) ||
-               right.StartsWith(left + "/", StringComparison.OrdinalIgnoreCase);
-    }
+    private static bool Conflicts(string left, string right) =>
+        string.Equals(left, right, StringComparison.OrdinalIgnoreCase)   ||
+        left.StartsWith(right + "/", StringComparison.OrdinalIgnoreCase) ||
+        right.StartsWith(left + "/", StringComparison.OrdinalIgnoreCase);
 
     private static void CheckFile(IEnumerable<string> targets, string occupied, string source)
     {

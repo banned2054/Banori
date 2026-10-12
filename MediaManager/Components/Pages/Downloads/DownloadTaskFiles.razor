@@ -173,13 +173,11 @@
 		};
 	}
 
-	private static string EpisodeText(DownloadFileView file)
-	{
-		return file.Episode is not { } episode
+	private static string EpisodeText(DownloadFileView file) =>
+		file.Episode is not { } episode
 			? "—"
 			: file.EpisodeEnd is { } end
 				? $"{episode:0.##}–{end:0.##}"
 				: $"{episode:0.##}";
-	}
 
 }

@@ -178,11 +178,11 @@ public sealed class SettingsPageViewModel(
         try
         {
             var (succeeded, message) = await qbittorrentSettings.TestConnectionAsync(
-             new QbittorrentSettings(Downloader.BaseUrl  ?? string.Empty, Downloader.Username ?? string.Empty,
-                                     Downloader.SavePath ?? string.Empty, true,
-                                     Downloader.ParseProxyId()),
-             string.IsNullOrWhiteSpace(Downloader.Password) ? null : Downloader.Password,
-             cancellationToken);
+                 new QbittorrentSettings(Downloader.BaseUrl  ?? string.Empty, Downloader.Username ?? string.Empty,
+                                         Downloader.SavePath ?? string.Empty, true,
+                                         Downloader.ParseProxyId()),
+                 string.IsNullOrWhiteSpace(Downloader.Password) ? null : Downloader.Password,
+                 cancellationToken);
             TestSucceeded = succeeded;
             TestMessage   = message;
         }
@@ -290,10 +290,7 @@ public sealed class QbittorrentSettingsDraft
 
     public bool Enabled { get; set; }
 
-    internal Guid? ParseProxyId()
-    {
-        return Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null;
-    }
+    internal Guid? ParseProxyId() => Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null;
 }
 
 /// <summary>Telegram 通知渠道的编辑模型。Bot Token 留空表示沿用已保存值。</summary>
@@ -314,16 +311,11 @@ public sealed class TelegramSettingsDraft
 
     public bool NotifyDownloadFailed { get; set; } = true;
 
-    internal Guid? ParseProxyId()
-    {
-        return Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null;
-    }
+    internal Guid? ParseProxyId() => Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null;
 
-    internal TelegramSettings ToSettings()
-    {
-        return new TelegramSettings(ChatId ?? string.Empty, ParseProxyId(), Enabled,
-                                    NotificationEvents.FromFlags(NotifyDownloadStarted, NotifyDownloadFailed));
-    }
+    internal TelegramSettings ToSettings() =>
+        new(ChatId ?? string.Empty, ParseProxyId(), Enabled,
+            NotificationEvents.FromFlags(NotifyDownloadStarted, NotifyDownloadFailed));
 }
 
 /// <summary>Gotify 通知渠道的编辑模型。应用 Token 留空表示沿用已保存值。</summary>
@@ -344,14 +336,9 @@ public sealed class GotifySettingsDraft
 
     public bool NotifyDownloadFailed { get; set; } = true;
 
-    internal Guid? ParseProxyId()
-    {
-        return Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null;
-    }
+    internal Guid? ParseProxyId() => Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null;
 
-    internal GotifySettings ToSettings()
-    {
-        return new GotifySettings(BaseUrl ?? string.Empty, ParseProxyId(), Enabled,
-                                  NotificationEvents.FromFlags(NotifyDownloadStarted, NotifyDownloadFailed));
-    }
+    internal GotifySettings ToSettings() =>
+        new(BaseUrl ?? string.Empty, ParseProxyId(), Enabled,
+            NotificationEvents.FromFlags(NotifyDownloadStarted, NotifyDownloadFailed));
 }

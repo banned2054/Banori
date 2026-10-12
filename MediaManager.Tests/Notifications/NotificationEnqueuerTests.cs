@@ -148,10 +148,7 @@ public sealed class NotificationEnqueuerTests
 
     private sealed class FixedTimeProvider(DateTimeOffset timestamp) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow()
-        {
-            return timestamp;
-        }
+        public override DateTimeOffset GetUtcNow() => timestamp;
     }
 
     private sealed class EnqueuerHarness(
@@ -191,9 +188,9 @@ public sealed class NotificationEnqueuerTests
             return manage.SaveAsync(new GotifySettings("http://gotify.test", null, true, events), "app-token");
         }
 
-        public Task<ApplicationDbContext> CreateDbContextAsync()
-        {
-            return provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>().CreateDbContextAsync();
-        }
+        public Task<ApplicationDbContext> CreateDbContextAsync() => provider
+                                                                   .GetRequiredService<
+                                                                        IDbContextFactory<ApplicationDbContext>>()
+                                                                   .CreateDbContextAsync();
     }
 }

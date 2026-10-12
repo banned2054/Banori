@@ -307,20 +307,11 @@ else
 		_vm = new SelectionRulesPageViewModel(RuleSettings, SelectionService, Logger);
 	}
 
-	protected override Task OnInitializedAsync()
-	{
-		return RunAsync(_vm.LoadAsync);
-	}
+	protected override Task OnInitializedAsync() => RunAsync(_vm.LoadAsync);
 
-	private Task SaveAsync()
-	{
-		return RunAsync(_vm.SaveAsync);
-	}
+	private Task SaveAsync() => RunAsync(_vm.SaveAsync);
 
-	private Task RunPreviewAsync()
-	{
-		return RunAsync(_vm.RunPreviewAsync);
-	}
+	private Task RunPreviewAsync() => RunAsync(_vm.RunPreviewAsync);
 
 	/// <summary>页面离开后取消进行中的查询属于预期，不向线路报错。</summary>
 	private async Task RunAsync(Func<CancellationToken, Task> operation)

@@ -86,14 +86,15 @@ public sealed class DownloadIntakeService(
     ///     一次性上传种子：创建即等待提交，不关联订阅与条目；必须绑定 Bangumi Subject（表单显式 ID 或
     ///     标题映射命中），未绑定拒绝登记并要求补 ID，绑定后命名用 Bangumi 作品名并回填 Subject 参与
     ///     跨路径同集互认。
+    ///     上传时沿用 ByrTorrent 的做法先解析种子内部文件路径批量提取标题，标题映射优先检查这些文件名，
+    ///     再回退到 info.name；显式 ID 会学习首个可解析的文件标题映射。
     ///     命名优先按模板渲染（标题能被解析出集数时），并落命名要素供完成改名；
     ///     解析失败回退种子内 info.name（缺失时按 hash 派生）；来源站点优先按种子内 tracker 自动识别，
     ///     siteSource 仅在 tracker 无法判定时作为兜底。
     ///     解析出单集/剧场版标识时先过统一同集裁决：既有同源同集任务按规则更优则拒绝本次上传，
     ///     新上传更优则自动顶替（ReplacesTaskId 指向旧任务）。
     /// </summary>
-    public async Task<Guid> CreateFromUploadAsync(byte[]            torrentBytes, string? siteSource = null,
-                                                  int?              subjectId         = null,
+    public async Task<Guid> CreateFromUploadAsync(byte[] torrentBytes, string? siteSource = null, int? subjectId = null,
                                                   CancellationToken cancellationToken = default)
     {
         if (torrentBytes.Length == 0) throw new InvalidOperationException("所选文件为空，请重新选择。");
@@ -111,19 +112,23 @@ public sealed class DownloadIntakeService(
         var displayName = TorrentInfoHashExtractor.TryExtractDisplayName(torrentBytes, out var info)
             ? info
             : null;
-        var resolvedSource = ResolveSiteSource(torrentBytes, null, null, siteSource);
+        var fileTitleCandidates = ParseTorrentFileTitles(torrentBytes);
+        var resolvedSource      = ResolveSiteSource(torrentBytes, null, null, siteSource);
         // 门禁：必须绑定 Bangumi Subject；标题映射未命中且未填 ID 时拒绝登记。
         var uploadedParsed = displayName is null ? null : aniParser.Parse(displayName);
-        var binding = await ResolveSubjectBindingAsync(uploadedParsed, null, subjectId, null, null,
-                                                       cancellationToken) ??
-                      throw new InvalidOperationException(SubjectUnboundMessage);
+        var binding =
+            await ResolveUploadedSubjectBindingAsync(fileTitleCandidates, uploadedParsed, subjectId,
+                                                     cancellationToken) ??
+            throw new InvalidOperationException(SubjectUnboundMessage);
+        var fileTitleFallback = fileTitleCandidates.FirstOrDefault()?.OriginTitle;
         var (namingSnapshot, namingIngredients, namingParsed) =
-            await BuildNamingAsync(displayName, null, resolvedSource, $"上传种子：{infoHash[..8]}",
+            await BuildNamingAsync(displayName, fileTitleFallback, resolvedSource, $"上传种子：{infoHash[..8]}",
                                    uploadedParsed, binding, cancellationToken);
         var directorySettings = await GetDirectoriesAsync(cancellationToken);
 
-        using var       coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
-        await using var db                = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
+
+        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         if (await DownloadTaskLookups.FindActiveDuplicateIdAsync(db, infoHash, null, cancellationToken) is not null)
             throw new InvalidOperationException("同一资源已有下载任务（可能因更低优先级被替换终止）。");
 
@@ -334,8 +339,7 @@ public sealed class DownloadIntakeService(
                                            results.Count(item => item.Outcome == RssDownloadItemOutcome.Superseded),
                                            results.Count(item => item.Outcome == RssDownloadItemOutcome.Failed),
                                            results);
-        logger.LogInformation(
-                              "RSS 链接下载完成：{FeedUrl} 新建 {Created} 个、跳过重复 {Duplicate} 个、择优跳过 {Superseded} 个、失败 {Failed} 个。",
+        logger.LogInformation("RSS 链接下载完成：{FeedUrl} 新建 {Created} 个、跳过重复 {Duplicate} 个、择优跳过 {Superseded} 个、失败 {Failed} 个。",
                               feedUri, result.CreatedCount, result.DuplicateCount, result.SupersededCount,
                               result.FailedCount);
         return result;
@@ -446,9 +450,8 @@ public sealed class DownloadIntakeService(
             replacesTaskId = arbitration.ReplacesTaskId;
         }
 
-        DownloadTask BuildTaskRecord(DownloadTaskStatus status, Guid? replaces, Guid? replacedBy)
-        {
-            return new DownloadTask
+        DownloadTask BuildTaskRecord(DownloadTaskStatus status, Guid? replaces, Guid? replacedBy) =>
+            new()
             {
                 Id                = Guid.NewGuid(),
                 InfoHash          = infoHash,
@@ -469,7 +472,6 @@ public sealed class DownloadIntakeService(
                 Status            = status,
                 CreatedAtUtc      = timeProvider.GetUtcNow()
             };
-        }
 
         var task = BuildTaskRecord(DownloadTaskStatus.PendingSubmit, replacesTaskId, null);
         AddOriginalFiles(task);
@@ -520,12 +522,9 @@ public sealed class DownloadIntakeService(
             if (parsed is null || episodeText is null || string.IsNullOrWhiteSpace(parsed.Title)) continue;
 
             var group = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
-            var ingredients = NamingIngredientsComposer.Compose(
-                                                                template, fileTemplate, parsed, episodeText, group,
-                                                                siteSource,
-                                                                subject.SubjectId, bgmName, bgmNameCn,
-                                                                metadata?.Platform ?? string.Empty,
-                                                                metadata?.AirDate);
+            var ingredients = NamingIngredientsComposer.Compose(template, fileTemplate, parsed, episodeText, group,
+                                                                siteSource, subject.SubjectId, bgmName, bgmNameCn,
+                                                                metadata?.Platform ?? string.Empty, metadata?.AirDate);
             return (namingPolicy.Create(ingredients), ingredients.ToJson(), parsed);
         }
 
@@ -602,15 +601,77 @@ public sealed class DownloadIntakeService(
         {
             var linkedSubjectId = await subjectLinkResolver.ResolveSubjectIdAsync(itemLink, proxyId,
                 cancellationToken);
-            if (linkedSubjectId is not null)
-            {
-                var binding = await EnsureSubjectAsync(linkedSubjectId.Value, cancellationToken);
-                await subjectCache.SaveTitleMappingAsync(seriesKey, binding.SubjectId, cancellationToken);
-                return binding;
-            }
+            if (linkedSubjectId is null) return null;
+            var binding = await EnsureSubjectAsync(linkedSubjectId.Value, cancellationToken);
+            await subjectCache.SaveTitleMappingAsync(seriesKey, binding.SubjectId, cancellationToken);
+            return binding;
         }
 
         return null;
+    }
+
+    /// <summary>
+    ///     上传种子的 Subject 绑定：先按 ByrTorrent 的流程解析 torrent.Files 路径，再依次检查文件标题映射，
+    ///     最后回退 info.name。这样 info.name 只是常见命名来源，不是文件名检查的前置条件。
+    /// </summary>
+    private async Task<SubjectBinding?> ResolveUploadedSubjectBindingAsync(
+        IReadOnlyList<ParseResult> fileTitleCandidates, ParseResult? infoNameParsed, int? requestedSubjectId,
+        CancellationToken          cancellationToken)
+    {
+        List<ParseResult> candidates = [..fileTitleCandidates];
+        if (infoNameParsed is not null) candidates.Add(infoNameParsed);
+        candidates = candidates.Where(parsed => !string.IsNullOrWhiteSpace(parsed.Title)).ToList();
+        var preferred = candidates.FirstOrDefault();
+
+        if (requestedSubjectId is { } explicitId)
+        {
+            var binding = await EnsureSubjectAsync(explicitId, cancellationToken);
+            if (preferred is null) return binding;
+            var normalizedTitle = TitleNormalizer.Normalize(preferred.Title);
+            if (normalizedTitle.Length > 0)
+                await subjectCache.SaveTitleMappingAsync(normalizedTitle, binding.SubjectId, cancellationToken);
+
+            return binding;
+        }
+
+        var normalizedTitles = candidates.Select(parsed => TitleNormalizer.Normalize(parsed.Title))
+                                         .Where(title => title.Length > 0)
+                                         .Distinct(StringComparer.Ordinal)
+                                         .ToArray();
+        if (normalizedTitles.Length == 0) return null;
+
+        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var mappedTitles = await (from mapping in db.SubjectTitleMappings.AsNoTracking()
+                                  join media in db.MediaSubjects.AsNoTracking() on mapping.SubjectId equals media.Id
+                                  where normalizedTitles.Contains(mapping.NormalizedTitle)
+                                  select new
+                                  {
+                                      mapping.NormalizedTitle,
+                                      media.Id,
+                                      media.Name,
+                                      media.NameCn
+                                  }).ToListAsync(cancellationToken);
+
+        foreach (var parsed in candidates)
+        {
+            var normalizedTitle = TitleNormalizer.Normalize(parsed.Title);
+            var mapped          = mappedTitles.FirstOrDefault(value => value.NormalizedTitle == normalizedTitle);
+            if (mapped is not null)
+                return new SubjectBinding(mapped.Id,
+                                          string.IsNullOrWhiteSpace(mapped.NameCn) ? mapped.Name : mapped.NameCn);
+        }
+
+        return null;
+    }
+
+    /// <summary>按 ByrTorrent 所用的 ParseBatch 路径解析方式，从种子内部文件名提取作品标题候选。</summary>
+    private IReadOnlyList<ParseResult> ParseTorrentFileTitles(byte[] torrentBytes)
+    {
+        if (!TorrentFileManifestParser.TryParse(torrentBytes, out var manifest)) return [];
+        var filePaths = manifest.Files.Select(file => file.Path).ToArray();
+        return aniParser.ParseBatch(filePaths)
+                        .Where(parsed => !string.IsNullOrWhiteSpace(parsed.Title))
+                        .ToArray();
     }
 
     /// <summary>确保 Subject 元数据在本地可用：缓存行直接用，否则调 Bangumi API 拉取并落库（失败抛出，由调用方拒绝登记）。</summary>
@@ -625,19 +686,17 @@ public sealed class DownloadIntakeService(
         string torrentUrl, Guid? proxyId, CancellationToken cancellationToken)
     {
         var torrentBytes = await torrentFileSource.DownloadAsync(new Uri(torrentUrl), proxyId, cancellationToken);
-        if (!TorrentInfoHashExtractor.TryExtractInfoHash(torrentBytes, out var infoHash))
-            throw new InvalidOperationException("无法从种子文件中提取 info-hash，文件可能无效或已损坏。");
-
-        return (torrentBytes, infoHash);
+        return !TorrentInfoHashExtractor.TryExtractInfoHash(torrentBytes, out var infoHash)
+            ? throw new InvalidOperationException("无法从种子文件中提取 info-hash，文件可能无效或已损坏。")
+            : (torrentBytes, infoHash);
     }
 
     /// <summary>
     ///     在给定上下文内核验重复、决定替换对象并落库任务，由调用方控制事务提交。
     ///     自动登记与手动创建共用该核心，保证查重与替换判定一致。
     /// </summary>
-    public async Task<Guid> CreateTaskWithinContextAsync(
-        ApplicationDbContext db, FeedItem item, byte[] torrentBytes, string infoHash,
-        CancellationToken    cancellationToken)
+    public async Task<Guid> CreateTaskWithinContextAsync(ApplicationDbContext db, FeedItem item, byte[] torrentBytes,
+                                                         string infoHash, CancellationToken cancellationToken)
     {
         if (await DownloadTaskLookups.FindActiveDuplicateIdAsync(db, infoHash, item.Id, cancellationToken) is not null)
             throw new InvalidOperationException("该条目或同一资源已有进行中的下载任务。");
@@ -821,10 +880,9 @@ public sealed class DownloadIntakeService(
         var incumbent = candidates.First(value => value.TaskId == incumbentCandidate.FeedItemId);
 
         var verdict = rankingPolicy.Select([incumbent.Candidate, incoming], config, incumbent.TaskId);
-        if (verdict.Winner?.FeedItemId == incoming.FeedItemId)
-            return new EpisodeArbitration(true, incumbent.TaskId, null);
-
-        return new EpisodeArbitration(false, null, $"同集已有更优任务：{incumbent.Naming}", incumbent.TaskId);
+        return verdict.Winner?.FeedItemId == incoming.FeedItemId
+            ? new EpisodeArbitration(true, incumbent.TaskId, null)
+            : new EpisodeArbitration(false, null, $"同集已有更优任务：{incumbent.Naming}", incumbent.TaskId);
     }
 
     /// <summary>解析结果是否能构成同集裁决标识：单集（有集数）或剧场版；合集与解析失败不参与。</summary>
@@ -840,28 +898,22 @@ public sealed class DownloadIntakeService(
     ///     与命名要素 {group} 及订阅条目 Preference 同域，保证与占用者的比较口径一致。
     /// </summary>
     private static EpisodeCandidate BuildAdhocCandidate(
-        string stableId, DateTimeOffset? publishedAtUtc, ParseResult parsed, int subjectId)
+        string stableId, DateTimeOffset? publishedAtUtc, ParseResult parsed, int subjectId) => new()
     {
-        return new EpisodeCandidate
-        {
-            FeedItemId     = StableIdGuid(stableId),
-            SubjectId      = subjectId,
-            MediaType      = parsed.MediaType.ToString(),
-            Episode        = parsed.Episode ?? 0,
-            Group          = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group,
-            Language       = parsed.Language,
-            Resolution     = parsed.Resolution,
-            Version        = parsed.Version,
-            PublishedAtUtc = publishedAtUtc,
-            StableId       = stableId
-        };
-    }
+        FeedItemId     = StableIdGuid(stableId),
+        SubjectId      = subjectId,
+        MediaType      = parsed.MediaType.ToString(),
+        Episode        = parsed.Episode ?? 0,
+        Group          = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group,
+        Language       = parsed.Language,
+        Resolution     = parsed.Resolution,
+        Version        = parsed.Version,
+        PublishedAtUtc = publishedAtUtc,
+        StableId       = stableId
+    };
 
     /// <summary>由稳定标识派生确定性 Guid：合成候选的决胜输入在同批次与重试之间保持稳定。</summary>
-    private static Guid StableIdGuid(string stableId)
-    {
-        return new Guid(SHA256.HashData(Encoding.UTF8.GetBytes(stableId))[..16]);
-    }
+    private static Guid StableIdGuid(string stableId) => new(SHA256.HashData(Encoding.UTF8.GetBytes(stableId))[..16]);
 
     /// <summary>
     ///     来源站点判定：优先读 .torrent 内 tracker（ByrTorrent 同源映射，上传种子也能自动识别），
@@ -878,12 +930,10 @@ public sealed class DownloadIntakeService(
                TorrentSiteSource.Sanitize(manualSource);
     }
 
-    private Task<DownloadDirectorySettings> GetDirectoriesAsync(CancellationToken cancellationToken)
-    {
-        return directorySettingsStore is null
+    private Task<DownloadDirectorySettings> GetDirectoriesAsync(CancellationToken cancellationToken) =>
+        directorySettingsStore is null
             ? Task.FromResult(DownloadDirectorySettingsStore.Normalize(null, null))
             : directorySettingsStore.GetAsync(cancellationToken);
-    }
 
     private string SelectSavePath(string basePath, byte[] torrentBytes, DownloadDirectorySettings directories)
     {

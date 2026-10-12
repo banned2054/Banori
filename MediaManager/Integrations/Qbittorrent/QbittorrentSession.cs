@@ -60,10 +60,8 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
         return infos.Select(ToSnapshot).ToList();
     }
 
-    public Task AddTagAsync(string infoHash, string tag, CancellationToken cancellationToken = default)
-    {
-        return client.Torrent.AddTorrentTag(NormalizeHash(infoHash), tag, cancellationToken);
-    }
+    public Task AddTagAsync(string infoHash, string tag, CancellationToken cancellationToken = default) =>
+        client.Torrent.AddTorrentTag(NormalizeHash(infoHash), tag, cancellationToken);
 
     public async Task<IReadOnlyList<string>> ListFileNamesAsync(string            infoHash,
                                                                 CancellationToken cancellationToken = default)
@@ -86,50 +84,34 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
                                                                     file.Size)).ToList();
     }
 
-    public Task SetLocationAsync(string infoHash, string savePath, CancellationToken cancellationToken = default)
-    {
-        return client.Torrent.SetTorrentLocation(NormalizeHash(infoHash), savePath, cancellationToken);
-    }
+    public Task SetLocationAsync(string infoHash, string savePath, CancellationToken cancellationToken = default) =>
+        client.Torrent.SetTorrentLocation(NormalizeHash(infoHash), savePath, cancellationToken);
 
-    public Task PauseAsync(string infoHash, CancellationToken cancellationToken = default)
-    {
-        return client.Torrent.PauseTorrent(NormalizeHash(infoHash), cancellationToken);
-    }
+    public Task PauseAsync(string infoHash, CancellationToken cancellationToken = default) =>
+        client.Torrent.PauseTorrent(NormalizeHash(infoHash), cancellationToken);
 
-    public Task ResumeAsync(string infoHash, CancellationToken cancellationToken = default)
-    {
-        return client.Torrent.ResumeTorrent(NormalizeHash(infoHash), cancellationToken);
-    }
+    public Task ResumeAsync(string infoHash, CancellationToken cancellationToken = default) =>
+        client.Torrent.ResumeTorrent(NormalizeHash(infoHash), cancellationToken);
 
     public Task RenameTorrentAsync(string            infoHash, string newName,
-                                   CancellationToken cancellationToken = default)
-    {
-        return client.Torrent.RenameTorrent(NormalizeHash(infoHash), newName, cancellationToken);
-    }
+                                   CancellationToken cancellationToken = default) =>
+        client.Torrent.RenameTorrent(NormalizeHash(infoHash), newName, cancellationToken);
 
     public Task RenameTorrentFileAsync(string            infoHash, string oldPath, string newPath,
-                                       CancellationToken cancellationToken = default)
-    {
-        return client.Torrent.RenameTorrentFile(NormalizeHash(infoHash), oldPath, newPath, cancellationToken);
-    }
+                                       CancellationToken cancellationToken = default) =>
+        client.Torrent.RenameTorrentFile(NormalizeHash(infoHash), oldPath, newPath, cancellationToken);
 
     public Task RenameTorrentFolderAsync(string            infoHash, string oldPath, string newPath,
-                                         CancellationToken cancellationToken = default)
-    {
-        return client.Torrent.RenameTorrentFolder(NormalizeHash(infoHash), oldPath, newPath, cancellationToken);
-    }
+                                         CancellationToken cancellationToken = default) =>
+        client.Torrent.RenameTorrentFolder(NormalizeHash(infoHash), oldPath, newPath, cancellationToken);
 
-    public Task DeleteTorrentAsync(string infoHash, bool deleteFiles, CancellationToken cancellationToken = default)
-    {
-        return client.Torrent.DeleteTorrent(NormalizeHash(infoHash), deleteFiles, cancellationToken);
-    }
+    public Task DeleteTorrentAsync(string infoHash, bool deleteFiles, CancellationToken cancellationToken = default) =>
+        client.Torrent.DeleteTorrent(NormalizeHash(infoHash), deleteFiles, cancellationToken);
 
     public Task DeleteTorrentsAsync(IReadOnlyCollection<string> infoHashes, bool deleteFiles,
-                                    CancellationToken           cancellationToken = default)
-    {
-        return client.Torrent.DeleteTorrents(infoHashes.Select(NormalizeHash).ToList(), deleteFiles,
-                                             cancellationToken);
-    }
+                                    CancellationToken           cancellationToken = default) =>
+        client.Torrent.DeleteTorrents(infoHashes.Select(NormalizeHash).ToList(), deleteFiles,
+                                      cancellationToken);
 
     public ValueTask DisposeAsync()
     {
@@ -137,18 +119,13 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
         return ValueTask.CompletedTask;
     }
 
-    private static TorrentSnapshot ToSnapshot(TorrentInfo info)
-    {
-        return new TorrentSnapshot(NormalizeHash(info.Hash ?? string.Empty), info.Name ?? string.Empty,
-                                   QbittorrentTorrentStateMapper.Map(info.State ?? EnumTorrentState.Unknown),
-                                   info.Progress  ?? 0,
-                                   info.TotalSize ?? 0, info.SavePath ?? string.Empty,
-                                   info.TagList   ?? [],
-                                   string.Equals(info.State?.ToString(), "Moving", StringComparison.OrdinalIgnoreCase));
-    }
+    private static TorrentSnapshot ToSnapshot(TorrentInfo info) =>
+        new(NormalizeHash(info.Hash                      ?? string.Empty), info.Name ?? string.Empty,
+            QbittorrentTorrentStateMapper.Map(info.State ?? EnumTorrentState.Unknown),
+            info.Progress  ?? 0,
+            info.TotalSize ?? 0, info.SavePath ?? string.Empty,
+            info.TagList   ?? [],
+            string.Equals(info.State?.ToString(), "Moving", StringComparison.OrdinalIgnoreCase));
 
-    private static string NormalizeHash(string hash)
-    {
-        return hash.Trim().ToLowerInvariant();
-    }
+    private static string NormalizeHash(string hash) => hash.Trim().ToLowerInvariant();
 }

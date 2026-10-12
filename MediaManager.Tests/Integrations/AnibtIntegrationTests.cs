@@ -104,19 +104,15 @@ public sealed class AnibtIntegrationTests
         : IProxiedHttpClientSource
     {
         public Task<HttpClient> CreateClientAsync(string            clientName, Guid? proxyId,
-                                                  CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(new HttpClient(new StubHandler(responseFactory)));
-        }
+                                                  CancellationToken cancellationToken = default) =>
+            Task.FromResult(new HttpClient(new StubHandler(responseFactory)));
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> responseFactory)
         : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
-                                                               CancellationToken  cancellationToken)
-        {
-            return Task.FromResult(responseFactory(request));
-        }
+                                                               CancellationToken  cancellationToken) =>
+            Task.FromResult(responseFactory(request));
     }
 }

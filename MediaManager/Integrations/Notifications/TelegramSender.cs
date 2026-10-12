@@ -18,12 +18,10 @@ public sealed class TelegramSender : ITelegramSender
     };
 
     /// <summary>apiBaseUrl 供测试桩注入；生产使用官方 API 地址。</summary>
-    public TelegramSender(string? apiBaseUrl = null)
-    {
+    public TelegramSender(string? apiBaseUrl = null) =>
         ApiBaseUrl = string.IsNullOrWhiteSpace(apiBaseUrl)
             ? "https://api.telegram.org"
             : apiBaseUrl.Trim().TrimEnd('/');
-    }
 
     private string ApiBaseUrl { get; }
 

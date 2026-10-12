@@ -179,9 +179,7 @@ public sealed class CandidateRankingPolicy
         return null;
     }
 
-    private static bool MatchesGroup(string? configuredGroup, string candidateGroup)
-    {
-        return configuredGroup is null ||
-               string.Equals(configuredGroup, candidateGroup, StringComparison.OrdinalIgnoreCase);
-    }
+    private static bool MatchesGroup(string? configuredGroup, string candidateGroup) =>
+        configuredGroup is null ||
+        string.Equals(configuredGroup, candidateGroup, StringComparison.OrdinalIgnoreCase);
 }

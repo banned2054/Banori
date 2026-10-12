@@ -94,15 +94,9 @@ else
 		_vm = new NotificationsPageViewModel(DeliveryService);
 	}
 
-	protected override Task OnInitializedAsync()
-	{
-		return RunAsync(_vm.LoadAsync);
-	}
+	protected override Task OnInitializedAsync() => RunAsync(_vm.LoadAsync);
 
-	private Task RefreshAsync()
-	{
-		return RunAsync(_vm.LoadAsync);
-	}
+	private Task RefreshAsync() => RunAsync(_vm.LoadAsync);
 
 	private Task RetryAsync(Guid id)
 	{

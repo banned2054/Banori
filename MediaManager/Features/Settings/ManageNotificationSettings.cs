@@ -60,10 +60,8 @@ public sealed class ManageTelegramSettings(IApplicationSettingStore settingStore
     }
 
     /// <summary>已保存的 Bot Token；投递与测试发送时使用，不进入设置模型。</summary>
-    public async Task<string?> GetBotTokenAsync(CancellationToken cancellationToken = default)
-    {
-        return await settingStore.GetAsync(BotTokenKey, cancellationToken);
-    }
+    public async Task<string?> GetBotTokenAsync(CancellationToken cancellationToken = default) =>
+        await settingStore.GetAsync(BotTokenKey, cancellationToken);
 
     /// <summary>保存设置；botToken 为 null 或空白表示不修改已保存 Token。</summary>
     public async Task SaveAsync(
@@ -148,10 +146,8 @@ public sealed class ManageGotifySettings(IApplicationSettingStore settingStore, 
     }
 
     /// <summary>已保存的 App Token；投递与测试发送时使用，不进入设置模型。</summary>
-    public async Task<string?> GetAppTokenAsync(CancellationToken cancellationToken = default)
-    {
-        return await settingStore.GetAsync(AppTokenKey, cancellationToken);
-    }
+    public async Task<string?> GetAppTokenAsync(CancellationToken cancellationToken = default) =>
+        await settingStore.GetAsync(AppTokenKey, cancellationToken);
 
     /// <summary>保存设置；appToken 为 null 或空白表示不修改已保存 Token。</summary>
     public async Task SaveAsync(

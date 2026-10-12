@@ -7,9 +7,8 @@ public sealed class CandidateEligibilityPolicyTests
 {
     private static EpisodeCandidate Candidate(string         mediaType  = "SingleEpisode",
                                               EnumResolution resolution = EnumResolution.R1080P,
-                                              decimal        episode    = 3)
-    {
-        return new EpisodeCandidate
+                                              decimal        episode    = 3) =>
+        new()
         {
             FeedItemId = Guid.NewGuid(),
             SubjectId  = 100,
@@ -20,7 +19,6 @@ public sealed class CandidateEligibilityPolicyTests
             Resolution = resolution,
             Version    = 1
         };
-    }
 
     private static SelectionRuleConfig Config(params EnumResolution[] allowed)
     {

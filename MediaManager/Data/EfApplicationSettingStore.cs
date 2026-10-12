@@ -26,15 +26,11 @@ public sealed class EfApplicationSettingStore(
         return setting.IsProtected ? _protector.Unprotect(setting.Value) : setting.Value;
     }
 
-    public Task SetAsync(string key, string value, CancellationToken cancellationToken = default)
-    {
-        return SetCoreAsync(key, value, false, cancellationToken);
-    }
+    public Task SetAsync(string key, string value, CancellationToken cancellationToken = default) =>
+        SetCoreAsync(key, value, false, cancellationToken);
 
-    public Task SetProtectedAsync(string key, string value, CancellationToken cancellationToken = default)
-    {
-        return SetCoreAsync(key, value, true, cancellationToken);
-    }
+    public Task SetProtectedAsync(string key, string value, CancellationToken cancellationToken = default) =>
+        SetCoreAsync(key, value, true, cancellationToken);
 
     public async Task RemoveAsync(string key, CancellationToken cancellationToken = default)
     {

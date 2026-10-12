@@ -177,13 +177,11 @@ public sealed class DownloadTasksPageViewModelTests
         Assert.True(harness.Store.Torrents.ContainsKey(TestTorrentBytes.InfoHashOf("Page Same - 01")));
     }
 
-    private static DownloadTasksPageViewModel CreateViewModel(DownloadServiceTests.TestHarness harness)
-    {
-        return new DownloadTasksPageViewModel(harness.Service, harness.Intake,
-                                              new DownloadTaskQueries(harness.Provider.GetRequiredService<
-                                                                          IDbContextFactory<ApplicationDbContext>>()),
-                                              NullLogger<DownloadTasksPageViewModel>.Instance);
-    }
+    private static DownloadTasksPageViewModel CreateViewModel(DownloadServiceTests.TestHarness harness) =>
+        new(harness.Service, harness.Intake,
+            new DownloadTaskQueries(harness.Provider.GetRequiredService<
+                                        IDbContextFactory<ApplicationDbContext>>()),
+            NullLogger<DownloadTasksPageViewModel>.Instance);
 
     private static (TaskCompletionSource Started, TaskCompletionSource Release) InstallFindGate(
         FakeQbittorrentSessionFactory factory, string targetName)

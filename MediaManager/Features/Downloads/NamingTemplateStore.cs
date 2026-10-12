@@ -10,25 +10,17 @@ public sealed class NamingTemplateStore(IApplicationSettingStore settingStore)
     public const string FileKey   = "Downloads.FileNamingTemplate";
     public const int    MaxLength = 200;
 
-    public Task<string> GetAsync(CancellationToken cancellationToken = default)
-    {
-        return GetAsync(Key, ReleaseNamePreviewPolicy.DefaultTemplate, cancellationToken);
-    }
+    public Task<string> GetAsync(CancellationToken cancellationToken = default) =>
+        GetAsync(Key, ReleaseNamePreviewPolicy.DefaultTemplate, cancellationToken);
 
-    public Task<string> GetFileTemplateAsync(CancellationToken cancellationToken = default)
-    {
-        return GetAsync(FileKey, ReleaseNamePreviewPolicy.DefaultFileTemplate, cancellationToken);
-    }
+    public Task<string> GetFileTemplateAsync(CancellationToken cancellationToken = default) =>
+        GetAsync(FileKey, ReleaseNamePreviewPolicy.DefaultFileTemplate, cancellationToken);
 
-    public Task SaveAsync(string? template, CancellationToken cancellationToken = default)
-    {
-        return SaveAsync(Key, template, cancellationToken);
-    }
+    public Task SaveAsync(string? template, CancellationToken cancellationToken = default) =>
+        SaveAsync(Key, template, cancellationToken);
 
-    public Task SaveFileTemplateAsync(string? template, CancellationToken cancellationToken = default)
-    {
-        return SaveAsync(FileKey, template, cancellationToken);
-    }
+    public Task SaveFileTemplateAsync(string? template, CancellationToken cancellationToken = default) =>
+        SaveAsync(FileKey, template, cancellationToken);
 
     private async Task<string> GetAsync(string key, string defaultTemplate, CancellationToken cancellationToken)
     {

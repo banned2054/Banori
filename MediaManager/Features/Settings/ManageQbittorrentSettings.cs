@@ -22,10 +22,8 @@ public sealed class ManageQbittorrentSettings(
     public const string HookTokenKey   = "Qbittorrent.HookToken";
 
     /// <summary>钩子回调的对外可达基础地址；由用户按部署形态填写（如容器名地址）。</summary>
-    public async Task<string> GetHookBaseUrlAsync(CancellationToken cancellationToken = default)
-    {
-        return (await settingStore.GetAsync(HookBaseUrlKey, cancellationToken) ?? string.Empty).Trim().TrimEnd('/');
-    }
+    public async Task<string> GetHookBaseUrlAsync(CancellationToken cancellationToken = default) =>
+        (await settingStore.GetAsync(HookBaseUrlKey, cancellationToken) ?? string.Empty).Trim().TrimEnd('/');
 
     public async Task SaveHookBaseUrlAsync(string? baseUrl, CancellationToken cancellationToken = default)
     {
@@ -33,10 +31,8 @@ public sealed class ManageQbittorrentSettings(
     }
 
     /// <summary>已保存的钩子令牌（解密）；未生成过时为 null。端点校验与设置页展示共用。</summary>
-    public async Task<string?> GetHookTokenAsync(CancellationToken cancellationToken = default)
-    {
-        return await settingStore.GetAsync(HookTokenKey, cancellationToken);
-    }
+    public async Task<string?> GetHookTokenAsync(CancellationToken cancellationToken = default) =>
+        await settingStore.GetAsync(HookTokenKey, cancellationToken);
 
     /// <summary>生成 256 位随机令牌并覆盖旧值；返回明文供页面立即展示。</summary>
     public async Task<string> GenerateHookTokenAsync(CancellationToken cancellationToken = default)

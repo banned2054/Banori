@@ -232,10 +232,7 @@ public sealed class NotificationDeliveryServiceTests
     {
         private DateTimeOffset _now = timestamp;
 
-        public override DateTimeOffset GetUtcNow()
-        {
-            return _now;
-        }
+        public override DateTimeOffset GetUtcNow() => _now;
 
         public void Advance(TimeSpan delta)
         {
@@ -308,10 +305,10 @@ public sealed class NotificationDeliveryServiceTests
             return await db.NotificationDeliveries.AsNoTracking().SingleAsync(item => item.Id == id);
         }
 
-        public Task<ApplicationDbContext> CreateDbContextAsync()
-        {
-            return provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>().CreateDbContextAsync();
-        }
+        public Task<ApplicationDbContext> CreateDbContextAsync() => provider
+                                                                   .GetRequiredService<
+                                                                        IDbContextFactory<ApplicationDbContext>>()
+                                                                   .CreateDbContextAsync();
     }
 }
 

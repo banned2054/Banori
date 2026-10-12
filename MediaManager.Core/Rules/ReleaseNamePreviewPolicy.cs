@@ -43,10 +43,8 @@ public sealed class ReleaseNamePreviewPolicy
 
     private static readonly char[] InvalidFileNameCharacters = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 
-    public string Create(string subjectName, decimal episode, int version, string preference)
-    {
-        return Create(subjectName, episode, version, preference, null, null);
-    }
+    public string Create(string subjectName, decimal episode, int version, string preference) =>
+        Create(subjectName, episode, version, preference, null, null);
 
     /// <summary>按模板变量渲染；种子名使用 Template，内容文件名使用 FileTemplate。</summary>
     public string Create(TorrentNamingIngredients ingredients, bool fileName = false)
@@ -88,10 +86,7 @@ public sealed class ReleaseNamePreviewPolicy
                       }, fileName);
     }
 
-    public static string FormatEpisodeText(decimal episode)
-    {
-        return FormatEpisode(episode);
-    }
+    public static string FormatEpisodeText(decimal episode) => FormatEpisode(episode);
 
     public static string? FormatEpisodeText(ParseResult parsed)
     {
@@ -102,9 +97,8 @@ public sealed class ReleaseNamePreviewPolicy
     }
 
     public string Create(string  subjectName, decimal episode, int version, string preference,
-                         string? source,      string? template)
-    {
-        return Render(template, new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                         string? source,      string? template) =>
+        Render(template, new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
         {
             [NamingTokens.Title]   = subjectName,
             [NamingTokens.Episode] = FormatEpisode(episode),
@@ -112,12 +106,8 @@ public sealed class ReleaseNamePreviewPolicy
             [NamingTokens.Group]   = preference,
             [NamingTokens.Source]  = source
         }, false);
-    }
 
-    private static string VersionText(int version)
-    {
-        return version > 1 ? $"v{version}" : string.Empty;
-    }
+    private static string VersionText(int version) => version > 1 ? $"v{version}" : string.Empty;
 
     private static string ReplaceFormattedTokens(string template, IReadOnlyDictionary<string, string?> values)
     {
@@ -200,7 +190,7 @@ public sealed class ReleaseNamePreviewPolicy
         // 文件名模式下模板中书写的 / 与 \ 作为子目录分隔符保留；令牌取值里的分隔符已在 Sanitize
         // 阶段转成空格，因此目录层级只由模板结构决定。种子名模式沿旧行为折叠为空格（展示名单层）。
         var segments = (allowDirectories ? rendered.Replace('\\', '/') : rendered)
-                      .Split('/', StringSplitOptions.RemoveEmptyEntries);
+           .Split('/', StringSplitOptions.RemoveEmptyEntries);
         return string.Join(allowDirectories ? '/' : ' ',
                            segments.Select(CollapseIllegalCharacters).Where(segment => segment.Length > 0));
     }
@@ -209,7 +199,7 @@ public sealed class ReleaseNamePreviewPolicy
     {
         var cleaned = new string(segment.Select(character =>
                                                     InvalidFileNameCharacters.Contains(character) ? ' ' : character)
-                                       .ToArray());
+                                        .ToArray());
         return string.Join(' ', cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 
@@ -222,8 +212,6 @@ public sealed class ReleaseNamePreviewPolicy
         return string.Join(' ', cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 
-    private static string FormatEpisode(decimal episode)
-    {
-        return episode.ToString(episode == decimal.Truncate(episode) ? "00" : "00.###", CultureInfo.InvariantCulture);
-    }
+    private static string FormatEpisode(decimal episode) =>
+        episode.ToString(episode == decimal.Truncate(episode) ? "00" : "00.###", CultureInfo.InvariantCulture);
 }

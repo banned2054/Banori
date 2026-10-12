@@ -27,27 +27,24 @@ public sealed class DownloadFileService(
     private static readonly HashSet<string> SubtitleExtensions = new(StringComparer.OrdinalIgnoreCase)
         { ".ass", ".ssa", ".srt", ".sup" };
 
-    private static readonly Regex SubtitleSuffix = new(
-                                                       @"(?<suffix>(?:\.(?:chs|cht|sc|tc|zh|zh-cn|zh-tw|chi|zho|gb|big5|jp|jpn|ja|en|eng|简|繁|简日|繁日|forced|default))+)$",
-                                                       RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
-                                                       TimeSpan.FromSeconds(1));
+    private static readonly Regex SubtitleSuffix =
+        new(@"(?<suffix>(?:\.(?:chs|cht|sc|tc|zh|zh-cn|zh-tw|chi|zho|gb|big5|jp|jpn|ja|en|eng|简|繁|简日|繁日|forced|default))+)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     public async Task<DownloadTaskFilesView> ListAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
         using var       lease = await coordinationGate.EnterAsync(cancellationToken);
         await using var db    = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var             task  = await LoadAsync(db, taskId, cancellationToken);
-        if (task.Files.Count == 0)
-        {
-            await using var session = await sessionFactory.CreateAsync(cancellationToken);
-            task = await InitializeUnderGateAsync(db, session, taskId, cancellationToken);
-        }
+        if (task.Files.Count != 0) return View(task);
+        await using var session = await sessionFactory.CreateAsync(cancellationToken);
+        task = await InitializeUnderGateAsync(db, session, taskId, cancellationToken);
 
         return View(task);
     }
 
-    public async Task<DownloadFilePreview> PreviewAsync(Guid taskId, int index, DownloadFileEditRequest request,
-                                                        CancellationToken cancellationToken = default)
+    public async Task<DownloadFilePreview> PreviewAsync(
+        Guid taskId, int index, DownloadFileEditRequest request, CancellationToken cancellationToken = default)
     {
         using var       lease   = await coordinationGate.EnterAsync(cancellationToken);
         await using var session = await sessionFactory.CreateAsync(cancellationToken);
@@ -67,8 +64,8 @@ public sealed class DownloadFileService(
                                            : null);
     }
 
-    public async Task<DownloadTaskFilesView> ApplyAsync(Guid taskId, int index, DownloadFileEditRequest request,
-                                                        CancellationToken cancellationToken = default)
+    public async Task<DownloadTaskFilesView> ApplyAsync(
+        Guid taskId, int index, DownloadFileEditRequest request, CancellationToken cancellationToken = default)
     {
         using var       lease   = await coordinationGate.EnterAsync(cancellationToken);
         await using var session = await sessionFactory.CreateAsync(cancellationToken);
@@ -94,8 +91,8 @@ public sealed class DownloadFileService(
         await InitializeUnderGateAsync(db, session, taskId, cancellationToken);
     }
 
-    public async Task<bool> ArchiveCompletedAsync(Guid              taskId, bool alreadyHoldingGate = false,
-                                                  CancellationToken cancellationToken = default)
+    public async Task<bool> ArchiveCompletedAsync(
+        Guid taskId, bool alreadyHoldingGate = false, CancellationToken cancellationToken = default)
     {
         using var       lease   = alreadyHoldingGate ? null : await coordinationGate.EnterAsync(cancellationToken);
         await using var session = await sessionFactory.CreateAsync(cancellationToken);
@@ -127,8 +124,7 @@ public sealed class DownloadFileService(
     }
 
     private async Task<bool> PlanAndExecuteUnderGateAsync(IQbittorrentSession session, Guid taskId,
-                                                          TorrentSnapshot     snapshot,
-                                                          CancellationToken   cancellationToken)
+                                                          TorrentSnapshot snapshot, CancellationToken cancellationToken)
     {
         await using var db   = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var             task = await InitializeUnderGateAsync(db, session, taskId, cancellationToken);
@@ -144,16 +140,16 @@ public sealed class DownloadFileService(
     }
 
     /// <summary>调用方必须持有同一个 DownloadCoordinationGate；仅恢复已持久化日志，不重新分类或规划。</summary>
-    public async Task<bool> RecoverPendingUnderGateAsync(IQbittorrentSession session, Guid taskId,
-                                                         CancellationToken   cancellationToken = default)
+    public async Task<bool> RecoverPendingUnderGateAsync(
+        IQbittorrentSession session, Guid taskId, CancellationToken cancellationToken = default)
     {
         await using var db   = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var             task = await LoadAsync(db, taskId, cancellationToken);
         return await ExecutePendingAsync(db, session, task, cancellationToken);
     }
 
-    private async Task<DownloadTask> InitializeUnderGateAsync(ApplicationDbContext db,     IQbittorrentSession session,
-                                                              Guid                 taskId, CancellationToken   ct)
+    private async Task<DownloadTask> InitializeUnderGateAsync(
+        ApplicationDbContext db, IQbittorrentSession session, Guid taskId, CancellationToken ct)
     {
         var task = await LoadAsync(db, taskId, ct);
         if (!TorrentFileManifestParser.TryParse(task.TorrentFile, out var manifest))
@@ -243,7 +239,7 @@ public sealed class DownloadFileService(
             file.AnimeRelativePathOverride = string.IsNullOrWhiteSpace(request.AnimeRelativePath)
                 ? null
                 : RelativeDownloadPathPolicy.Normalize(request.AnimeRelativePath);
-            if (file.Kind == DownloadFileKind.Seed && file.AnimeRelativePathOverride is not null)
+            if (file is { Kind: DownloadFileKind.Seed, AnimeRelativePathOverride: not null })
                 throw new ArgumentException("做种文件不接受动画路径覆盖，必须使用原始完整路径。");
         }
 
@@ -263,7 +259,7 @@ public sealed class DownloadFileService(
                     SubtitleExtensions.Contains(Path.GetExtension(file.OriginalRelativePath))
             ? DownloadFileKind.Subtitle
             : request.Kind;
-        if (file.Kind == DownloadFileKind.Seed && file.AnimeRelativePathOverride is not null)
+        if (file is { Kind: DownloadFileKind.Seed, AnimeRelativePathOverride: not null })
             throw new ArgumentException("做种文件不接受动画路径覆盖。");
         file.UpdatedAtUtc = timeProvider.GetUtcNow();
     }
@@ -282,8 +278,7 @@ public sealed class DownloadFileService(
          ?? task.Files.Select(file => aniParser.Parse(FileName(file.OriginalRelativePath)))
                 .Select(parsed => parsed?.Episode ?? parsed?.StartEpisode).FirstOrDefault(value => value is not null);
         if (episode is null) throw new InvalidOperationException("缺少命名要素和集数，请填写集数或补充任务命名快照。");
-        task.NamingIngredients = new TorrentNamingIngredients(
-                                                              await namingTemplateStore.GetAsync(ct), title,
+        task.NamingIngredients = new TorrentNamingIngredients(await namingTemplateStore.GetAsync(ct), title,
                                                               ReleaseNamePreviewPolicy.FormatEpisodeText(episode.Value),
                                                               task.Version, null, task.SiteSource,
                                                               FileTemplate : await namingTemplateStore
@@ -301,12 +296,12 @@ public sealed class DownloadFileService(
         var seed     = RelativeDownloadPathPolicy.Normalize(task.SeedDirectory!);
         RelativeDownloadPathPolicy.ValidateDirectories(media, seed);
         var ingredients = TorrentNamingIngredients.FromJson(task.NamingIngredients);
-        var absolute = new Dictionary<int, string>();
+        var absolute    = new Dictionary<int, string>();
         foreach (var file in task.Files)
         {
             // 种子名称模板只命名种子，不产生保存目录层；媒体目录内的子目录结构只由文件模板中的 / 决定。
             var relative = file.Kind == DownloadFileKind.Seed
-                ? seed + "/" + file.OriginalRelativePath
+                ? seed  + "/" + file.OriginalRelativePath
                 : media + "/" + (file.AnimeRelativePathOverride ?? ContentName(task, file, ingredients));
             absolute.Add(file.FileIndex, RelativeDownloadPathPolicy.Normalize(relative));
         }
@@ -336,9 +331,11 @@ public sealed class DownloadFileService(
         var name = task.NamingSnapshot;
         if (ingredients is not null)
         {
-            var text                                    = ReleaseNamePreviewPolicy.FormatEpisodeText(episode!.Value);
+            var text = ReleaseNamePreviewPolicy.FormatEpisodeText(episode!.Value);
+
             if (end is not null && end != episode) text += "-E" + ReleaseNamePreviewPolicy.FormatEpisodeText(end.Value);
-            var input                                   = ingredients with { EpisodeText = text };
+
+            var input = ingredients with { EpisodeText = text };
             if (parsed is not null)
                 input = input with
                 {
@@ -370,12 +367,13 @@ public sealed class DownloadFileService(
         decimal? end = parsed?.Episode is null && parsed?.EndEpisode is { } last
             ? episodeCorrectionPolicy.Apply(task.SubjectId, last).Episode
             : null;
-        if (file.EpisodeNumberOverride is not null) return (file.EpisodeNumberOverride, file.EpisodeEndOverride);
-        return (episode, file.EpisodeEndOverride ?? end);
+        return file.EpisodeNumberOverride is not null
+            ? (file.EpisodeNumberOverride, file.EpisodeEndOverride)
+            : (episode, file.EpisodeEndOverride ?? end);
     }
 
-    private async Task ValidatePlanAsync(ApplicationDbContext db,   IQbittorrentSession session, DownloadTask task,
-                                         FilePlan             plan, CancellationToken   ct)
+    private async Task ValidatePlanAsync(
+        ApplicationDbContext db, IQbittorrentSession session, DownloadTask task, FilePlan plan, CancellationToken ct)
     {
         var snapshot = await SnapshotAsync(session, task.InfoHash, ct);
         if (snapshot.IsMoving || !SameRoot(snapshot.SavePath, task.SavePath))
@@ -417,13 +415,18 @@ public sealed class DownloadFileService(
         var sizeByIndex = task.Files.ToDictionary(file => file.FileIndex, file => file.Size);
         foreach (var pair in plan.Paths)
         {
-            targetSizes[Join(plan.Root, pair.Value)]       = sizeByIndex[pair.Key];
+            targetSizes[Join(plan.Root, pair.Value)]     = sizeByIndex[pair.Key];
             targetSizes[Join(task.SavePath, pair.Value)] = sizeByIndex[pair.Key];
         }
 
+        var replacementTargetId =
+            await DownloadTaskLookups.FindReplacementTargetAsync(db, task.SubjectId, task.Episode, task.InfoHash,
+                                                                 task.Version, ct);
         var others = await db.DownloadTasks.Include(value => value.Files).AsNoTracking()
                              .Where(value => value.Id != task.Id).ToListAsync(ct);
-        var managedHashes = others.Select(value => value.InfoHash).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var managedTasksByHash = others.GroupBy(value => value.InfoHash, StringComparer.OrdinalIgnoreCase)
+                                       .ToDictionary(group => group.Key, group => group.First(),
+                                                     StringComparer.OrdinalIgnoreCase);
         foreach (var other in others)
         {
             if (other.Files.Count == 0 && targets.Any(path => IsWithin(path, other.SavePath)))
@@ -440,8 +443,21 @@ public sealed class DownloadFileService(
                     if (other.PendingSavePath is not null) occupied.Add(Join(other.PendingSavePath, pending!));
                 }
 
-                if (targets.Any(target => occupied.Any(path => PathsOverlap(target, path))))
-                    throw new InvalidOperationException("目标文件路径已被其他下载任务占用。");
+                foreach (var target in targets)
+                foreach (var path in occupied)
+                {
+                    if (!PathsOverlap(target, path)) continue;
+                    var matchingReplacementFile = other.Id == replacementTargetId                       &&
+                                                  EqualPath(target, path)                               &&
+                                                  targetSizes.TryGetValue(target, out var expectedSize) &&
+                                                  expectedSize == file.Size;
+                    if (matchingReplacementFile) continue;
+                    var owner = string.IsNullOrWhiteSpace(other.NamingSnapshot)
+                        ? other.Id.ToString()
+                        : other.NamingSnapshot;
+                    throw new
+                        InvalidOperationException($"目标文件路径“{target}”被下载任务“{owner}”（任务 ID {other.Id}，状态 {other.Status}）占用；该任务记录的文件路径为“{path}”。");
+                }
             }
         }
 
@@ -454,7 +470,7 @@ public sealed class DownloadFileService(
         foreach (var other in await session.ListTorrentsAsync(null, ct))
         {
             if (string.Equals(other.Hash, task.InfoHash, StringComparison.OrdinalIgnoreCase)) continue;
-            var managed = managedHashes.Contains(other.Hash ?? string.Empty);
+            var managedTask = managedTasksByHash.GetValueOrDefault(other.Hash ?? string.Empty);
             try
             {
                 var otherRoot = Root(other.SavePath);
@@ -464,10 +480,24 @@ public sealed class DownloadFileService(
                     foreach (var target in targets)
                     {
                         if (!PathsOverlap(target, occupied)) continue;
-                        if (!managed                                    &&
-                            targetSizes.TryGetValue(target, out var expected) &&
-                            expected == file.Size) continue;
-                        throw new InvalidOperationException("目标文件路径已被下载器中的其他种子占用。");
+                        switch (managedTask)
+                        {
+                            case null when
+                                targetSizes.TryGetValue(target, out var expected) &&
+                                expected == file.Size :
+                                continue;
+                            case null :
+                                throw new
+                                    InvalidOperationException($"目标文件路径“{target}”被下载器中的其他种子占用，种子文件路径为“{occupied}”。");
+                            default :
+                            {
+                                var owner = string.IsNullOrWhiteSpace(managedTask.NamingSnapshot)
+                                    ? managedTask.Id.ToString()
+                                    : managedTask.NamingSnapshot;
+                                throw new
+                                    InvalidOperationException($"目标文件路径“{target}”被下载任务“{owner}”（任务 ID {managedTask.Id}，状态 {managedTask.Status}）占用；该种子的文件路径为“{occupied}”。");
+                            }
+                        }
                     }
                 }
             }
@@ -489,8 +519,8 @@ public sealed class DownloadFileService(
         }
     }
 
-    private async Task<bool> ExecutePendingAsync(ApplicationDbContext db,   IQbittorrentSession session,
-                                                 DownloadTask         task, CancellationToken   ct)
+    private async Task<bool> ExecutePendingAsync(
+        ApplicationDbContext db, IQbittorrentSession session, DownloadTask task, CancellationToken ct)
     {
         if (!HasPending(task)) return true;
         var targetRoot = task.PendingSavePath ?? throw new InvalidOperationException("待执行文件操作缺少保存目录。");
@@ -548,49 +578,37 @@ public sealed class DownloadFileService(
         return true;
     }
 
-    private DownloadTaskFilesView View(DownloadTask task)
-    {
-        return new DownloadTaskFilesView(task.Id, task.SavePath,
-                                         task.Files.OrderBy(file => file.FileIndex).Select(file =>
-                                         {
-                                             var parsed = aniParser.Parse(FileName(file.OriginalRelativePath));
-                                             var (episode, end) = Episodes(task, file, parsed);
-                                             if (file.EpisodeNumberOverride is null && parsed?.Episode is null &&
-                                                 parsed?.StartEpisode is null)
-                                                 episode =
-                                                     null; // Display identification honestly; task episode fallback is only for naming.
-                                             return new DownloadFileView(file.FileIndex, file.OriginalRelativePath,
-                                                                         file.CurrentRelativePath,
-                                                                         file.Kind, file.ClassificationReason, episode,
-                                                                         end,
-                                                                         file.AnimeRelativePathOverride);
-                                         }).ToList());
-    }
+    private DownloadTaskFilesView View(DownloadTask task) =>
+        new(task.Id, task.SavePath,
+            task.Files.OrderBy(file => file.FileIndex)
+                .Select(file =>
+                 {
+                     var parsed = aniParser.Parse(FileName(file.OriginalRelativePath));
+                     var (episode, end) = Episodes(task, file, parsed);
+                     if (file.EpisodeNumberOverride is null &&
+                         parsed?.Episode is null            &&
+                         parsed?.StartEpisode is null)
+                         episode = null; // Display identification honestly; task episode fallback is only for naming.
+                     return new DownloadFileView(file.FileIndex, file.OriginalRelativePath, file.CurrentRelativePath,
+                                                 file.Kind, file.ClassificationReason, episode, end,
+                                                 file.AnimeRelativePathOverride);
+                 }).ToList());
 
-    private static DownloadFileKind Kind(DownloadFileClassification classification)
-    {
-        return classification.Kind == Core.Downloads.DownloadFileKind.Seed
+    private static DownloadFileKind Kind(DownloadFileClassification classification) =>
+        classification.Kind == Core.Downloads.DownloadFileKind.Seed
             ? DownloadFileKind.Seed
             : SubtitleExtensions.Contains(Path.GetExtension(classification.Path))
                 ? DownloadFileKind.Subtitle
                 : DownloadFileKind.Anime;
-    }
 
-    private static DownloadTaskFile FindFile(DownloadTask task, int index)
-    {
-        return task.Files.SingleOrDefault(file => file.FileIndex == index) ??
-               throw new KeyNotFoundException("找不到指定文件 index。");
-    }
+    private static DownloadTaskFile FindFile(DownloadTask task, int index) =>
+        task.Files.SingleOrDefault(file => file.FileIndex == index) ??
+        throw new KeyNotFoundException("找不到指定文件 index。");
 
-    private static bool HasPending(DownloadTask task)
-    {
-        return task.PendingSavePath is not null || task.Files.Any(file => file.PendingRenameTo is not null);
-    }
+    private static bool HasPending(DownloadTask task) => task.PendingSavePath is not null ||
+                                                         task.Files.Any(file => file.PendingRenameTo is not null);
 
-    private static string FileName(string path)
-    {
-        return path[(path.LastIndexOf('/') + 1)..];
-    }
+    private static string FileName(string path) => path[(path.LastIndexOf('/') + 1)..];
 
     private static string Root(string path)
     {
@@ -600,46 +618,31 @@ public sealed class DownloadFileService(
         return root;
     }
 
-    private static string Join(string root, string relative)
-    {
-        return Root(root) + "/" + RelativeDownloadPathPolicy.Normalize(relative);
-    }
+    private static string Join(string root, string relative) =>
+        Root(root) + "/" + RelativeDownloadPathPolicy.Normalize(relative);
 
-    private static bool SameRoot(string left, string right)
-    {
-        return string.Equals(Root(left), Root(right), StringComparison.Ordinal);
-    }
+    private static bool SameRoot(string left, string right) =>
+        string.Equals(Root(left), Root(right), StringComparison.Ordinal);
 
-    private static bool EqualPath(string left, string right)
-    {
-        return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-    }
+    private static bool EqualPath(string left, string right) =>
+        string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
 
-    private static bool PathsOverlap(string left, string right)
-    {
-        return EqualPath(left, right)                                           ||
-               left.StartsWith(right + "/", StringComparison.OrdinalIgnoreCase) ||
-               right.StartsWith(left + "/", StringComparison.OrdinalIgnoreCase);
-    }
+    private static bool PathsOverlap(string left, string right) =>
+        EqualPath(left, right)                                           ||
+        left.StartsWith(right + "/", StringComparison.OrdinalIgnoreCase) ||
+        right.StartsWith(left + "/", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsWithin(string path, string root)
-    {
-        return path.StartsWith(Root(root) + "/", StringComparison.OrdinalIgnoreCase);
-    }
+    private static bool IsWithin(string path, string root) =>
+        path.StartsWith(Root(root) + "/", StringComparison.OrdinalIgnoreCase);
 
-    private static async Task<TorrentSnapshot> SnapshotAsync(IQbittorrentSession session, string hash,
-                                                             CancellationToken   ct)
-    {
-        return (await session.FindTorrentsAsync([hash], ct)).SingleOrDefault() ??
-               throw new InvalidOperationException("下载器中不存在该种子。");
-    }
+    private static async Task<TorrentSnapshot> SnapshotAsync(
+        IQbittorrentSession session, string hash, CancellationToken ct) =>
+        (await session.FindTorrentsAsync([hash], ct)).SingleOrDefault() ??
+        throw new InvalidOperationException("下载器中不存在该种子。");
 
-    private static async Task<DownloadTask> LoadAsync(ApplicationDbContext db, Guid id, CancellationToken ct)
-    {
-        return await db.DownloadTasks.Include(task => task.Files).Include(task => task.Subject)
-                       .SingleOrDefaultAsync(task => task.Id == id, ct)
-            ?? throw new KeyNotFoundException("找不到指定下载任务。");
-    }
+    private static async Task<DownloadTask> LoadAsync(ApplicationDbContext db, Guid id, CancellationToken ct) =>
+        await db.DownloadTasks.Include(task => task.Files).Include(task => task.Subject)
+                .SingleOrDefaultAsync(task => task.Id == id, ct) ?? throw new KeyNotFoundException("找不到指定下载任务。");
 
     private async Task<DownloadTask> ReadTaskAsync(Guid id, CancellationToken ct)
     {

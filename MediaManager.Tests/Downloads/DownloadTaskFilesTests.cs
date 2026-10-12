@@ -301,15 +301,13 @@ public sealed class DownloadTaskFilesTests
     }
 
     private static DownloadTasksPageViewModel CreateViewModel(DownloadServiceTests.TestHarness harness,
-                                                              IDownloadFileService             service)
-    {
-        return new DownloadTasksPageViewModel(harness.Service, harness.Intake,
-                                              new DownloadTaskQueries(harness.Provider
-                                                                             .GetRequiredService<
-                                                                                  IDbContextFactory<
-                                                                                      ApplicationDbContext>>()),
-                                              NullLogger<DownloadTasksPageViewModel>.Instance, service);
-    }
+                                                              IDownloadFileService             service) =>
+        new(harness.Service, harness.Intake,
+            new DownloadTaskQueries(harness.Provider
+                                           .GetRequiredService<
+                                                IDbContextFactory<
+                                                    ApplicationDbContext>>()),
+            NullLogger<DownloadTasksPageViewModel>.Instance, service);
 
     private static async Task<string> RenderAsync(DownloadTasksPageViewModel vm, Guid id)
     {
@@ -318,19 +316,16 @@ public sealed class DownloadTaskFilesTests
         return await renderer.Dispatcher.InvokeAsync(async () =>
         {
             var component = await renderer.RenderComponentAsync<DownloadTaskFiles>(ParameterView.FromDictionary(
-             new Dictionary<string, object?>
-             {
-                 [nameof(DownloadTaskFiles.TaskId)]    = id,
-                 [nameof(DownloadTaskFiles.ViewModel)] = vm
-             }));
+                          new Dictionary<string, object?>
+                          {
+                              [nameof(DownloadTaskFiles.TaskId)]    = id,
+                              [nameof(DownloadTaskFiles.ViewModel)] = vm
+                          }));
             return WebUtility.HtmlDecode(component.ToHtmlString());
         });
     }
 
-    private static int Count(string text, string value)
-    {
-        return text.Split(value).Length - 1;
-    }
+    private static int Count(string text, string value) => text.Split(value).Length - 1;
 
     private sealed class FakeFileService(Guid taskId) : IDownloadFileService
     {
@@ -387,9 +382,9 @@ public sealed class DownloadTaskFilesTests
                                                                                   CurrentPath =
                                                                                   file.CurrentPath
                                                                                      .Replace("OldRoot/",
-                                                                                          "NewRoot/",
-                                                                                          StringComparison
-                                                                                             .Ordinal)
+                                                                                               "NewRoot/",
+                                                                                               StringComparison
+                                                                                                  .Ordinal)
                                                                               })
                                                             .ToArray()
             };

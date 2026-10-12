@@ -68,7 +68,7 @@ public sealed class DownloadDirectorySettingsStoreTests
                                            new ManageQbittorrentSettings(settings,
                                                                          new
                                                                              FakeQbittorrentSessionFactory(new
-                                                                                 FakeTorrentStore())),
+                                                                                          FakeTorrentStore())),
                                            new NamingTemplateStore(settings), directories,
                                            new ManageTelegramSettings(settings, new FakeTelegramSender()),
                                            new ManageGotifySettings(settings, new FakeGotifySender()),

@@ -151,15 +151,9 @@ else
 		_vm = new SubscriptionsPageViewModel(SubscriptionService, ProxyService, Logger);
 	}
 
-	protected override Task OnInitializedAsync()
-	{
-		return RunAsync(_vm.LoadAsync);
-	}
+	protected override Task OnInitializedAsync() => RunAsync(_vm.LoadAsync);
 
-	private Task SaveAsync()
-	{
-		return RunAsync(_vm.SaveAsync);
-	}
+	private Task SaveAsync() => RunAsync(_vm.SaveAsync);
 
 	private Task RefreshAsync(Guid id)
 	{
@@ -190,10 +184,7 @@ else
 		_cts.Dispose();
 	}
 
-	private static string FormatTime(DateTimeOffset? value)
-	{
-		return value?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—";
-	}
+	private static string FormatTime(DateTimeOffset? value) => value?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—";
 
 	private static string ProtocolLabel(ProxyProtocol protocol)
 	{

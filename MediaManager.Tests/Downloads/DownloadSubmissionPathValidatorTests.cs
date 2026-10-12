@@ -220,21 +220,16 @@ public sealed class DownloadSubmissionPathValidatorTests
         };
     }
 
-    private static DownloadTaskFile File(DownloadTask task, string path, string? from = null, string? to = null)
-    {
-        return new DownloadTaskFile
+    private static DownloadTaskFile File(DownloadTask task, string path, string? from = null, string? to = null) =>
+        new()
         {
             Id = Guid.NewGuid(), DownloadTaskId = task.Id, FileIndex = 0, OriginalRelativePath = "original.mkv",
             CurrentRelativePath = path, PendingRenameFrom = from, PendingRenameTo = to, Size = 1024
         };
-    }
 
     private static byte[] MultiTorrent(string name, params string[] paths)
     {
-        static string B(string value)
-        {
-            return Encoding.UTF8.GetByteCount(value) + ":" + value;
-        }
+        static string B(string value) => Encoding.UTF8.GetByteCount(value) + ":" + value;
 
         var files = string.Concat(paths.Select(path => "d6:lengthi1024e4:pathl"                 +
                                                        string.Concat(path.Split('/').Select(B)) + "ee"));
@@ -269,10 +264,7 @@ public sealed class DownloadSubmissionPathValidatorTests
             return h;
         }
 
-        public Task Validate()
-        {
-            return Validator.ValidateAsync(Task);
-        }
+        public Task Validate() => Validator.ValidateAsync(Task);
 
         public async Task Add(DownloadTask task)
         {

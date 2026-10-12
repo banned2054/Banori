@@ -37,8 +37,6 @@ public static class LanguageComposition
         return Expand(configured).IsSubsetOf(Expand(candidate.Value));
     }
 
-    private static IReadOnlySet<EnumLanguage> Set(params EnumLanguage[] languages)
-    {
-        return new HashSet<EnumLanguage>(languages);
-    }
+    private static IReadOnlySet<EnumLanguage> Set(params EnumLanguage[] languages) =>
+        new HashSet<EnumLanguage>(languages);
 }

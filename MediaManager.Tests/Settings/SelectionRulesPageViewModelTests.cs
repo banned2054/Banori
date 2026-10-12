@@ -297,18 +297,13 @@ public sealed class SelectionRulesPageViewModelTests
     /// <summary>测试用规则提供者：从规则设置服务读取当前生效配置，保存后立即生效。</summary>
     private sealed class SettingsBackedRuleProvider(ManageSelectionRuleSettings settings) : ISelectionRuleProvider
     {
-        public async ValueTask<SelectionRuleConfig> GetAsync(CancellationToken cancellationToken = default)
-        {
-            return await settings.GetAsync(cancellationToken);
-        }
+        public async ValueTask<SelectionRuleConfig> GetAsync(CancellationToken cancellationToken = default) =>
+            await settings.GetAsync(cancellationToken);
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset timestamp) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow()
-        {
-            return timestamp;
-        }
+        public override DateTimeOffset GetUtcNow() => timestamp;
     }
 
     /// <summary>测试用应用生命周期：只关心停机令牌的取消时机。</summary>
@@ -356,18 +351,12 @@ public sealed class SelectionRulesPageViewModelTests
             }
         }
 
-        public AsyncServiceScope CreateScope()
-        {
-            return provider.CreateAsyncScope();
-        }
+        public AsyncServiceScope CreateScope() => provider.CreateAsyncScope();
 
-        public SelectionRulesPageViewModel CreateViewModel(IServiceScope scope)
-        {
-            return new
-                SelectionRulesPageViewModel(scope.ServiceProvider.GetRequiredService<ManageSelectionRuleSettings>(),
-                                            scope.ServiceProvider.GetRequiredService<CandidateSelectionService>(),
-                                            NullLogger<SelectionRulesPageViewModel>.Instance);
-        }
+        public SelectionRulesPageViewModel CreateViewModel(IServiceScope scope) =>
+            new(scope.ServiceProvider.GetRequiredService<ManageSelectionRuleSettings>(),
+                scope.ServiceProvider.GetRequiredService<CandidateSelectionService>(),
+                NullLogger<SelectionRulesPageViewModel>.Instance);
 
         /// <summary>插入同一同集组的两个合格候选：ANi 与 LoliHouse（默认规则优胜 LoliHouse）。</summary>
         public async Task<(Guid AniItemId, Guid LoliHouseItemId)> AddEpisodeCandidatesAsync()
@@ -407,11 +396,9 @@ public sealed class SelectionRulesPageViewModelTests
             return itemId;
         }
 
-        public async Task<ApplicationDbContext> CreateDbContextAsync()
-        {
-            return await provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>()
-                                 .CreateDbContextAsync();
-        }
+        public async Task<ApplicationDbContext> CreateDbContextAsync() =>
+            await provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>()
+                          .CreateDbContextAsync();
 
         private async Task<Guid> EnsureSubscriptionAsync(ApplicationDbContext db)
         {

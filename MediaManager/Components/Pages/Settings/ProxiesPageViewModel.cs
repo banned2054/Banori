@@ -144,8 +144,5 @@ public sealed class ProxyDraft
         Password = null;
     }
 
-    internal SaveProxyRequest ToRequest()
-    {
-        return new SaveProxyRequest(Id, Name, Protocol, Host, Port, Username);
-    }
+    internal SaveProxyRequest ToRequest() => new(Id, Name, Protocol, Host, Port, Username);
 }

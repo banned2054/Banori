@@ -49,8 +49,8 @@ public sealed class ManageTelegramSettingsTests
         var settings = CreateService(new MemoryApplicationSettingStore());
         await Assert.ThrowsAsync<ArgumentException>(() =>
                                                         settings.SaveAsync(new TelegramSettings("42",
-                                                                                    null, true,
-                                                                                    NotificationEvents.All)));
+                                                                               null, true,
+                                                                               NotificationEvents.All)));
     }
 
     [Fact]
@@ -60,8 +60,8 @@ public sealed class ManageTelegramSettingsTests
         var settings = CreateService(store);
         await Assert.ThrowsAsync<ArgumentException>(() =>
                                                         settings.SaveAsync(new TelegramSettings(string.Empty,
-                                                                                    null, true,
-                                                                                    NotificationEvents.All),
+                                                                               null, true,
+                                                                               NotificationEvents.All),
                                                                            "bot-token"));
     }
 
@@ -165,10 +165,8 @@ public sealed class ManageTelegramSettingsTests
         Assert.Contains("网络不可达", message);
     }
 
-    private static ManageTelegramSettings CreateService(MemoryApplicationSettingStore store)
-    {
-        return new ManageTelegramSettings(store, new FakeTelegramSender());
-    }
+    private static ManageTelegramSettings CreateService(MemoryApplicationSettingStore store) =>
+        new(store, new FakeTelegramSender());
 }
 
 /// <summary>Gotify 通知渠道设置的读写、校验与测试发送入口回归。</summary>
@@ -208,8 +206,8 @@ public sealed class ManageGotifySettingsTests
     {
         var settings = CreateService(new MemoryApplicationSettingStore());
         await Assert.ThrowsAsync<ArgumentException>(() => settings.SaveAsync(new GotifySettings("http://gotify.test",
-                                                                                      null, true,
-                                                                                      NotificationEvents.All)));
+                                                                                 null, true,
+                                                                                 NotificationEvents.All)));
     }
 
     [Theory]
@@ -220,7 +218,7 @@ public sealed class ManageGotifySettingsTests
         var settings = CreateService(new MemoryApplicationSettingStore());
         await Assert.ThrowsAsync<ArgumentException>(() =>
                                                         settings.SaveAsync(new GotifySettings(baseUrl, null, true,
-                                                                                    NotificationEvents.All),
+                                                                               NotificationEvents.All),
                                                                            "app-token"));
     }
 
@@ -273,8 +271,6 @@ public sealed class ManageGotifySettingsTests
         Assert.Contains("401 token invalid", message);
     }
 
-    private static ManageGotifySettings CreateService(MemoryApplicationSettingStore store)
-    {
-        return new ManageGotifySettings(store, new FakeGotifySender());
-    }
+    private static ManageGotifySettings CreateService(MemoryApplicationSettingStore store) =>
+        new(store, new FakeGotifySender());
 }

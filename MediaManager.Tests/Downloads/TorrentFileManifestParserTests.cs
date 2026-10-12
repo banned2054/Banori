@@ -71,18 +71,9 @@ public sealed class TorrentFileManifestParserTests
         Assert.False(TorrentFileManifestParser.TryParse(invalidUtf8, out _));
     }
 
-    private static byte[] Torrent(string info)
-    {
-        return Encoding.UTF8.GetBytes("d4:info" + info + "e");
-    }
+    private static byte[] Torrent(string info) => Encoding.UTF8.GetBytes("d4:info" + info + "e");
 
-    private static string Str(string value)
-    {
-        return $"{Encoding.UTF8.GetByteCount(value)}:{value}";
-    }
+    private static string Str(string value) => $"{Encoding.UTF8.GetByteCount(value)}:{value}";
 
-    private static string File(long length, string path)
-    {
-        return $"d6:lengthi{length}e4:pathl{Str(path)}ee";
-    }
+    private static string File(long length, string path) => $"d6:lengthi{length}e4:pathl{Str(path)}ee";
 }

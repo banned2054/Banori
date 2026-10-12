@@ -141,10 +141,7 @@
 		_vm = new ProxiesPageViewModel(ProxyService, Logger);
 	}
 
-	protected override Task OnInitializedAsync()
-	{
-		return RunAsync(_vm.LoadAsync);
-	}
+	protected override Task OnInitializedAsync() => RunAsync(_vm.LoadAsync);
 
 	/// <summary>页面离开后取消进行中的查询属于预期，不向线路报错。</summary>
 	private async Task RunAsync(Func<CancellationToken, Task> operation)

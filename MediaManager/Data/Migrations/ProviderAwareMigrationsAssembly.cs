@@ -59,8 +59,6 @@ public sealed class ProviderAwareMigrationsAssembly(
         return filtered;
     }
 
-    private static bool IsMySqlMigrationType(Type type)
-    {
-        return type.Namespace?.StartsWith("MediaManager.Data.Migrations.MySql", StringComparison.Ordinal) == true;
-    }
+    private static bool IsMySqlMigrationType(Type type) =>
+        type.Namespace?.StartsWith("MediaManager.Data.Migrations.MySql", StringComparison.Ordinal) == true;
 }

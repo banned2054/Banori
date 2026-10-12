@@ -47,12 +47,10 @@ public sealed partial class MikanSubjectLinkResolver(IProxiedHttpClientSource ht
         return html.Length <= MaximumHtmlLength ? html : string.Empty;
     }
 
-    private static bool IsMikanUri(Uri uri)
-    {
-        return uri is { IsAbsoluteUri: true, Scheme: "https" or "http" } &&
-               (uri.Host.Equals("mikanani.me", StringComparison.OrdinalIgnoreCase) ||
-                uri.Host.EndsWith(".mikanani.me", StringComparison.OrdinalIgnoreCase));
-    }
+    private static bool IsMikanUri(Uri uri) =>
+        uri is { IsAbsoluteUri: true, Scheme: "https" or "http" } &&
+        (uri.Host.Equals("mikanani.me", StringComparison.OrdinalIgnoreCase) ||
+         uri.Host.EndsWith(".mikanani.me", StringComparison.OrdinalIgnoreCase));
 
     [GeneratedRegex("<p\\b[^>]*class\\s*=\\s*[\\\"'][^\\\"']*\\bbangumi-title\\b[^\\\"']*[\\\"'][^>]*>.*?</p>",
                     RegexOptions.IgnoreCase | RegexOptions.Singleline)]

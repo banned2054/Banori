@@ -292,35 +292,17 @@ else
 		};
 	}
 
-	private Task SaveAsync()
-	{
-		return RunAsync(_vm.SaveAsync);
-	}
+	private Task SaveAsync() => RunAsync(_vm.SaveAsync);
 
-	private Task TestDownloaderAsync()
-	{
-		return RunAsync(_vm.TestDownloaderAsync);
-	}
+	private Task TestDownloaderAsync() => RunAsync(_vm.TestDownloaderAsync);
 
-	private Task RegenerateHookTokenAsync()
-	{
-		return RunAsync(_vm.RegenerateHookTokenAsync);
-	}
+	private Task RegenerateHookTokenAsync() => RunAsync(_vm.RegenerateHookTokenAsync);
 
-	private Task TestTelegramAsync()
-	{
-		return RunAsync(_vm.TestTelegramAsync);
-	}
+	private Task TestTelegramAsync() => RunAsync(_vm.TestTelegramAsync);
 
-	private Task TestGotifyAsync()
-	{
-		return RunAsync(_vm.TestGotifyAsync);
-	}
+	private Task TestGotifyAsync() => RunAsync(_vm.TestGotifyAsync);
 
-	private Task ReloadProxiesAsync()
-	{
-		return RunAsync(_vm.ReloadProxiesAsync);
-	}
+	private Task ReloadProxiesAsync() => RunAsync(_vm.ReloadProxiesAsync);
 
 	private readonly CancellationTokenSource _cts = new();
 	private          SettingsPageViewModel   _vm  = null!;
@@ -331,10 +313,7 @@ else
 		                                ProxyService, Logger);
 	}
 
-	protected override Task OnInitializedAsync()
-	{
-		return RunAsync(_vm.LoadAsync);
-	}
+	protected override Task OnInitializedAsync() => RunAsync(_vm.LoadAsync);
 
 	/// <summary>页面离开后取消进行中的查询属于预期，不向线路报错。</summary>
 	private async Task RunAsync(Func<CancellationToken, Task> operation)

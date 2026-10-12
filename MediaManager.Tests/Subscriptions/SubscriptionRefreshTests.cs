@@ -50,8 +50,8 @@ public sealed class SubscriptionRefreshTests
 
                 var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
                 var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "测试订阅",
-                                                                                  "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                                  true, 30, 42));
+                                                                             "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                             true, 30, 42));
                 var queuedWorkId = await subscriptionService.RequestRefreshAsync(subscriptionId);
                 Assert.Equal(queuedWorkId, await subscriptionService.RequestRefreshAsync(subscriptionId));
                 var refreshService = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
@@ -235,8 +235,8 @@ public sealed class SubscriptionRefreshTests
                 feedReader.SetItems([hintItem]);
                 var hintSubscriptionId =
                     await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "AniBT 提示源",
-                                                                 "https://anibt.net/rss/magnets.xml?limit=100",
-                                                                 true, 30, null));
+                                                            "https://anibt.net/rss/magnets.xml?limit=100",
+                                                            true, 30, null));
                 var result = await refreshService.ProcessNextAsync();
 
                 Assert.NotNull(result);
@@ -300,8 +300,8 @@ public sealed class SubscriptionRefreshTests
                 {
                     await db.Database.EnsureCreatedAsync();
                     var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "恢复测试",
-                                                                                      "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                                      true, 30, null));
+                                                                                 "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                                 true, 30, null));
                     db.FeedItems.Add(new FeedItem
                     {
                         Id             = Guid.NewGuid(),
@@ -558,8 +558,8 @@ public sealed class SubscriptionRefreshTests
                 var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
                 var refreshService      = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
                 var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "缓存测试",
-                                                                                  "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                                  true, 30, null));
+                                                                             "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                             true, 30, null));
 
                 await subscriptionService.RequestRefreshAsync(subscriptionId);
                 var first = await refreshService.ProcessNextAsync();
@@ -625,8 +625,8 @@ public sealed class SubscriptionRefreshTests
                 var refreshService      = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
                 // 订阅未固定 Subject：Subject 只能来自标题映射缓存或 Mikan 页面发现（这里固定返回 467461）。
                 var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "标题映射测试",
-                                                                                  "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                                  true, 30, null));
+                                                                             "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                             true, 30, null));
                 var normalizedTitle = TitleNormalizer.Normalize(
                                                                 scope.ServiceProvider
                                                                      .GetRequiredService<AniParser>()
@@ -716,8 +716,8 @@ public sealed class SubscriptionRefreshTests
                 {
                     await db.Database.EnsureCreatedAsync();
                     subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "抓取失败恢复",
-                                                                                  "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                                  true, 30, null));
+                                                                             "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                             true, 30, null));
                     db.FeedItems.Add(new FeedItem
                     {
                         Id             = Guid.NewGuid(),
@@ -780,8 +780,8 @@ public sealed class SubscriptionRefreshTests
             {
                 var subscriptionService = scope2.ServiceProvider.GetRequiredService<SubscriptionService>();
                 var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "并发入队",
-                                                                                  "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                                  true, 30, null));
+                                                                             "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                             true, 30, null));
 
                 for (var round = 0; round < 3; round++)
                 {
@@ -821,9 +821,9 @@ public sealed class SubscriptionRefreshTests
             var             subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
 
             await Assert.ThrowsAsync<ArgumentException>(() => subscriptionService.SaveAsync(
-                                                             new SaveSubscriptionRequest(null, "临时",
-                                                                      "http://example.com/rss.xml",
-                                                                      true, 30, null)));
+                                                         new SaveSubscriptionRequest(null, "临时",
+                                                             "http://example.com/rss.xml",
+                                                             true, 30, null)));
         }
         finally
         {
@@ -831,10 +831,8 @@ public sealed class SubscriptionRefreshTests
         }
     }
 
-    private static IDbContextFactory<ApplicationDbContext> factoryOf(IServiceProvider provider)
-    {
-        return provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
-    }
+    private static IDbContextFactory<ApplicationDbContext> factoryOf(IServiceProvider provider) =>
+        provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
 
     private static async Task WaitUntilAsync(Func<Task<bool>> condition, int timeoutSeconds = 10)
     {
@@ -937,34 +935,24 @@ public sealed class SubscriptionRefreshTests
 
     private sealed class FakeSubjectProvider(DateTimeOffset timestamp) : ISubjectMetadataProvider
     {
-        public Task<SubjectMetadata> GetAsync(int subjectId, CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(new SubjectMetadata(subjectId, "Necronomico", "死灵子的宇宙恐怖秀", "TV",
-                                                       "2026-07-01", null, timestamp));
-        }
+        public Task<SubjectMetadata> GetAsync(int subjectId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new SubjectMetadata(subjectId, "Necronomico", "死灵子的宇宙恐怖秀", "TV",
+                                                "2026-07-01", null, timestamp));
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset timestamp) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow()
-        {
-            return timestamp;
-        }
+        public override DateTimeOffset GetUtcNow() => timestamp;
     }
 
     /// <summary>让 Worker 的退避等待立即到期，避免测试真实睡眠。</summary>
     private sealed class ImmediateTimeProvider(DateTimeOffset timestamp) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow()
-        {
-            return timestamp;
-        }
+        public override DateTimeOffset GetUtcNow() => timestamp;
 
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime,
-                                           TimeSpan      period)
-        {
-            return new ImmediateTimer(callback, state, dueTime);
-        }
+                                           TimeSpan      period) =>
+            new ImmediateTimer(callback, state, dueTime);
 
         private sealed class ImmediateTimer : ITimer
         {
@@ -973,19 +961,13 @@ public sealed class SubscriptionRefreshTests
                 if (dueTime != Timeout.InfiniteTimeSpan && dueTime >= TimeSpan.Zero) Task.Run(() => callback(state));
             }
 
-            public bool Change(TimeSpan dueTime, TimeSpan period)
-            {
-                return true;
-            }
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
 
             public void Dispose()
             {
             }
 
-            public ValueTask DisposeAsync()
-            {
-                return ValueTask.CompletedTask;
-            }
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         }
     }
 

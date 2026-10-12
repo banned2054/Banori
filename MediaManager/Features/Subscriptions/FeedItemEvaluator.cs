@@ -243,9 +243,8 @@ public sealed class FeedItemEvaluator(
     private FeedItemAnalysis CreateAnalysis(ParseResult parsed,      FeedItemStatus status, int? subjectId,
                                             string?     subjectName, ReleaseDecisionStatus? decisionStatus,
                                             string?     preference,  string reason, string? namingPreview,
-                                            decimal?    episode,     string? namingIngredients = null)
-    {
-        return new FeedItemAnalysis
+                                            decimal?    episode,     string? namingIngredients = null) =>
+        new()
         {
             Status            = status,
             ParsedTitle       = parsed.Title,
@@ -273,15 +272,12 @@ public sealed class FeedItemEvaluator(
             NamingIngredients = namingIngredients,
             EvaluatedAtUtc    = timeProvider.GetUtcNow()
         };
-    }
 
     private Task SaveParsedNeedsReviewAsync(Guid              itemId,            ParseResult parsed, string reason,
-                                            CancellationToken cancellationToken, int?        subjectId = null)
-    {
-        return SaveAnalysisAsync(itemId,
-                                 CreateAnalysis(parsed, FeedItemStatus.NeedsReview, subjectId, null, null, null, reason,
-                                                null, parsed.Episode), cancellationToken);
-    }
+                                            CancellationToken cancellationToken, int?        subjectId = null) =>
+        SaveAnalysisAsync(itemId,
+                          CreateAnalysis(parsed, FeedItemStatus.NeedsReview, subjectId, null, null, null, reason,
+                                         null, parsed.Episode), cancellationToken);
 
     private async Task<int?> FindSubjectIdByTitleAsync(string normalizedTitle, CancellationToken cancellationToken)
     {

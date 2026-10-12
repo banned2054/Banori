@@ -26,7 +26,7 @@ public sealed class QbittorrentSessionFactoryTests
 
         await using var session = await factory.CreateAsync(
                                                             new QbittorrentSettings(stub.BaseUrl, "admin", "/downloads",
-                                                                     true), null);
+                                                                true), null);
 
         Assert.Equal("saved-secret", stub.ReceivedPassword);
         Assert.Equal("v5.0.0", session.ServerVersion);
@@ -41,8 +41,8 @@ public sealed class QbittorrentSessionFactoryTests
         var             factory = new QbittorrentSessionFactory(store, ProxyServiceTestFactory.CreateEphemeral());
 
         await Assert.ThrowsAsync<QbittorrentLoginFailedException>(() => factory.CreateAsync(
-                                                                       new QbittorrentSettings(stub.BaseUrl, "admin",
-                                                                                "/downloads", true), "draft-secret"));
+                                                                   new QbittorrentSettings(stub.BaseUrl, "admin",
+                                                                       "/downloads", true), "draft-secret"));
 
         Assert.Equal("draft-secret", stub.ReceivedPassword);
     }
@@ -175,10 +175,8 @@ public sealed class QbittorrentSessionFactoryTests
             return new StubRequest(method, path, Encoding.UTF8.GetString(body, 0, offset));
         }
 
-        private static int IndexOfHeaderEnd(List<byte> bytes)
-        {
-            return Encoding.ASCII.GetString(bytes.ToArray()).IndexOf("\r\n\r\n", StringComparison.Ordinal);
-        }
+        private static int IndexOfHeaderEnd(List<byte> bytes) => Encoding.ASCII.GetString(bytes.ToArray())
+                                                                         .IndexOf("\r\n\r\n", StringComparison.Ordinal);
 
         private static (string? Username, string? Password) ParseCredentials(string body)
         {

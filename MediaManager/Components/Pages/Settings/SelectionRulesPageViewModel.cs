@@ -268,10 +268,7 @@ public sealed class SelectionRulesPageViewModel(
         };
     }
 
-    private static bool IsValidIndex<T>(List<T> list, int index)
-    {
-        return index >= 0 && index < list.Count;
-    }
+    private static bool IsValidIndex<T>(List<T> list, int index) => index >= 0 && index < list.Count;
 
     private static void Move<T>(List<T> list, int index, int offset)
     {
@@ -314,13 +311,9 @@ public static class SelectionRuleDisplay
     public static readonly EnumLanguage[] LanguageChoices =
         Enum.GetValues<EnumLanguage>().Where(language => language != EnumLanguage.None).ToArray();
 
-    public static string LanguageText(EnumLanguage language)
-    {
-        return LanguageNames.GetValueOrDefault(language, language.ToString());
-    }
+    public static string LanguageText(EnumLanguage language) =>
+        LanguageNames.GetValueOrDefault(language, language.ToString());
 
-    public static string ResolutionText(EnumResolution resolution)
-    {
-        return ResolutionNames.GetValueOrDefault(resolution, resolution.ToString());
-    }
+    public static string ResolutionText(EnumResolution resolution) =>
+        ResolutionNames.GetValueOrDefault(resolution, resolution.ToString());
 }

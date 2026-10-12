@@ -15,10 +15,7 @@ public static class SelectionRuleConfigSerialization
         Converters = { new JsonStringEnumConverter() }
     };
 
-    public static string Serialize(SelectionRuleConfig config)
-    {
-        return JsonSerializer.Serialize(config, Options);
-    }
+    public static string Serialize(SelectionRuleConfig config) => JsonSerializer.Serialize(config, Options);
 
     /// <summary>反序列化并做基本有效性校验；内容损坏、缺字段或版本非法时返回 null。</summary>
     public static SelectionRuleConfig? TryDeserialize(string json)
