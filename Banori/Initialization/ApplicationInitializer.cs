@@ -20,14 +20,14 @@ public static class ApplicationInitializer
         if (await userManager.Users.AnyAsync(cancellationToken)) return;
 
         var options = services.GetRequiredService<IOptions<BootstrapAdminOptions>>().Value;
-        if (string.IsNullOrWhiteSpace(options.Email) || string.IsNullOrWhiteSpace(options.Password))
+        if (string.IsNullOrWhiteSpace(options.Username) || string.IsNullOrWhiteSpace(options.Password))
             throw
-                new InvalidOperationException("数据库中没有管理员。请设置 BootstrapAdmin__Email 和 BootstrapAdmin__Password 后重新启动。");
+                new InvalidOperationException("数据库中没有管理员。请设置 Username 和 Password 环境变量后重新启动。");
 
         var administrator = new ApplicationUser
         {
-            UserName       = options.Email,
-            Email          = options.Email,
+            UserName       = options.Username,
+            Email          = options.Username,
             EmailConfirmed = true
         };
 
@@ -38,6 +38,6 @@ public static class ApplicationInitializer
             throw new InvalidOperationException($"创建首位管理员失败：{errors}");
         }
 
-        app.Logger.LogInformation("已创建首位管理员 {AdministratorEmail}。", options.Email);
+        app.Logger.LogInformation("已创建首位管理员 {AdministratorUsername}。", options.Username);
     }
 }

@@ -23,9 +23,9 @@
 				<hr/>
 				<ValidationSummary class="text-danger" role="alert"/>
 				<div class="form-floating mb-3">
-					<InputText @bind-Value="Input.Email" id="Input.Email" class="form-control" autocomplete="username webauthn" aria-required="true" placeholder="name@example.com"/>
-					<label for="Input.Email" class="form-label">邮箱</label>
-					<ValidationMessage For="() => Input.Email" class="text-danger"/>
+					<InputText @bind-Value="Input.Username" id="Input.Username" class="form-control" autocomplete="username webauthn" aria-required="true" placeholder="用户名"/>
+					<label for="Input.Username" class="form-label">用户名</label>
+					<ValidationMessage For="() => Input.Username" class="text-danger"/>
 				</div>
 				<div class="form-floating mb-3">
 					<InputText type="password" @bind-Value="Input.Password" id="Input.Password" class="form-control" autocomplete="current-password" aria-required="true" placeholder="password"/>
@@ -44,7 +44,7 @@
 				<hr/>
 				<div class="d-flex flex-column">
 					<span class="text-secondary mx-auto mt-2">或者</span>
-					<PasskeySubmit Operation="PasskeyOperation.Request" Name="Input.Passkey" EmailName="Input.Email" class="btn btn-link mx-auto">使用通行密钥登录</PasskeySubmit>
+					<PasskeySubmit Operation="PasskeyOperation.Request" Name="Input.Passkey" EmailName="Input.Username" class="btn btn-link mx-auto">使用通行密钥登录</PasskeySubmit>
 				</div>
 			</EditForm>
 		</section>
@@ -101,7 +101,7 @@
 
 			// This doesn't count login failures towards account lockout
 			// To enable password failures to trigger account lockout, set lockoutOnFailure: true
-			result = await SignInManager.PasswordSignInAsync(Input.Email, Input.Password, Input.RememberMe, false);
+			result = await SignInManager.PasswordSignInAsync(Input.Username, Input.Password, Input.RememberMe, false);
 		}
 
 		if (result.Succeeded)
@@ -122,15 +122,14 @@
 		}
 		else
 		{
-			errorMessage = "邮箱或密码不正确。";
+			errorMessage = "用户名或密码不正确。";
 		}
 	}
 
 	private sealed class InputModel
 	{
-		[Required(ErrorMessage = "请输入邮箱。")]
-		[EmailAddress(ErrorMessage = "邮箱格式不正确。")]
-		public string Email { get; set; } = "";
+		[Required(ErrorMessage = "请输入用户名。")]
+		public string Username { get; set; } = "";
 
 		[Required(ErrorMessage = "请输入密码。")]
 		[DataType(DataType.Password)]

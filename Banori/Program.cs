@@ -113,8 +113,11 @@ internal class Program
                .AddErrorDescriber<ChineseIdentityErrorDescriber>()
                .AddDefaultTokenProviders();
 
-        builder.Services.Configure<BootstrapAdminOptions>(builder.Configuration.GetSection(BootstrapAdminOptions
-                                                                      .SectionName));
+        builder.Services.Configure<BootstrapAdminOptions>(options =>
+        {
+            options.Username = builder.Configuration["Username"] ?? string.Empty;
+            options.Password = builder.Configuration["Password"] ?? string.Empty;
+        });
         builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RefreshPulse>();

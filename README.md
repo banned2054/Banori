@@ -31,8 +31,8 @@ Banori.Tests/       规则单元测试、SQLite 行为测试
 PowerShell 示例：
 
 ```powershell
-$env:BootstrapAdmin__Email = "admin@example.com"
-$env:BootstrapAdmin__Password = "请替换为强密码"
+$env:Username = "admin"
+$env:Password = "请替换为强密码"
 dotnet run --project Banori/Banori.csproj
 ```
 
