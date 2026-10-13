@@ -1,0 +1,17 @@
+services:
+  banori:
+    image: ghcr.io/banned2054/banori:latest
+    container_name: banori
+    restart: unless-stopped
+    ports:
+      - "7340:7340"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Username: ${BANORI_USERNAME:-}
+      Password: ${BANORI_PASSWORD:-}
+    volumes:
+      - banori-data:/app/data
+
+volumes:
+  banori-data:
+    name: banori-data

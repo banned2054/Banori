@@ -2,6 +2,8 @@
 **/obj/
 .vs/
 Banori/App_Data/
+Banori/data/
+.env
 TestResults/
 *.user
 debug.log

@@ -1,0 +1,12 @@
+.git
+.github
+.vs
+.zcode
+**/bin
+**/obj
+**/TestResults
+**/App_Data
+**/data
+.env
+*.user
+*.suo

@@ -64,7 +64,7 @@ internal class Program
                 })
                .AddIdentityCookies();
 
-        var dataDirectory = Path.Combine(builder.Environment.ContentRootPath, "App_Data");
+        var dataDirectory = Path.Combine(builder.Environment.ContentRootPath, "data");
         var keyDirectory  = Path.Combine(dataDirectory, "keys");
         Directory.CreateDirectory(keyDirectory);
         builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keyDirectory));
