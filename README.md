@@ -1,32 +1,111 @@
+<!-- markdownlint-disable -->
+
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="Banori/wwwroot/images/banori-logo-white.png">
+  <img alt="Banori" src="Banori/wwwroot/images/banori-logo.png" width="160" height="160">
+</picture>
+
 # Banori
 
-Banori 是面向个人或家庭媒体库的动漫 RSS 管理面板。当前已完成 P0、P1、P2、P2R 和 P3：可以管理 Mikan 订阅、持久化刷新任务、去重保存条目、关联 Bangumi Subject，展示筛选理由与命名预览，评估优胜的条目自动登记为下载任务，由后台提交 qBittorrent、按 info-hash 对账直至完成改名。
+<br>
 
-## 项目结构
+<div>
+    <a href="https://dotnet.microsoft.com/"><img alt=".NET 10" src="https://img.shields.io/badge/.NET-10.0-512BD4"></a>
+    <a href="https://learn.microsoft.com/aspnet/core/blazor/"><img alt="Blazor" src="https://img.shields.io/badge/Blazor-Interactive_Server-7B2CBF"></a>
+    <a href="https://learn.microsoft.com/ef/core/"><img alt="EF Core" src="https://img.shields.io/badge/EF_Core-10-2EA44F"></a>
+</div>
 
-```text
-Banori.Core/        标题归一化、筛选、集数修正、命名预览、info-hash 提取、路径净化等纯规则，可独立测试
-Banori/
-  Components/Pages/       订阅、下载任务、设置页面及页面 ViewModel
-  Features/               业务服务：订阅管理、Mikan 刷新、条目评估、下载登记（DownloadIntakeService）、
-                          下载执行与生命周期（DownloadService）、任务列表查询（DownloadTaskQueries）、通知、设置
-  Data/                   EF Core 实体与双 provider 迁移（SQLite 默认 / MySQL）
-  Integrations/           Mikan、Bangumi、qBittorrent 客户端与种子下载
-  Workers/                周期调度 Worker（订阅刷新、下载对账、通知投递）
-Banori.Tests/       规则单元测试、SQLite 行为测试
+<br>
+
+<!-- markdownlint-restore -->
+
+</div>
+
+**Banori**（番組 × 織り）是面向个人或家庭媒体库的动漫 RSS 管理面板，基于 .NET 10 与 Blazor 构建。它可以管理 Mikan / AniBT 订阅、分析并关联 Bangumi 条目，评估优胜条目并登记下载任务，再提交到 qBittorrent，完成后按模板整理文件。
+
+## 🚧 项目状态
+
+核心链路「订阅 → 评估 → 下载 → 改名」可供日常使用；界面与配置仍会随需求演进。
+
+## ✨ 功能特性
+
+- **订阅与刷新** — 管理 Mikan、AniBT RSS，定时刷新并去重入库；RSS 地址加密保存。
+- **条目评估** — 解析条目信息、关联 Bangumi，并展示筛选理由与命名预览。
+- **下载管理** — 将条目提交到 qBittorrent，跟踪任务状态；支持 RSS 链接和本地种子。
+- **整理归档** — 下载完成后按命名模板整理媒体文件，并将附属文件移入 `Seed/`。
+- **数据库** — 默认使用 SQLite，也可配置 MySQL。
+
+## 🐳 Docker 部署
+
+需要安装 Docker Engine 和 Docker Compose。容器将 Web 服务监听在 `7340` 端口，并通过 Docker 命名卷 `banori-data` 持久化数据库与加密密钥。
+
+```bash
+cp .env.example .env
 ```
 
-刷新链路：订阅页 / 到期调度 → `SubscriptionService` 入队 → `MikanRefreshService` 执行（读 RSS、去重入库、评估遗留条目）→ `FeedItemEvaluator`（AniParser 解析、Subject 关联、Core 规则决策、命名预览与命名要素）→ 保存结果与下次刷新时间。
+编辑 `.env`，为首次启动设置管理员用户名和强密码：
 
-登记：优胜条目自动登记 / RSS 链接下载 / 本地上传种子三个入口统一走 `DownloadIntakeService`（下载种子、提取 info-hash、Bangumi 绑定门禁、同集统一裁决、登记 `DownloadTask`；上传大小上限在登记入口校验）。登记事务只落任务与替换状态，不登录下载器；被顶替未完成任务的远端清理由 `DownloadReconcileWorker` 的对账在提交后继续，失败或重启后可恢复。任务列表页的只读投影由 `DownloadTaskQueries` 提供。
+```dotenv
+BANORI_USERNAME=admin
+BANORI_PASSWORD=替换为强且唯一的密码
+```
 
-执行：`DownloadReconcileWorker` 周期对账（`DownloadService`）→ 提交 qBittorrent（qB 种子名称与种子内文件名称分别使用独立模板，模板及 AniParser/Bangumi 元数据一并快照落库）→ `DownloadReconcileWorker` 周期对账 → `rename` 参数直接设置种子名 + 来源 tag，外部预置的同 hash 种子按 hash 接管）→ 响应丢失按 hash 对账确认 → 完成后按命名要素改名并记录替换关系：种子名沿用种子名称模板（只命名种子，不参与保存目录），内容文件使用文件名称模板并按各自实际集数渲染，媒体目录内的子目录结构只由文件模板中的 `/` 决定；附属文件挪进 `Seed/`；无命名要素的存量任务回退按命名快照改种子名。命名模板支持 `{ani.*}` 解析属性、`{bgm.*}` Bangumi 属性与 `{site.source}` 站点来源；旧 `{title}`、`{episode}` 等令牌继续兼容。删除任务时先删下载器再删记录（幂等可重试），可选连带删除下载器种子与已下载文件；被删任务替换的旧任务回退为已完成。
+启动并查看日志：
 
-## 本地启动
+```bash
+docker compose up -d
+docker compose logs -f banori
+```
 
-首次使用空数据库时，必须通过环境变量提供首位管理员。应用会执行 SQLite 迁移、创建已确认的管理员账号，然后关闭开放注册。
+浏览器访问 <http://localhost:7340>。首位管理员创建后，可从 `.env` 删除 `BANORI_PASSWORD`（也可移除 `BANORI_USERNAME`），然后执行 `docker compose up -d` 使环境变量更新。请勿公开 `.env` 或将其提交到 Git。
 
-PowerShell 示例：
+停止服务但保留数据：
+
+```bash
+docker compose down
+```
+
+升级到最新镜像：
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+GitHub Actions 会在 `master` 更新时发布 `latest`，推送 `v*` 标签时发布同名版本镜像，例如：
+
+```text
+ghcr.io/banned2054/banori:latest
+ghcr.io/banned2054/banori:v1.0.0
+```
+
+### 数据持久化与迁移
+
+Compose 使用 Docker 命名卷 `banori-data` 挂载到容器 `/app/data`。SQLite 数据库位于 `data/banori.db`，Data Protection 密钥位于 `data/keys/`；两者都必须保留。删除容器或执行 `docker compose down` 不会删除该卷；**不要使用 `docker compose down -v`**，除非确定要删除全部 Banori 数据。
+
+可用下列命令备份命名卷（先停止服务，以保证 SQLite 文件一致）：
+
+```bash
+docker compose down
+docker run --rm \
+  -v banori-data:/source:ro \
+  -v "$PWD/backups:/backup" \
+  alpine:3.20 \
+  tar -czf /backup/banori-data.tar.gz -C /source .
+docker compose up -d
+```
+
+恢复时先停止服务，将备份解压到同一个命名卷，再启动应用。恢复数据库时必须同时恢复 `keys/`，否则已保存的 RSS 地址和其他加密配置可能无法解密。
+
+若从旧版或本地运行迁移，先停止旧应用，将原 `Banori/App_Data/` 的内容（数据库文件以及存在时的 `keys/`）复制到 Docker 卷根目录，再启动容器。确保文件权限允许容器进程读写。迁移前请另做备份；不要让旧版和新版同时写同一数据库。
+
+> 下载整理还需要 qBittorrent。它可以运行在另一容器或主机上；在「设置」中填写 qBittorrent 可访问的下载路径，并确保 Banori 与 qBittorrent 对该路径的挂载映射一致。仅让 Banori 容器连接到 qBittorrent 并不足以让它访问下载文件。
+
+## 🛠️ 本地开发
+
+需要安装 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)。使用空数据库启动时，先通过环境变量设置首位管理员：
 
 ```powershell
 $env:Username = "admin"
@@ -34,51 +113,19 @@ $env:Password = "请替换为强密码"
 dotnet run --project Banori/Banori.csproj
 ```
 
-首次创建完成后应从运行环境移除 `Password`。默认数据库位于 `Banori/App_Data/banori.db`，Data Protection 密钥位于 `Banori/App_Data/keys`；部署时二者都需要持久化和备份。
+应用配置也可写入 `Banori/appsettings.json`，或通过环境变量覆盖。分层配置使用双下划线，例如：
 
-连接字符串中的普通相对数据库路径以应用内容根目录（`ContentRootPath`）为基准，不随进程工作目录变化；绝对路径保持原位置，SQLite `file:` URI 和内存数据库保留原有语义。注册确认页面已移除，不提供公开的邮箱确认链接。
+| 环境变量 | 用途 |
+| --- | --- |
+| `ConnectionStrings__DefaultConnection` | 数据库连接字符串 |
+| `Database__Provider` | 数据库类型：`Sqlite` 或 `MySql` |
+| `Database__MySqlServerVersion` | MySQL / MariaDB 服务器版本；填写后可跳过启动探测 |
 
-### 数据库 provider：SQLite（默认）与 MySQL
+默认 SQLite 数据库为 `Banori/data/banori.db`。MySQL 与 SQLite 共用同一 EF Core 模型，迁移集按数据库类型隔离，分别位于 `Banori/Data/Migrations/` 与 `Banori/Data/Migrations/MySql/`。
 
-应用长期支持两种数据库，由 `Database:Provider` 配置切换（`Sqlite` 默认 / `MySql`），迁移集按 provider 隔离：SQLite 迁移位于 `Data/Migrations/`，MySQL 基线位于 `Data/Migrations/MySql/`，由 `ProviderAwareMigrationsAssembly` 按当前 provider 过滤，互不可见。两者共用同一 EF 模型；"同一资源活动任务唯一" 的约束在 SQLite 用带 WHERE 的部分索引表达，在 MySQL 用等价的 `ActiveFlag` 存储型计算列（活动行 1、终态行 NULL，唯一索引不对 NULL 去重）。
-
-MySQL 配置示例：
-
-```json
-{
-  "ConnectionStrings": {
-    "DefaultConnection": "Server=localhost;Port=3306;Database=banori;User=banori;Password=请替换"
-  },
-  "Database": {
-    "Provider": "MySql",
-    "MySqlServerVersion": ""
-  }
-}
-```
-
-`MySqlServerVersion` 填服务器版本（如 `"8.0.36"` 或 `"10.11.4-MariaDB"`）可跳过启动探测；留空则启动时自动探测（要求启动时数据库可达）。MySQL provider 为 `Microting.EntityFrameworkCore.MySql`（Pomelo 的 EF Core 10 延续版，基于 MySqlConnector）。时间戳统一以 UTC 写入读取；MySQL `datetime(6)` 的精度为微秒（.NET tick 为 100 纳秒），应用内不存在亚微秒的时间戳相等比较，不受影响。
-
-MySQL 下的迁移工具命令（快照文件的位置由工具自动管理，执行后请用 `git status` 检查 `Data/Migrations/ApplicationDbContextModelSnapshot.cs` 是否被重写为 MySQL 模型——工具会把快照写在默认位置；如被重写，从 git 恢复 SQLite 快照，并按 `Data/Migrations/MySql/` 内快照的提取方式同步 MySQL 快照）：
-
-```powershell
-dotnet ef migrations add <名称> --project Banori --startup-project Banori --namespace Banori.Data.Migrations --output-dir Data/Migrations
-dotnet ef migrations add <名称> --project Banori --startup-project Banori --namespace Banori.Data.Migrations.MySql --output-dir Data/Migrations/MySql -- --Database:Provider=MySql
-dotnet ef database update --project Banori --startup-project Banori -- --Database:Provider=MySql "ConnectionStrings:DefaultConnection=..."
-```
-
-schema 变更需要同时为两个 provider 各加一个迁移（模型唯一，迁移集两份）；用 `dotnet ef migrations has-pending-model-changes`（加同样的 `--` 参数）可以只读校验某一 provider 的快照是否与模型一致。
-
-登录后可在“订阅”页面添加 Mikan RSS；RSS 地址使用 Data Protection 加密保存，页面不会显示查询参数。下载前先在“设置”页面启用并配置 qBittorrent（地址、账号、下载器侧保存路径，密码加密保存），优胜条目会自动登记下载任务；“下载任务”页面展示进度、失败步骤并支持暂停 / 恢复 / 重试 / 删除，删除支持单条与批量选择，均可选择是否连带删除 qBittorrent 中的种子及其已下载文件。数据库和密钥目录必须作为一个整体备份与恢复。
-
-## 验证
+## 🧪 验证
 
 ```powershell
 dotnet build Banori.slnx
 dotnet test Banori.Tests/Banori.Tests.csproj
 ```
-
-刷新任务持久化在数据库中：重复请求会复用等待中或执行中的工作；进程重启时把遗留的执行中工作恢复为待执行，已入库但未评估的条目会在下次刷新时继续处理，即使它们已不在最新 RSS 中。RSS 抓取失败不影响遗留条目的恢复，但本次任务会如实记录抓取失败。
-
-下载任务同样持久化：提交响应丢失时进入“提交结果待确认”，下一轮按 info-hash 对账后再决定继续或重试；数据库唯一约束阻止同一资源在活动状态下重复登记；人工暂停不会被自动恢复；新版本资源在隔离路径完成后才把旧任务标记为被替换，旧任务与文件默认保留。下载器未配置或未启用时对账静默跳过，不会产生任何提交。
-
-真实下载操作依赖外部 qBittorrent 与用户授权；测试套件不触发真实下载、文件删除或通知。
