@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/bin/bash
+# .NET 配置类别名称可包含点；bash 会保留这类环境变量，dash 会丢弃它们。
 set -e
 
 # 以 root 启动时把 /app/data 属主修正为 PUID:PGID 再降权运行，

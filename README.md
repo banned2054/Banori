@@ -132,6 +132,32 @@ rootless Docker 下容器内的 UID 0 映射到宿主机当前用户。移除 `u
 
 > 下载整理还需要 qBittorrent。它可以运行在另一容器或主机上；在「设置」中填写 qBittorrent 可访问的下载路径，并确保 Banori 与 qBittorrent 对该路径的挂载映射一致。仅让 Banori 容器连接到 qBittorrent 并不足以让它访问下载文件。
 
+### 日志与诊断
+
+默认保留 `Information` 及以上的业务日志；EF Core 的 `Microsoft.EntityFrameworkCore.Database.Command` 类别只输出 `Warning` 及以上日志，不输出每条执行成功的 SQL。该默认设置同时适用于生产和开发环境。
+
+环境变量会覆盖 `appsettings.json` 和 `appsettings.{Environment}.json` 的同名配置，层级分隔符 `:` 用双下划线 `__` 表示。Docker Compose 可在原有 `environment` 中追加：
+
+```yaml
+    environment:
+      Logging__LogLevel__Banori: "Debug"
+      # 仅在需要排查数据库时启用 SQL 输出：
+      # Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command: "Information"
+```
+
+`Logging__LogLevel__Banori` 只调整 Banori 应用类别的门槛，不会开启 EF Core 的成功 SQL 日志。日志等级是过滤门槛，不会改变事件本身的等级；设为 `Debug` 也不会自动生成尚未实现的阶段日志。若需要调整全局门槛，可使用 `Logging__LogLevel__Default`，但更具体的类别设置仍优先，因此设全局为 `Debug` 也不会覆盖 SQL 类别的 `Warning`。
+
+修改 Compose 环境变量后执行 `docker compose up -d`，让 Compose 重建配置发生变化的容器；仅执行 `docker compose restart` 不会应用新的环境变量。使用 `docker compose logs -f banori` 查看日志。排查结束后移除临时覆盖并再次执行 `docker compose up -d`。
+
+本地 PowerShell 示例：
+
+```powershell
+$env:Logging__LogLevel__Banori = "Debug"
+dotnet run --project Banori/Banori.csproj
+```
+
+SQL 日志可能包含业务数据或 SQL 文本中的字面量，不建议长期启用或未经检查直接分享；上述配置不会启用 EF Core 的敏感参数值日志。
+
 ## 🛠️ 本地开发
 
 需要安装 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)。使用空数据库启动时，先通过环境变量设置首位管理员：
