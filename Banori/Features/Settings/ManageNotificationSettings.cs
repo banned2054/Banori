@@ -111,7 +111,7 @@ public sealed class ManageTelegramSettings(IApplicationSettingStore settingStore
                 return (false, "尚未填写发送目标 Chat ID，请填写后再测试。");
 
             await sender.SendAsync(effectiveToken, settings.ChatId, proxyUrl,
-                                   "MediaManager 测试消息：Telegram 通知渠道工作正常。", cancellationToken);
+                                   "Banori 测试消息：Telegram 通知渠道工作正常。", cancellationToken);
             return (true, "测试消息已发送，请到 Telegram 查收。");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -204,7 +204,7 @@ public sealed class ManageGotifySettings(IApplicationSettingStore settingStore, 
             if (string.IsNullOrWhiteSpace(settings.BaseUrl))
                 return (false, "尚未填写 Gotify 服务地址，请填写后再测试。");
 
-            await sender.SendAsync(settings.BaseUrl, effectiveToken, proxyUrl, "MediaManager 测试消息",
+            await sender.SendAsync(settings.BaseUrl, effectiveToken, proxyUrl, "Banori 测试消息",
                                    "Gotify 通知渠道工作正常。", cancellationToken);
             return (true, "测试消息已发送，请到 Gotify 客户端查收。");
         }

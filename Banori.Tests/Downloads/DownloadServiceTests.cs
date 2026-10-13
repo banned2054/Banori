@@ -2669,7 +2669,7 @@ public sealed class DownloadServiceTests
     private static async Task<TestHarness> CreateHarnessAsync(bool configureDownloader = true,
                                                               bool enableFileArchive   = false)
     {
-        var directory           = Directory.CreateTempSubdirectory("MediaManager.P3.Tests.");
+        var directory           = Directory.CreateTempSubdirectory("Banori.P3.Tests.");
         var timestamp           = new DateTimeOffset(2026, 9, 25, 4, 0, 0, TimeSpan.Zero);
         var harnessTorrentNames = new Dictionary<string, string>(StringComparer.Ordinal);
         var services            = new ServiceCollection();

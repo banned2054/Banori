@@ -10,7 +10,7 @@ public sealed class EfApplicationSettingStore(
     TimeProvider                            timeProvider) : IApplicationSettingStore
 {
     private readonly IDataProtector _protector =
-        dataProtectionProvider.CreateProtector("MediaManager.ApplicationSettings.v1");
+        dataProtectionProvider.CreateProtector("Banori.ApplicationSettings.v1");
 
     public async Task<string?> GetAsync(string key, CancellationToken cancellationToken = default)
     {

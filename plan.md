@@ -1,10 +1,10 @@
-# MediaManager：结构整理计划
+# Banori：结构整理计划
 
 更新日期：2026-10-11。
 
 状态：**已实施（2026-10-11）**。S0-S4 已按顺序落地，构建 0 警告 0 错误，362 个测试全部通过（基线 360 + 新增 2）。
 真实 qBittorrent 端到端与 MySQL 临时库验证未执行（无外部环境），如实列为未验证；模拟下载器已覆盖登记不触远端、清理可恢复等边界。
-数据层零改动（`MediaManager/Data` 与两套迁移集与基线完全一致）。实施记录见 [past-plan.md](past-plan.md)。
+数据层零改动（`Banori/Data` 与两套迁移集与基线完全一致）。实施记录见 [past-plan.md](past-plan.md)。
 
 已实现阶段、历史设计及被替代的行为归档于 [past-plan.md](past-plan.md)。本文件只维护当前结构整理计划；旧计划中的来源扩展、Jellyfin、旧数据导入和部署切换不纳入本轮。
 
@@ -25,8 +25,8 @@
 ## 2. 保留的结构与边界
 
 ```text
-MediaManager.Core/                无副作用的规则、解析与命名策略
-MediaManager/
+Banori.Core/                无副作用的规则、解析与命名策略
+Banori/
   Components/Pages/              页面、页面状态和编辑草稿
   Features/
     Downloads/                   下载应用流程、任务查询与生命周期协调
@@ -38,7 +38,7 @@ MediaManager/
   Integrations/                  外部协议及 SDK 适配
   Workers/                       周期、作用域、取消和异常隔离
   Program.cs                     组合根、生命周期注册与启动配置
-MediaManager.Tests/              对应规则和功能的行为测试
+Banori.Tests/              对应规则和功能的行为测试
 ```
 
 - 保留 Core、宿主、Tests 三个项目，不恢复独立 Application 层，不新增 Infrastructure 项目。
@@ -134,7 +134,7 @@ MediaManager.Tests/              对应规则和功能的行为测试
 
 ### 行为与验证验收
 
-- [x] `dotnet build MediaManager.slnx` 和 `dotnet test MediaManager.Tests/MediaManager.Tests.csproj` 通过；失败或跳过项如实记录。
+- [x] `dotnet build Banori.slnx` 和 `dotnet test Banori.Tests/Banori.Tests.csproj` 通过；失败或跳过项如实记录。
 - [x] 三入口回归、替换竞争、被顶替待提交任务、暂停、提交响应丢失、重启恢复、完成命名、单条 / 批量删除和通知故障覆盖通过。
 - [x] 模拟下载器确认：登记事务内没有远端删除；已提交清理可恢复；已完成旧资源不会在新资源成功前被删除。
 - [x] SQLite / MySQL 模型与迁移集均未意外改变；涉及 provider 行为时执行对应临时库验证。缺少 MySQL 环境时明确列为未验证，不用 SQLite 结果代替。

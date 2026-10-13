@@ -132,7 +132,7 @@ public sealed class AnimeQueriesTests
 
         public static async Task<AnimeQueriesHarness> CreateAsync()
         {
-            var directory = Directory.CreateTempSubdirectory("MediaManager.Anime.Tests.");
+            var directory = Directory.CreateTempSubdirectory("Banori.Anime.Tests.");
             var services  = new ServiceCollection();
             services.AddLogging();
             services.AddDbContextFactory<ApplicationDbContext>(options =>

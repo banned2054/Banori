@@ -20,7 +20,7 @@ namespace Banori.Data.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.10");
 
-            modelBuilder.Entity("MediaManager.Data.ApplicationSetting", b =>
+            modelBuilder.Entity("Banori.Data.ApplicationSetting", b =>
                 {
                     b.Property<string>("Key")
                         .HasMaxLength(200)
@@ -41,7 +41,7 @@ namespace Banori.Data.Migrations
                     b.ToTable("ApplicationSettings", (string)null);
                 });
 
-            modelBuilder.Entity("MediaManager.Data.ApplicationUser", b =>
+            modelBuilder.Entity("Banori.Data.ApplicationUser", b =>
                 {
                     b.Property<string>("Id")
                         .HasColumnType("TEXT");
@@ -106,7 +106,7 @@ namespace Banori.Data.Migrations
                     b.ToTable("AspNetUsers", (string)null);
                 });
 
-            modelBuilder.Entity("MediaManager.Data.CandidateSelection", b =>
+            modelBuilder.Entity("Banori.Data.CandidateSelection", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -161,7 +161,7 @@ namespace Banori.Data.Migrations
                     b.ToTable("CandidateSelections", (string)null);
                 });
 
-            modelBuilder.Entity("MediaManager.Data.DownloadTask", b =>
+            modelBuilder.Entity("Banori.Data.DownloadTask", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -258,7 +258,7 @@ namespace Banori.Data.Migrations
                     b.ToTable("DownloadTasks", (string)null);
                 });
 
-            modelBuilder.Entity("MediaManager.Data.FeedItem", b =>
+            modelBuilder.Entity("Banori.Data.FeedItem", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -399,7 +399,7 @@ namespace Banori.Data.Migrations
                     b.ToTable("FeedItems", (string)null);
                 });
 
-            modelBuilder.Entity("MediaManager.Data.MediaSubject", b =>
+            modelBuilder.Entity("Banori.Data.MediaSubject", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -436,7 +436,7 @@ namespace Banori.Data.Migrations
                     b.ToTable("MediaSubjects", (string)null);
                 });
 
-            modelBuilder.Entity("MediaManager.Data.MediaSubscription", b =>
+            modelBuilder.Entity("Banori.Data.MediaSubscription", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -492,7 +492,7 @@ namespace Banori.Data.Migrations
                     b.ToTable("MediaSubscriptions", (string)null);
                 });
 
-            modelBuilder.Entity("MediaManager.Data.NotificationDelivery", b =>
+            modelBuilder.Entity("Banori.Data.NotificationDelivery", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -546,7 +546,7 @@ namespace Banori.Data.Migrations
                     b.ToTable("NotificationDeliveries", (string)null);
                 });
 
-            modelBuilder.Entity("MediaManager.Data.ProxyServer", b =>
+            modelBuilder.Entity("Banori.Data.ProxyServer", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -592,7 +592,7 @@ namespace Banori.Data.Migrations
                     b.ToTable("ProxyServers", (string)null);
                 });
 
-            modelBuilder.Entity("MediaManager.Data.RefreshWorkItem", b =>
+            modelBuilder.Entity("Banori.Data.RefreshWorkItem", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -629,7 +629,7 @@ namespace Banori.Data.Migrations
                     b.ToTable("RefreshWorkItems", (string)null);
                 });
 
-            modelBuilder.Entity("MediaManager.Data.SubjectTitleMapping", b =>
+            modelBuilder.Entity("Banori.Data.SubjectTitleMapping", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -805,15 +805,15 @@ namespace Banori.Data.Migrations
                     b.ToTable("AspNetUserTokens", (string)null);
                 });
 
-            modelBuilder.Entity("MediaManager.Data.CandidateSelection", b =>
+            modelBuilder.Entity("Banori.Data.CandidateSelection", b =>
                 {
-                    b.HasOne("MediaManager.Data.MediaSubject", "Subject")
+                    b.HasOne("Banori.Data.MediaSubject", "Subject")
                         .WithMany()
                         .HasForeignKey("SubjectId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("MediaManager.Data.FeedItem", "WinnerFeedItem")
+                    b.HasOne("Banori.Data.FeedItem", "WinnerFeedItem")
                         .WithMany()
                         .HasForeignKey("WinnerFeedItemId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -824,14 +824,14 @@ namespace Banori.Data.Migrations
                     b.Navigation("WinnerFeedItem");
                 });
 
-            modelBuilder.Entity("MediaManager.Data.DownloadTask", b =>
+            modelBuilder.Entity("Banori.Data.DownloadTask", b =>
                 {
-                    b.HasOne("MediaManager.Data.FeedItem", "FeedItem")
+                    b.HasOne("Banori.Data.FeedItem", "FeedItem")
                         .WithMany()
                         .HasForeignKey("FeedItemId")
                         .OnDelete(DeleteBehavior.Cascade);
 
-                    b.HasOne("MediaManager.Data.MediaSubject", "Subject")
+                    b.HasOne("Banori.Data.MediaSubject", "Subject")
                         .WithMany()
                         .HasForeignKey("SubjectId")
                         .OnDelete(DeleteBehavior.SetNull);
@@ -841,14 +841,14 @@ namespace Banori.Data.Migrations
                     b.Navigation("Subject");
                 });
 
-            modelBuilder.Entity("MediaManager.Data.FeedItem", b =>
+            modelBuilder.Entity("Banori.Data.FeedItem", b =>
                 {
-                    b.HasOne("MediaManager.Data.MediaSubject", "Subject")
+                    b.HasOne("Banori.Data.MediaSubject", "Subject")
                         .WithMany("FeedItems")
                         .HasForeignKey("SubjectId")
                         .OnDelete(DeleteBehavior.SetNull);
 
-                    b.HasOne("MediaManager.Data.MediaSubscription", "Subscription")
+                    b.HasOne("Banori.Data.MediaSubscription", "Subscription")
                         .WithMany("FeedItems")
                         .HasForeignKey("SubscriptionId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -859,9 +859,9 @@ namespace Banori.Data.Migrations
                     b.Navigation("Subscription");
                 });
 
-            modelBuilder.Entity("MediaManager.Data.MediaSubscription", b =>
+            modelBuilder.Entity("Banori.Data.MediaSubscription", b =>
                 {
-                    b.HasOne("MediaManager.Data.ProxyServer", "Proxy")
+                    b.HasOne("Banori.Data.ProxyServer", "Proxy")
                         .WithMany()
                         .HasForeignKey("ProxyId")
                         .OnDelete(DeleteBehavior.SetNull);
@@ -869,9 +869,9 @@ namespace Banori.Data.Migrations
                     b.Navigation("Proxy");
                 });
 
-            modelBuilder.Entity("MediaManager.Data.RefreshWorkItem", b =>
+            modelBuilder.Entity("Banori.Data.RefreshWorkItem", b =>
                 {
-                    b.HasOne("MediaManager.Data.MediaSubscription", "Subscription")
+                    b.HasOne("Banori.Data.MediaSubscription", "Subscription")
                         .WithMany("RefreshWorkItems")
                         .HasForeignKey("SubscriptionId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -880,9 +880,9 @@ namespace Banori.Data.Migrations
                     b.Navigation("Subscription");
                 });
 
-            modelBuilder.Entity("MediaManager.Data.SubjectTitleMapping", b =>
+            modelBuilder.Entity("Banori.Data.SubjectTitleMapping", b =>
                 {
-                    b.HasOne("MediaManager.Data.MediaSubject", "Subject")
+                    b.HasOne("Banori.Data.MediaSubject", "Subject")
                         .WithMany("TitleMappings")
                         .HasForeignKey("SubjectId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -902,7 +902,7 @@ namespace Banori.Data.Migrations
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<string>", b =>
                 {
-                    b.HasOne("MediaManager.Data.ApplicationUser", null)
+                    b.HasOne("Banori.Data.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -911,7 +911,7 @@ namespace Banori.Data.Migrations
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<string>", b =>
                 {
-                    b.HasOne("MediaManager.Data.ApplicationUser", null)
+                    b.HasOne("Banori.Data.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -920,7 +920,7 @@ namespace Banori.Data.Migrations
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserPasskey<string>", b =>
                 {
-                    b.HasOne("MediaManager.Data.ApplicationUser", null)
+                    b.HasOne("Banori.Data.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -977,7 +977,7 @@ namespace Banori.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("MediaManager.Data.ApplicationUser", null)
+                    b.HasOne("Banori.Data.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -986,21 +986,21 @@ namespace Banori.Data.Migrations
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<string>", b =>
                 {
-                    b.HasOne("MediaManager.Data.ApplicationUser", null)
+                    b.HasOne("Banori.Data.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("MediaManager.Data.MediaSubject", b =>
+            modelBuilder.Entity("Banori.Data.MediaSubject", b =>
                 {
                     b.Navigation("FeedItems");
 
                     b.Navigation("TitleMappings");
                 });
 
-            modelBuilder.Entity("MediaManager.Data.MediaSubscription", b =>
+            modelBuilder.Entity("Banori.Data.MediaSubscription", b =>
                 {
                     b.Navigation("FeedItems");
 

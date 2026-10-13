@@ -198,7 +198,7 @@ public sealed class NotificationDeliveryServiceTests
 
     private static async Task<DeliveryHarness> CreateHarnessAsync()
     {
-        var directory = Directory.CreateTempSubdirectory("MediaManager.Notify.Tests.");
+        var directory = Directory.CreateTempSubdirectory("Banori.Notify.Tests.");
         var services  = new ServiceCollection();
         services.AddLogging();
         services.AddDbContextFactory<ApplicationDbContext>(options =>

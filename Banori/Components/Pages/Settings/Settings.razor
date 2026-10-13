@@ -126,7 +126,7 @@ else
 
 					<div class="mb-3">
 						<label for="downloader-hook-base" class="form-label">钩子回调地址（可选）</label>
-						<InputText id="downloader-hook-base" class="form-control" placeholder="http://mediamanager:8080" @bind-Value="_vm.Downloader.HookBaseUrl"/>
+						<InputText id="downloader-hook-base" class="form-control" placeholder="http://banori:8080" @bind-Value="_vm.Downloader.HookBaseUrl"/>
 						<div class="form-text">qBittorrent 访问本应用所用的地址（容器桥接网络填容器名地址）。填写并生成令牌后，把下方两条命令分别粘贴到 qBittorrent 的“Torrent 添加时 / 完成时运行外部程序”，下载完成即可即时触发对账；15 秒轮询始终作为兜底。</div>
 					</div>
 

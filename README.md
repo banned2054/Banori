@@ -36,7 +36,7 @@ $env:Password = "请替换为强密码"
 dotnet run --project Banori/Banori.csproj
 ```
 
-首次创建完成后应从运行环境移除 `BootstrapAdmin__Password`。默认数据库位于 `Banori/App_Data/mediamanager.db`，Data Protection 密钥位于 `Banori/App_Data/keys`；部署时二者都需要持久化和备份。
+首次创建完成后应从运行环境移除 `Password`。默认数据库位于 `Banori/App_Data/banori.db`，Data Protection 密钥位于 `Banori/App_Data/keys`；部署时二者都需要持久化和备份。
 
 连接字符串中的普通相对数据库路径以应用内容根目录（`ContentRootPath`）为基准，不随进程工作目录变化；绝对路径保持原位置，SQLite `file:` URI 和内存数据库保留原有语义。注册确认页面已移除，不提供公开的邮箱确认链接。
 
@@ -49,7 +49,7 @@ MySQL 配置示例：
 ```json
 {
   "ConnectionStrings": {
-    "DefaultConnection": "Server=localhost;Port=3306;Database=mediamanager;User=mediamanager;Password=请替换"
+    "DefaultConnection": "Server=localhost;Port=3306;Database=banori;User=banori;Password=请替换"
   },
   "Database": {
     "Provider": "MySql",

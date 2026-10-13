@@ -23,7 +23,7 @@ public sealed class AddDownloadTaskIsActiveMigrationTests
     [Fact]
     public async Task Migrate_PreservesTasksAndKeepsActiveHashUnique()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.Migration.ActiveFlag.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.Migration.ActiveFlag.Tests.");
         try
         {
             var             timestamp = new DateTimeOffset(2026, 10, 8, 4, 0, 0, TimeSpan.Zero);

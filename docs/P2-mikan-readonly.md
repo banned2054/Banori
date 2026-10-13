@@ -25,8 +25,8 @@
 
 ## 本地验证
 
-- `dotnet build MediaManager.slnx`：0 个警告，0 个错误。
-- `dotnet test MediaManager.Tests/MediaManager.Tests.csproj`：16 个测试全部通过。
+- `dotnet build Banori.slnx`：0 个警告，0 个错误。
+- `dotnet test Banori.Tests/Banori.Tests.csproj`：16 个测试全部通过。
 - 测试覆盖 SQLite 空库迁移、RSS XML 与 Mikan 页面解析、真实 AniParser 决策链、RSS 地址脱敏、命名预览和重复抓取去重。
 - 真实宿主启动冒烟（2026-09-13）：在隔离的临时内容目录中以空 SQLite 数据库、随机端口和一次性 `BootstrapAdmin` 环境变量启动编译产物；三个迁移依次应用、首位管理员创建成功、`SubscriptionRefreshWorker` 完成至少两个批次且无错误；未登录访问 `/` 被重定向到 `/Account/Login`。验证后已停止进程并删除临时目录，未触碰仓库内 `App_Data`。
 
@@ -42,7 +42,7 @@ P2R 为可读性整理阶段：架构收敛与行为补齐，不改变 P2 的功
 - 统一存储接口（IMediaCatalogStore）与纯转发类已删除；查询与写入落在具体服务：`SubscriptionService`（订阅 CRUD、校验、加密、入队与到期调度）、`MikanRefreshService`（单次刷新主线与启动恢复）、`FeedItemEvaluator`（刷新与人工重评共用的评估）、`FeedItemQueries` 与 `DashboardQueries`。
 - `FeedItemAnalysis`、`FeedItemView` 改为具名属性的 record，必填字段用 `required` 标注，失败分支不再传位置 null。
 - 订阅、条目、设置页面使用页面 ViewModel（普通属性 + Load/Save 方法），Razor 不访问数据库或外部客户端；ViewModel 随页面组件创建释放，未注册为 Scoped/Singleton。
-- Data Protection 用途字符串 `MediaManager.MediaSubscriptions.FeedUrl.v1`、既有实体、迁移与加密密文均未改动。
+- Data Protection 用途字符串 `Banori.MediaSubscriptions.FeedUrl.v1`、既有实体、迁移与加密密文均未改动。
 
 ## 行为修正结果
 
@@ -53,8 +53,8 @@ P2R 为可读性整理阶段：架构收敛与行为补齐，不改变 P2 的功
 
 ## 验收结果（本次实测）
 
-- `dotnet build MediaManager.slnx`：0 个警告，0 个错误。
-- `dotnet test MediaManager.Tests/MediaManager.Tests.csproj`：22 个测试全部通过（含启动恢复、遗留 Pending 条目恢复、Subject 缓存命中跳过页面发现、RSS 失败仍恢复遗留条目、手动与到期并发入队去重、运行中不重领、空库迁移）。
+- `dotnet build Banori.slnx`：0 个警告，0 个错误。
+- `dotnet test Banori.Tests/Banori.Tests.csproj`：22 个测试全部通过（含启动恢复、遗留 Pending 条目恢复、Subject 缓存命中跳过页面发现、RSS 失败仍恢复遗留条目、手动与到期并发入队去重、运行中不重领、空库迁移）。
 - 验收中发现并修复 1 个缺陷：`MikanRefreshService.EvaluatePendingItemsAsync` 对 `FirstSeenAtUtc` 使用 SQLite 服务端 `OrderBy`，EF Core SQLite 抛出 `NotSupportedException`，导致所有带条目的刷新以“意外错误”收尾；已改为取回后内存排序，与代码库其余 DateTimeOffset 排序一致。
 - 验收复查（2026-09-13）发现并修复 1 个缺陷：启动恢复仅在 `ExecuteAsync` 开头调用一次，恢复失败后虽记录日志但直接进入消费循环，遗留 Running 工作既不能被领取又会阻止同一订阅重新入队，订阅会卡住到下次重启；已改为恢复成功后才进入消费循环，失败时退避等待并重试（Worker 改经 `IRefreshWorkConsumer` 调用刷新服务），并补充“首次恢复失败、随后成功，成功前不消费”的 Worker 测试。修复后 23 个测试全部通过，构建 0 警告 0 错误。
 - 真实宿主页面冒烟（2026-09-13）：隔离临时内容目录 + 空 SQLite 库 + 本地回环 RSS 服务启动宿主；未登录访问重定向登录页；登录后新建启用订阅（回环地址 + 固定 Subject #42），后台刷新成功，条目页显示 2 条（1 条 Accepted 含解析快照与命名预览，1 条 NeedsReview 附原因），详情页人工指定 Subject 重评复用同一规则并更新决策与命名预览；Bangumi 元数据真实获取并写入缓存与标题映射。验证后进程与临时目录均已清理，仓库内 `App_Data` 未被触碰。

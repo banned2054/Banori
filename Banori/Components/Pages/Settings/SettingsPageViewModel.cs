@@ -163,7 +163,7 @@ public sealed class SettingsPageViewModel(
         if (string.IsNullOrWhiteSpace(token)) return null;
 
         var host = string.IsNullOrWhiteSpace(baseUrl)
-            ? "<MediaManager 地址>"
+            ? "<Banori 地址>"
             : baseUrl.Trim().TrimEnd('/');
         var added     = $"curl -s \"{host}/hooks/qbittorrent?token={token}&hash=%I&event=added\"";
         var completed = $"curl -s \"{host}/hooks/qbittorrent?token={token}&hash=%I&event=completed\"";

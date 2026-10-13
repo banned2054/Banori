@@ -130,7 +130,7 @@ public sealed class NotificationHookTests
 
     private static async Task<HookHarness> CreateHarnessAsync()
     {
-        var directory = Directory.CreateTempSubdirectory("MediaManager.NotifyHook.Tests.");
+        var directory = Directory.CreateTempSubdirectory("Banori.NotifyHook.Tests.");
         var services  = new ServiceCollection();
         services.AddLogging();
         services.AddDbContextFactory<ApplicationDbContext>(options =>

@@ -6,7 +6,7 @@
 
 ## 实施范围
 
-### 比较语义（Core，`MediaManager.Core/Rules/Selection/`）
+### 比较语义（Core，`Banori.Core/Rules/Selection/`）
 
 - `SelectionRuleConfig`：独立模式（字幕组顺序 + 语言组合顺序 + 维度顺序）与组合模式（有序条件，首个命中确定优先级，可显式通配兜底）；语言完全 / 包含匹配（`LanguageMatchMode`）；未命中策略（`UnmatchedPolicy`：待确认或兜底参与）；硬性过滤（允许分辨率，空 = 不限制）；规则版本号随配置递增。
 - `LanguageComposition`：AniParser 语言组合的基础语言展开，仅用于“包含指定语言”判断；多语言不天然优于单语言，排序只依据配置列表序。
@@ -65,7 +65,7 @@
 - `CandidateRankingPolicyTests`（16）+ `CandidateEligibilityPolicyTests`（4）：排列不变性、两种维度顺序、组合首匹配与通配兜底、完全 / 包含匹配、未知值与未命中策略、同优先级保留现任（含跨组不按字母序替换）、修订版本升级（含现任 v1 遇同组 v2 与他组候选同层的无循环回归、字幕组大小写变化仍算同组升级）、硬性过滤。
 - `CandidateSelectionServiceTests`（15，SQLite）：同批正序 / 倒序同优胜且仅登记优胜、跨轮升级保留旧任务、同 hash 完成任务复用不重建、非优胜条目手动创建被拒、批次仍有待评估条目时恢复跳过（含已登记选择但意图未登记的组）、下载器未就绪换优胜后恢复补登记新优胜、新优胜种子失败后意图字段重置、同优胜重算不重试已失败种子与不重拉已登记种子（人工 resetFailedIntent 除外）、待确认候选不标组内落选、三种中断恢复场景。
 - `SubscriptionRefreshTests`（10）与 `FeedItemDetailsPageViewModelTests`（4，含不再合格条目清除落选标记）保持通过；`DownloadServiceTests`（24）按新门槛补优胜标记后全部通过，断言语义未变。
-- 全量：`dotnet build MediaManager.slnx` 0 警告 0 错误；`dotnet test` 118/118 通过（2026-09-27）。
+- 全量：`dotnet build Banori.slnx` 0 警告 0 错误；`dotnet test` 118/118 通过（2026-09-27）。
 
 ### 迁移校验失败（P3 起遗留问题，已定位并修复）
 

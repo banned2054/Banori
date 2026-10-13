@@ -41,7 +41,7 @@ public sealed class ProxyService(
     IDataProtectionProvider                 protectionProvider,
     TimeProvider                            timeProvider)
 {
-    public const string PasswordPurpose = "MediaManager.ProxyServers.Password.v1";
+    public const string PasswordPurpose = "Banori.ProxyServers.Password.v1";
 
     private readonly IDataProtector _protector = protectionProvider.CreateProtector(PasswordPurpose);
 

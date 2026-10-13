@@ -17,14 +17,14 @@ public sealed class TelegramSenderTests
         await using var stub   = StubHttpServer.Start();
         var             sender = new TelegramSender(stub.BaseUrl);
 
-        await sender.SendAsync("token-123", "42", null, "你好，MediaManager");
+        await sender.SendAsync("token-123", "42", null, "你好，Banori");
 
         var request = Assert.Single(stub.Requests);
         Assert.Equal("POST", request.Method);
         Assert.Equal("/bottoken-123/sendMessage", request.Path);
         using var document = JsonDocument.Parse(request.Body);
         Assert.Equal("42", document.RootElement.GetProperty("chat_id").GetString());
-        Assert.Equal("你好，MediaManager", document.RootElement.GetProperty("text").GetString());
+        Assert.Equal("你好，Banori", document.RootElement.GetProperty("text").GetString());
     }
 
     [Fact]

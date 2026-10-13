@@ -14,7 +14,7 @@ public sealed class DownloadTaskFilesMigrationTests
     [Fact]
     public async Task Migrate_PreservesLegacyTask_AndFileIdentityIsUniqueAndCascades()
     {
-        var directory = Directory.CreateTempSubdirectory("MediaManager.Files.Migration.");
+        var directory = Directory.CreateTempSubdirectory("Banori.Files.Migration.");
         try
         {
             var services = new ServiceCollection();

@@ -7,7 +7,7 @@ namespace Banori.Features.Subscriptions;
 /// </summary>
 internal static class FeedUrlProtection
 {
-    public const string Purpose = "MediaManager.MediaSubscriptions.FeedUrl.v1";
+    public const string Purpose = "Banori.MediaSubscriptions.FeedUrl.v1";
 
     public static IDataProtector CreateProtector(IDataProtectionProvider provider) => provider.CreateProtector(Purpose);
 }

@@ -14,7 +14,7 @@ public sealed class EfApplicationSettingStoreTests
     [Fact]
     public async Task Store_PersistsPlainAndProtectedValues()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.Settings.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.Settings.Tests.");
 
         try
         {

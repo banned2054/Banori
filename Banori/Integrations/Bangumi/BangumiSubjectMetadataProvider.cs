@@ -12,7 +12,7 @@ public sealed class BangumiSubjectMetadataProvider(
     {
         var userAgent = configuration["Bangumi:UserAgent"];
         if (string.IsNullOrWhiteSpace(userAgent))
-            userAgent = "MediaManager/0.2 (https://github.com/banned2054/MediaManager)";
+            userAgent = "Banori/0.2 (https://github.com/banned2054/Banori)";
 
         using var httpClient = httpClientFactory.CreateClient("Bangumi");
         using var client = new BangumiClient(new BangumiClientOptions

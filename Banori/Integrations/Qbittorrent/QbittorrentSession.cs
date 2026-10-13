@@ -14,7 +14,7 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
                                               IReadOnlyList<string> tags,         string? rename,
                                               CancellationToken     cancellationToken = default)
     {
-        var temporaryPath = Path.Combine(Path.GetTempPath(), $"MediaManager-{Guid.NewGuid():N}.torrent");
+        var temporaryPath = Path.Combine(Path.GetTempPath(), $"Banori-{Guid.NewGuid():N}.torrent");
         try
         {
             await File.WriteAllBytesAsync(temporaryPath, torrentBytes, cancellationToken);

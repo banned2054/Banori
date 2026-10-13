@@ -19,7 +19,7 @@
 
 ## 验证结果
 
-- `dotnet build MediaManager.slnx --no-restore`：0 个警告，0 个错误。
-- `dotnet test MediaManager.Tests/MediaManager.Tests.csproj --no-restore --no-build`：11 个测试全部通过。
+- `dotnet build Banori.slnx --no-restore`：0 个警告，0 个错误。
+- `dotnet test Banori.Tests/Banori.Tests.csproj --no-restore --no-build`：11 个测试全部通过。
 - EF Core 模型与最新迁移一致，无待处理模型变更。
 - 临时空数据目录启动验证已应用两条迁移、创建首位管理员并启动监听；未连接 RSS、Bangumi、qBittorrent、通知或 Jellyfin。

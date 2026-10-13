@@ -94,7 +94,7 @@ public sealed class ProxyServiceTests
     /// <summary>独立临时目录 + 真实 SQLite 与 Data Protection 的完整环境。</summary>
     private sealed class Harness : IDisposable
     {
-        private readonly DirectoryInfo _directory = Directory.CreateTempSubdirectory("MediaManager.Proxy.Tests.");
+        private readonly DirectoryInfo _directory = Directory.CreateTempSubdirectory("Banori.Proxy.Tests.");
         private readonly IDataProtectionProvider _protection;
         private readonly ServiceProvider _provider;
 

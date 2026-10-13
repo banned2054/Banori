@@ -30,7 +30,7 @@ public sealed class SubscriptionRefreshTests
     [Fact]
     public async Task Refresh_PersistsDecisionAndDeduplicatesRepeatedFeedItem()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P2.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.P2.Tests.");
         try
         {
             var timestamp = new DateTimeOffset(2026, 9, 12, 4, 0, 0, TimeSpan.Zero);
@@ -93,7 +93,7 @@ public sealed class SubscriptionRefreshTests
     [Fact]
     public async Task Refresh_UsesFeedProvidedSourceSubjectIdWithoutPageResolution()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.Anibt.FeedId.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.Anibt.FeedId.Tests.");
         try
         {
             var timestamp = new DateTimeOffset(2026, 9, 28, 4, 0, 0, TimeSpan.Zero);
@@ -138,7 +138,7 @@ public sealed class SubscriptionRefreshTests
     [Fact]
     public async Task Refresh_PassesSubscriptionProxyToReaderAndResolver()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.Proxy.Passthrough.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.Proxy.Passthrough.Tests.");
         try
         {
             var timestamp = new DateTimeOffset(2026, 9, 28, 6, 0, 0, TimeSpan.Zero);
@@ -196,7 +196,7 @@ public sealed class SubscriptionRefreshTests
     [Fact]
     public async Task Refresh_PrefersTitleMappingOverFeedProvidedSourceSubjectId()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.Anibt.Mapping.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.Anibt.Mapping.Tests.");
         try
         {
             var timestamp = new DateTimeOffset(2026, 9, 28, 5, 0, 0, TimeSpan.Zero);
@@ -258,7 +258,7 @@ public sealed class SubscriptionRefreshTests
     [Fact]
     public async Task Migrations_CreateP2TablesOnEmptyDatabase()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P2.Migrations.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.P2.Migrations.Tests.");
         try
         {
             var             services = CreateServices(testDirectory, DateTimeOffset.UtcNow, () => []);
@@ -285,7 +285,7 @@ public sealed class SubscriptionRefreshTests
     [Fact]
     public async Task Refresh_RecoversPendingItemLeftInDatabaseEvenWhenAbsentFromFeed()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P2R.Recovery.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.P2R.Recovery.Tests.");
         try
         {
             var             timestamp = new DateTimeOffset(2026, 9, 12, 8, 0, 0, TimeSpan.Zero);
@@ -339,7 +339,7 @@ public sealed class SubscriptionRefreshTests
     [Fact]
     public async Task StartupRecovery_RestoresInterruptedRunningWorkForConsumption()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P2R.Startup.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.P2R.Startup.Tests.");
         try
         {
             var             timestamp = new DateTimeOffset(2026, 9, 12, 9, 0, 0, TimeSpan.Zero);
@@ -349,7 +349,7 @@ public sealed class SubscriptionRefreshTests
             {
                 var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
                 var urlProtector = scope.ServiceProvider.GetRequiredService<IDataProtectionProvider>()
-                                        .CreateProtector("MediaManager.MediaSubscriptions.FeedUrl.v1");
+                                        .CreateProtector("Banori.MediaSubscriptions.FeedUrl.v1");
                 await using var db = await factory.CreateDbContextAsync();
                 await db.Database.EnsureCreatedAsync();
                 var subscription = new MediaSubscription
@@ -391,7 +391,7 @@ public sealed class SubscriptionRefreshTests
     [Fact]
     public async Task Worker_RetriesStartupRecoveryAfterFailureAndConsumesOnlyAfterSuccess()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P2R.StartupRetry.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.P2R.StartupRetry.Tests.");
         try
         {
             var timestamp = new DateTimeOffset(2026, 9, 12, 14, 0, 0, TimeSpan.Zero);
@@ -402,7 +402,7 @@ public sealed class SubscriptionRefreshTests
 
             var factory = provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
             var urlProtector = provider.GetRequiredService<IDataProtectionProvider>()
-                                       .CreateProtector("MediaManager.MediaSubscriptions.FeedUrl.v1");
+                                       .CreateProtector("Banori.MediaSubscriptions.FeedUrl.v1");
             Guid subscriptionId;
             await using (var db = await factory.CreateDbContextAsync())
             {
@@ -484,7 +484,7 @@ public sealed class SubscriptionRefreshTests
     [Fact]
     public async Task Claim_DoesNotReclaimRunningWorkDuringNormalOperation()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P2R.NoReclaim.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.P2R.NoReclaim.Tests.");
         try
         {
             var             timestamp = new DateTimeOffset(2026, 9, 12, 10, 0, 0, TimeSpan.Zero);
@@ -528,7 +528,7 @@ public sealed class SubscriptionRefreshTests
     [Fact]
     public async Task Refresh_SubjectCacheHit_SkipsMikanPageDiscovery()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P2R.Cache.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.P2R.Cache.Tests.");
         try
         {
             var timestamp = new DateTimeOffset(2026, 9, 12, 11, 0, 0, TimeSpan.Zero);
@@ -592,7 +592,7 @@ public sealed class SubscriptionRefreshTests
     [Fact]
     public async Task Refresh_EpisodeCorrectionKeepsOriginalSubjectInTitleMapping()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P2R.Mapping.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.P2R.Mapping.Tests.");
         try
         {
             var timestamp = new DateTimeOffset(2026, 9, 14, 4, 0, 0, TimeSpan.Zero);
@@ -700,7 +700,7 @@ public sealed class SubscriptionRefreshTests
     [Fact]
     public async Task Refresh_RssFailureStillRecoversPendingItemsAndReportsFetchFailure()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P2R.FetchFail.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.P2R.FetchFail.Tests.");
         try
         {
             var timestamp = new DateTimeOffset(2026, 9, 12, 12, 0, 0, TimeSpan.Zero);
@@ -762,7 +762,7 @@ public sealed class SubscriptionRefreshTests
     [Fact]
     public async Task ManualRequestAndDueScheduling_CreateSingleActiveWork()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P2R.Enqueue.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.P2R.Enqueue.Tests.");
         try
         {
             var             timestamp = new DateTimeOffset(2026, 9, 12, 13, 0, 0, TimeSpan.Zero);
@@ -812,7 +812,7 @@ public sealed class SubscriptionRefreshTests
     [Fact]
     public async Task Save_HttpNonLoopback_Rejected()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.P4.HttpNonLoopback.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.P4.HttpNonLoopback.Tests.");
         try
         {
             var             services            = CreateServices(testDirectory, DateTimeOffset.UtcNow, () => []);

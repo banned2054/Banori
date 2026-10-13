@@ -23,7 +23,7 @@ public sealed class RemoveOneShotSubscriptionMigrationTests
     [Fact]
     public async Task Migrate_DetachesOneShotTasksAndRemovesOneShotData()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.Migration.OneShot.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.Migration.OneShot.Tests.");
         try
         {
             var             timestamp = new DateTimeOffset(2026, 10, 1, 4, 0, 0, TimeSpan.Zero);

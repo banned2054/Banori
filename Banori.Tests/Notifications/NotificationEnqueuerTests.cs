@@ -118,7 +118,7 @@ public sealed class NotificationEnqueuerTests
 
     private static async Task<EnqueuerHarness> CreateHarnessAsync()
     {
-        var directory = Directory.CreateTempSubdirectory("MediaManager.Enqueue.Tests.");
+        var directory = Directory.CreateTempSubdirectory("Banori.Enqueue.Tests.");
         var services  = new ServiceCollection();
         services.AddLogging();
         services.AddDbContextFactory<ApplicationDbContext>(options =>

@@ -16,7 +16,7 @@ public sealed class SubscriptionsPageViewModelTests
     [Fact]
     public async Task Save_Success_DraftConvertsToRequestAndShowsStatus()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.VM.Success.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.VM.Success.Tests.");
         try
         {
             var             services = CreateServices(testDirectory);
@@ -51,7 +51,7 @@ public sealed class SubscriptionsPageViewModelTests
     [Fact]
     public async Task Save_InvalidUrl_ShowsErrorAndDoesNotPersist()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.VM.Invalid.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.VM.Invalid.Tests.");
         try
         {
             var             services = CreateServices(testDirectory);
@@ -84,7 +84,7 @@ public sealed class SubscriptionsPageViewModelTests
     [Fact]
     public async Task Save_AnibtUrl_IsAccepted()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.AnibtVM.Accepted.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.AnibtVM.Accepted.Tests.");
         try
         {
             var             services = CreateServices(testDirectory);
@@ -109,7 +109,7 @@ public sealed class SubscriptionsPageViewModelTests
     [Fact]
     public async Task Save_WithUnknownProxyId_Throws()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.ProxyVM.Unknown.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.ProxyVM.Unknown.Tests.");
         try
         {
             var             services = CreateServices(testDirectory);
@@ -135,7 +135,7 @@ public sealed class SubscriptionsPageViewModelTests
     [Fact]
     public async Task Save_UnsupportedHost_ShowsSourceRestriction()
     {
-        var testDirectory = Directory.CreateTempSubdirectory("MediaManager.AnibtVM.Restricted.Tests.");
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.AnibtVM.Restricted.Tests.");
         try
         {
             var             services = CreateServices(testDirectory);

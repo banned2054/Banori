@@ -232,7 +232,7 @@ public sealed class SelectionRulesPageViewModelTests
 
     private static async Task<SelectionRulesHarness> CreateHarnessAsync()
     {
-        var directory = Directory.CreateTempSubdirectory("MediaManager.P4.RulesPage.Tests.");
+        var directory = Directory.CreateTempSubdirectory("Banori.P4.RulesPage.Tests.");
         var timestamp = new DateTimeOffset(2026, 9, 27, 4, 0, 0, TimeSpan.Zero);
         var services  = new ServiceCollection();
         var lifetime  = new FakeHostApplicationLifetime();

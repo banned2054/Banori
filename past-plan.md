@@ -1,4 +1,4 @@
-# MediaManager：历史计划与已实现阶段归档
+# Banori：历史计划与已实现阶段归档
 
 归档日期：2026-10-11。
 
@@ -8,7 +8,7 @@
 
 ## 1. 项目目标与长期边界
 
-MediaManager 是旧 RssParser 的 .NET 增强版，面向个人或家庭、少量用户、单实例常驻服务，管理动漫 / 特摄 RSS 与 qBittorrent 下载，提供可解释的规则和故障恢复面板。
+Banori 是旧 RssParser 的 .NET 增强版，面向个人或家庭、少量用户、单实例常驻服务，管理动漫 / 特摄 RSS 与 qBittorrent 下载，提供可解释的规则和故障恢复面板。
 
 已采用 Blazor Interactive Server、EF Core、Identity、Data Protection，以及用户指定的 Banned.Aniparser、Banned.Bangumi、Banned.Qbittorrent。数据库最初为 SQLite，现已支持 SQLite / MySQL。Linux / NAS 容器部署与 Windows 开发是原计划考虑的环境，不因此宣称完成所有部署验收。
 
@@ -71,7 +71,7 @@ P2 的条目列表 / 详情及人工重评页面也是历史实现，后续已�
 - 管理员首次启动引导、关闭开放注册、凭据加密、持久化密钥和相对数据库路径处理已经实现。
 - 双 provider 支持不等于旧 Python MySQL 数据已经导入，也不等于新旧服务已经完成生产切换。
 
-当前能力、配置与运行方式参见 [README](README.md)。代码入口位于 `Components/Pages/`、`Features/`、`Data/`、`Integrations/`、`Workers/`；规则位于 `MediaManager.Core/`。
+当前能力、配置与运行方式参见 [README](README.md)。代码入口位于 `Components/Pages/`、`Features/`、`Data/`、`Integrations/`、`Workers/`；规则位于 `Banori.Core/`。
 
 ## 4. 已落地并保留的架构选择
 
@@ -134,4 +134,4 @@ P2 曾采用 Core、Application、宿主、Tests 四项目。P2R 发现统一 `I
 - S2：`TitleNormalizer` 移入 Core（算法与历史映射键不变）；`SubjectMetadataCache` 统一 MediaSubject / SubjectTitleMapping 写入与缓存优先读取；`NamingIngredientsComposer` 集中命名要素展开；契约按归属拆分（条目评估契约入 FeedItemModels、SubjectMetadata 归 Anime、DashboardSnapshot 归 Dashboard）。
 - S3：`DownloadService` 1986 行拆为 `DownloadIntakeService`（登记编排）、`DownloadService`（执行与生命周期）、`DownloadTaskQueries`（只读投影）与 `DownloadTaskLookups`（查重 / 替换目标查找）；`NormalizePath` / `JoinSavePath` 并入 Core `DownloadPathNamePolicy`。单条 / 批量删除保留在执行服务内同一下载器删除链。
 - S4：总览页表单提取为 `DownloadForms` 组件（上传上限常量移入 `DownloadIntakeService` 并在登记入口强制校验）；规则保存后的整库重选编排移入 `CandidateSelectionService.ReselectAfterRuleSaveAsync`（应用停机令牌随业务走，页面 ViewModel 不再依赖 IHostApplicationLifetime）。
-- 数据与迁移：`MediaManager/Data` 目录零改动，SQLite / MySQL 两套迁移集与模型快照与基线完全一致。
+- 数据与迁移：`Banori/Data` 目录零改动，SQLite / MySQL 两套迁移集与模型快照与基线完全一致。

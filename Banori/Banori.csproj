@@ -4,7 +4,7 @@
 		<TargetFramework>net10.0</TargetFramework>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
-		<UserSecretsId>aspnet-MediaManager-c79619a5-f98b-4118-b526-b162318d9485</UserSecretsId>
+		<UserSecretsId>aspnet-Banori-c79619a5-f98b-4118-b526-b162318d9485</UserSecretsId>
 		<BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
 	</PropertyGroup>
 

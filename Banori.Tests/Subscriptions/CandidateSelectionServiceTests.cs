@@ -857,7 +857,7 @@ public sealed class CandidateSelectionServiceTests
                                                                    SelectionRuleConfig?    ruleConfig          = null,
                                                                    SwitchableRuleProvider? switchableProvider  = null)
     {
-        var directory = Directory.CreateTempSubdirectory("MediaManager.P4.Selection.Tests.");
+        var directory = Directory.CreateTempSubdirectory("Banori.P4.Selection.Tests.");
         var timestamp = new DateTimeOffset(2026, 9, 26, 4, 0, 0, TimeSpan.Zero);
         var services  = new ServiceCollection();
         services.AddLogging();
