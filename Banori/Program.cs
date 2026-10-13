@@ -66,7 +66,7 @@ internal class Program
 
         var dataDirectory = Path.Combine(builder.Environment.ContentRootPath, "data");
         var keyDirectory  = Path.Combine(dataDirectory, "keys");
-        Directory.CreateDirectory(keyDirectory);
+        EnsureDataStorageWritable(dataDirectory, keyDirectory);
         builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keyDirectory));
 
         var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ??
@@ -178,6 +178,62 @@ internal class Program
         builder.Services.AddHostedService<SubscriptionRefreshWorker>();
         builder.Services.AddHostedService<DownloadReconcileWorker>();
         builder.Services.AddHostedService<NotificationDeliveryWorker>();
+    }
+
+    // 容器内非 root 进程无法 chown 宿主机目录，bind mount 属主不匹配时只能把原因和修法报清楚，
+    // 避免用户只看到一串 UnauthorizedAccessException 堆栈。
+    private static void EnsureDataStorageWritable(string dataDirectory, string keyDirectory)
+    {
+        try
+        {
+            Directory.CreateDirectory(keyDirectory);
+            var probePath = Path.Combine(dataDirectory, $"write-probe-{Guid.NewGuid():N}");
+            File.WriteAllText(probePath, string.Empty);
+            File.Delete(probePath);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[FATAL] 无法写入数据目录 {dataDirectory}，当前进程身份 {DescribeProcessIdentity()}，原始错误：{ex.Message}");
+            Console.Error.WriteLine("最常见原因：bind mount 的宿主机目录属主与容器运行用户不一致（Docker daemon 自动创建的缺失目录属主是 root）。");
+            Console.Error.WriteLine("修复方式（任选其一）：");
+            Console.Error.WriteLine("  1. 在宿主机手动创建目录并授权：mkdir -p data && chown -R <uid>:<gid> data，uid:gid 用上方进程身份");
+            Console.Error.WriteLine("  2. 使用本项目镜像时移除 compose 的 user:，在 environment 中设置 PUID/PGID 为宿主机账号的 uid/gid；入口脚本会递归修改 /app/data 属主，请只挂载 Banori 专用数据目录");
+            Console.Error.WriteLine("  3. 或设置非零 user: 为有权读写宿主机 data 目录的 uid:gid；此时入口脚本不会修正属主，PUID/PGID 也不会生效");
+            Console.Error.WriteLine("  4. rootless Docker 使用本项目镜像时移除 user:，设置环境变量 PUID=0、PGID=0（容器内 UID 0 映射到宿主机当前用户）；仅设置 user: \"0:0\" 仍会降权到默认 UID 1654");
+            Console.Error.WriteLine("  5. 或改用命名卷（仓库 compose.yaml 的默认写法）；已有卷仍需确保数据可写");
+            throw;
+        }
+    }
+
+    private static string DescribeProcessIdentity()
+    {
+        try
+        {
+            if (!OperatingSystem.IsLinux())
+                return Environment.UserName;
+
+            var uid = -1;
+            var gid = -1;
+            foreach (var line in File.ReadLines("/proc/self/status"))
+            {
+                var fields = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                if (fields.Length < 2)
+                    continue;
+                if (fields[0] == "Uid:")
+                    int.TryParse(fields[1], out uid);
+                else if (fields[0] == "Gid:")
+                    int.TryParse(fields[1], out gid);
+            }
+
+            if (uid < 0)
+                return Environment.UserName;
+            var gidText = gid >= 0 ? $" gid={gid}" : string.Empty;
+            return $"uid={uid}{gidText}";
+        }
+        catch
+        {
+            return Environment.UserName;
+        }
     }
 
     private static void InitApplication(WebApplication app)

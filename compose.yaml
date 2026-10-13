@@ -7,9 +7,17 @@ services:
       - "7340:7340"
     environment:
       ASPNETCORE_ENVIRONMENT: Production
+      # bind mount 时可设为宿主机账号的 uid:gid，并移除服务上的 user: 配置。
+      # 每次启动以 root 递归修正 /app/data 属主，再降权运行；默认 1654:1654。
+      # 非零 user: 会跳过修正和身份切换，PUID/PGID 不生效。
+      # rootless Docker 移除 user: 并设 PUID="0"、PGID="0"（映射到宿主机当前用户）。
+      # PUID: "1000"
+      # PGID: "1000"
       Username: ${BANORI_USERNAME:-}
       Password: ${BANORI_PASSWORD:-}
     volumes:
+      # 改用 bind mount（如 ./data:/app/data）时，只挂载 Banori 专用目录。
+      # 自动修正要求存储允许 chown；共享目录、NFS/ACL 限制及配置示例见 README。
       - banori-data:/app/data
 
 volumes:

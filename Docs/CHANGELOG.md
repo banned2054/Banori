@@ -1,5 +1,21 @@
 # Changelog
 
+## 🔖 Unreleased
+
+<a id="unreleased-english"></a>
+### English
+
+- Container now starts via an entrypoint that recursively sets ownership of `/app/data` to `PUID`/`PGID` (default `1654:1654`) on every startup, then runs the app as that identity. This handles daemon-created root-owned bind mounts on filesystems that permit `chown`; use a dedicated Banori data directory. A nonzero compose `user:` skips ownership changes and identity switching, so `PUID`/`PGID` do not apply.
+- Startup now probes the `data/` directory for writability and prints the process uid/gid plus concrete fixes (host permissions, `PUID`/`PGID`, nonzero compose `user:`, or named volume) when storage is not writable. For rootless Docker, remove `user:` and set `PUID=0`, `PGID=0`; `user: "0:0"` alone still switches to the default UID 1654.
+- README documents bind-mount permissions, a complete NAS compose example, recursive ownership changes, and limitations such as NFS root-squash and NAS ACLs.
+
+<a id="unreleased-zh-cn"></a>
+### 简体中文
+
+- 容器改为经入口脚本启动：每次启动以 root 递归修正 `/app/data` 属主为 `PUID`/`PGID`（默认 `1654:1654`），再以该身份运行应用。在允许 `chown` 的文件系统上可自动处理 daemon 创建的 root 属主 bind mount 目录；只应挂载 Banori 专用数据目录。compose 中设置非零 `user:` 时跳过属主修正和身份切换，`PUID`/`PGID` 不生效。
+- 启动时探测 `data/` 目录可写性，失败时打印当前进程 uid/gid 与具体修复方式（宿主机权限、`PUID`/`PGID`、非零 compose `user:`、或命名卷）。rootless Docker 应移除 `user:` 并设置 `PUID=0`、`PGID=0`；仅设置 `user: "0:0"` 仍会切换到默认 UID 1654。
+- README 补充完整的 NAS compose 示例、递归属主修正说明，以及 NFS root-squash 和 NAS ACL 等存储限制。
+
 ## 📘 Versions
 
 - [v0.1.0](#-release-v010)

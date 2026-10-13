@@ -102,6 +102,34 @@ docker compose up -d
 
 若从旧版或本地运行迁移，先停止旧应用，将原 `Banori/App_Data/` 的内容（数据库文件以及存在时的 `keys/`）复制到 Docker 卷根目录，再启动容器。确保文件权限允许容器进程读写。迁移前请另做备份；不要让旧版和新版同时写同一数据库。
 
+### 使用 bind mount 时的目录权限
+
+镜像默认以 root 启动入口脚本：将 `/app/data` 及其全部内容的属主修正为 `PUID`/`PGID`（默认 `1654:1654`，即 .NET 镜像惯例的非 root 身份）后，降权到该用户运行应用。在允许修改属主的普通 Linux 本地文件系统上，bind mount（如 `./data:/app/data`）即使指向 Docker daemon 自动创建的 `root:root` 目录，也无需在宿主机手工 `mkdir`/`chown`。
+
+希望 `data/` 里的文件归属你的 NAS 账号（便于在文件管理器中查看备份）时，在 compose 的 `environment` 中设置 `PUID`/`PGID`，并移除服务上的 `user:` 配置。例如宿主机账号的 UID/GID 为 `1000:1000` 时：
+
+```yaml
+services:
+  banori:
+    image: ghcr.io/banned2054/banori:latest
+    ports:
+      - "7340:7340"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      PUID: "1000"   # 宿主机账号的 uid（id -u 查看）
+      PGID: "1000"   # 宿主机账号的 gid（id -g 查看）
+      Username: ${BANORI_USERNAME:-}
+      Password: ${BANORI_PASSWORD:-}
+    volumes:
+      - ./data:/app/data
+```
+
+**自动属主修正在每次启动时递归执行，不仅针对新目录。** 只应挂载 Banori 专用数据目录，不要挂载其他服务共用的目录；未设置 `PUID`/`PGID` 时，已有文件的属主也会被改成 `1654:1654`。NFS root-squash、部分 NAS ACL 或不支持修改属主的文件系统可能使 `chown` 失败，入口脚本会停止启动；这类存储应先在宿主机配置访问权限，再用非零 `user:` 跳过自动修正。
+
+rootless Docker 下容器内的 UID 0 映射到宿主机当前用户。移除 `user:`，设置 `PUID: "0"` 与 `PGID: "0"`，应用将以容器内 UID/GID 0 运行，而不是宿主机 root。仅设置 `user: "0:0"` 不够：入口脚本仍会按默认 `PUID`/`PGID` 降权到 `1654:1654`。
+
+也可以保留 `user: "1000:1000"` 这类非零 UID 配置：入口脚本会跳过属主修正和身份切换，`PUID`/`PGID` 不生效。此时必须自行确保宿主机目录及已有文件允许该身份读写；`user:` 本身不会改变 Docker 自动创建目录的属主。权限不足时应用启动即失败，日志会打印当前进程 uid/gid 与修复建议。
+
 > 下载整理还需要 qBittorrent。它可以运行在另一容器或主机上；在「设置」中填写 qBittorrent 可访问的下载路径，并确保 Banori 与 qBittorrent 对该路径的挂载映射一致。仅让 Banori 容器连接到 qBittorrent 并不足以让它访问下载文件。
 
 ## 🛠️ 本地开发

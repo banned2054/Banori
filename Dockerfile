@@ -14,12 +14,18 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
 ENV ASPNETCORE_URLS=http://0.0.0.0:7340 \
-    ASPNETCORE_HTTP_PORTS=7340
+    ASPNETCORE_HTTP_PORTS=7340 \
+    PUID=1654 \
+    PGID=1654
 EXPOSE 7340
 
-RUN mkdir -p /app/data \
-    && chown -R $APP_UID:$APP_UID /app
 COPY --from=build --chown=$APP_UID:$APP_UID /out .
-USER $APP_UID
+COPY entrypoint.sh /app/entrypoint.sh
+# /app/data 保持 $APP_UID 属主供命名卷 copy-up 继承；默认以 root 启动由 entrypoint
+# 修正数据目录属主后降权到 PUID/PGID，兼容 daemon 自动创建的 root 属主 bind mount 目录。
+RUN mkdir -p /app/data \
+    && chown -R $APP_UID:$APP_UID /app/data \
+    && chmod +x /app/entrypoint.sh
 
-ENTRYPOINT ["dotnet", "Banori.dll"]
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["dotnet", "Banori.dll"]
