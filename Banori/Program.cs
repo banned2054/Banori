@@ -167,13 +167,13 @@ internal class Program
         builder.Services.AddHttpClient("FeedSource", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(30);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Banori/0.2");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Banori/0.1.0");
         });
         builder.Services.AddHttpClient("Bangumi");
         builder.Services.AddHttpClient("TorrentDownload", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(30);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Banori/0.2");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Banori/0.1.0");
         });
         builder.Services.AddHostedService<SubscriptionRefreshWorker>();
         builder.Services.AddHostedService<DownloadReconcileWorker>();
