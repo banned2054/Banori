@@ -2,7 +2,7 @@
 **/obj/
 .vs/
 Banori/App_Data/
-Banori/data/
+Banori/config/
 .env
 TestResults/
 *.user

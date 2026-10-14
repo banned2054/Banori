@@ -6,7 +6,7 @@
 **/obj
 **/TestResults
 **/App_Data
-**/data
+**/config
 .env
 *.user
 *.suo

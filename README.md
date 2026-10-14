@@ -40,7 +40,7 @@
 
 ## 🐳 Docker 部署
 
-需要安装 Docker Engine 和 Docker Compose。容器将 Web 服务监听在 `7340` 端口，并通过 Docker 命名卷 `banori-data` 持久化数据库与加密密钥。
+需要安装 Docker Engine 和 Docker Compose。容器将 Web 服务监听在 `7340` 端口，默认将 Compose 文件所在目录的 `config/` 映射到容器 `/app/config`，持久化数据库与加密密钥。
 
 ```bash
 cp .env.example .env
@@ -84,29 +84,32 @@ ghcr.io/banned2054/banori:v0.1.1
 
 ### 数据持久化与迁移
 
-Compose 使用 Docker 命名卷 `banori-data` 挂载到容器 `/app/data`。SQLite 数据库位于 `data/banori.db`，Data Protection 密钥位于 `data/keys/`；两者都必须保留。删除容器或执行 `docker compose down` 不会删除该卷；**不要使用 `docker compose down -v`**，除非确定要删除全部 Banori 数据。
+Compose 默认使用目录映射 `./config:/app/config`。宿主机 `config/banori.db` 是 SQLite 数据库，`config/keys/` 是 Data Protection 密钥；两者都必须保留。删除或重建容器、执行 `docker compose down` 不会删除宿主机目录；**不要删除该目录或只保留数据库而遗漏密钥**。
 
-可用下列命令备份命名卷（先停止服务，以保证 SQLite 文件一致）：
+可用下列命令备份整个数据目录（先停止服务，以保证 SQLite 文件一致；若挂载的是 `./data`，请相应替换目录名）：
 
 ```bash
 docker compose down
-docker run --rm \
-  -v banori-data:/source:ro \
-  -v "$PWD/backups:/backup" \
-  alpine:3.20 \
-  tar -czf /backup/banori-data.tar.gz -C /source .
+mkdir -p backups
+tar -czf "backups/banori-config-$(date +%Y%m%d-%H%M%S).tar.gz" -C config .
 docker compose up -d
 ```
 
-恢复时先停止服务，将备份解压到同一个命名卷，再启动应用。恢复数据库时必须同时恢复 `keys/`，否则已保存的 RSS 地址和其他加密配置可能无法解密。
+恢复时先停止服务，将备份解压到实际挂载的宿主机目录，确保文件权限正确，再启动应用。恢复数据库时必须同时恢复 `keys/`，否则已保存的 RSS 地址和其他加密配置可能无法解密。
 
-若从旧版或本地运行迁移，先停止旧应用，将原 `Banori/App_Data/` 的内容（数据库文件以及存在时的 `keys/`）复制到 Docker 卷根目录，再启动容器。确保文件权限允许容器进程读写。迁移前请另做备份；不要让旧版和新版同时写同一数据库。
+从旧版 `data/` 或更早的 `App_Data/` 升级时，先停止应用并备份，然后按部署方式处理：
+
+- **已有 Docker 命名卷部署**：继续使用命名卷时，保留卷名 `banori-data` 和顶层卷声明，只把挂载目标由 `/app/data` 改为 `/app/config`；卷根目录的数据库和 `keys/` 无需移动。不要直接切换到新默认的 `./config` 空目录；若要改用目录映射，须先停止应用并将卷内数据库及配套文件、`keys/` 完整复制到目标目录。不要删除卷或执行 `docker compose down -v`，除非确定已不再需要原数据。
+- **Docker bind mount**：可以保留宿主机目录名，例如将 `./data:/app/data` 改为 `./data:/app/config`，无需搬动数据；新部署示例使用 `./config:/app/config`。
+- **本地运行**：将旧目录中的 `banori.db`、存在时的 `banori.db-wal`、`banori.db-shm`、`banori.db-journal` 和 `keys/` 一起复制到 `Banori/config/`。Windows 上旧 `data/` 可能与源码 `Data/` 是同一目录，**不要整体移动或删除 `Banori/Data/`**。迁移到 Docker 时，将这些运行数据复制到挂载目录根部，不要再套一层 `config/`。
+
+确保文件权限允许应用读写，不要让旧版和新版同时写同一数据库。MySQL 部署也需要迁移本地 `keys/`；如果覆盖了 SQLite 连接字符串，请同步核对真实数据库路径。仅迁移数据库而遗漏密钥会使已保存的加密配置无法解密。检测到旧数据库或旧密钥尚未迁移时，应用会停止启动并给出提示，不会自动移动数据或静默初始化。
 
 ### 使用 bind mount 时的目录权限
 
-镜像默认以 root 启动入口脚本：将 `/app/data` 及其全部内容的属主修正为 `PUID`/`PGID`（默认 `1654:1654`，即 .NET 镜像惯例的非 root 身份）后，降权到该用户运行应用。在允许修改属主的普通 Linux 本地文件系统上，bind mount（如 `./data:/app/data`）即使指向 Docker daemon 自动创建的 `root:root` 目录，也无需在宿主机手工 `mkdir`/`chown`。
+镜像默认以 root 启动入口脚本：将 `/app/config` 及其全部内容的属主修正为 `PUID`/`PGID`（默认 `1654:1654`，即 .NET 镜像惯例的非 root 身份）后，降权到该用户运行应用。在允许修改属主的普通 Linux 本地文件系统上，bind mount（如 `./config:/app/config`）即使指向 Docker daemon 自动创建的 `root:root` 目录，也无需在宿主机手工 `mkdir`/`chown`。
 
-希望 `data/` 里的文件归属你的 NAS 账号（便于在文件管理器中查看备份）时，在 compose 的 `environment` 中设置 `PUID`/`PGID`，并移除服务上的 `user:` 配置。例如宿主机账号的 UID/GID 为 `1000:1000` 时：
+希望 `config/` 里的文件归属你的 NAS 账号（便于在文件管理器中查看备份）时，在 compose 的 `environment` 中设置 `PUID`/`PGID`，并移除服务上的 `user:` 配置。例如宿主机账号的 UID/GID 为 `1000:1000` 时：
 
 ```yaml
 services:
@@ -121,7 +124,7 @@ services:
       Username: ${BANORI_USERNAME:-}
       Password: ${BANORI_PASSWORD:-}
     volumes:
-      - ./data:/app/data
+      - ./config:/app/config
 ```
 
 **自动属主修正在每次启动时递归执行，不仅针对新目录。** 只应挂载 Banori 专用数据目录，不要挂载其他服务共用的目录；未设置 `PUID`/`PGID` 时，已有文件的属主也会被改成 `1654:1654`。NFS root-squash、部分 NAS ACL 或不支持修改属主的文件系统可能使 `chown` 失败，入口脚本会停止启动；这类存储应先在宿主机配置访问权限，再用非零 `user:` 跳过自动修正。
@@ -176,7 +179,7 @@ dotnet run --project Banori/Banori.csproj
 | `Database__Provider` | 数据库类型：`Sqlite` 或 `MySql` |
 | `Database__MySqlServerVersion` | MySQL / MariaDB 服务器版本；填写后可跳过启动探测 |
 
-默认 SQLite 数据库为 `Banori/data/banori.db`。MySQL 与 SQLite 共用同一 EF Core 模型，迁移集按数据库类型隔离，分别位于 `Banori/Data/Migrations/` 与 `Banori/Data/Migrations/MySql/`。
+默认 SQLite 数据库为 `Banori/config/banori.db`，加密密钥为 `Banori/config/keys/`；运行数据与源码 `Banori/Data/` 分离。MySQL 与 SQLite 共用同一 EF Core 模型，迁移集按数据库类型隔离，分别位于 `Banori/Data/Migrations/` 与 `Banori/Data/Migrations/MySql/`。
 
 ## 🧪 验证
 
