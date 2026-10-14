@@ -8,7 +8,7 @@ COPY Banori.Core/Banori.Core.csproj Banori.Core/
 RUN dotnet restore Banori/Banori.csproj
 
 COPY . .
-RUN dotnet publish Banori/Banori.csproj -c Release -o /out --no-restore
+RUN dotnet publish Banori/Banori.csproj -c Release -o /out
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
