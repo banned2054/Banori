@@ -2,8 +2,63 @@
 
 ## 📘 Versions
 
+- [v0.1.2](#-release-v012)
 - [v0.1.1](#-release-v011)
 - [v0.1.0](#-release-v010)
+
+## 🚀 Release v0.1.2
+
+[English](#v012-english) | [简体中文](#v012-zh-cn)
+
+<a id="v012-english"></a>
+### English
+
+This patch fixes missing Blazor scripts in Docker releases and updates runtime storage and first-admin configuration. Existing deployments must review the upgrade notes below before replacing their container.
+
+#### 🐛 Fixed
+
+- Restore dependencies after copying the full Razor source during Docker publishing, ensuring Blazor framework scripts and static-asset routes are included. This fixes the missing-script failure that prevented interactive settings from working in released containers.
+- Narrow legacy runtime-data ignore rules to database files and `keys/`, so the `Data/` source directory is not accidentally ignored on case-insensitive Windows systems. Exclude the new `config/` runtime directory from Git and Docker build contexts.
+
+#### 🔧 Changed
+
+- Move the default SQLite database to `config/banori.db` and Data Protection keys to `config/keys/` (`/app/config` in Docker), separate from the `Data/` source directory.
+- Default Compose storage to the `./config:/app/config` bind mount instead of a named volume. Update directory creation, ownership handling, startup diagnostics, and backup documentation accordingly.
+- Stop startup when legacy `data/` or `App_Data/` storage is detected and the new location lacks the default database or key files. This is a migration safety check, not automatic migration or full integrity verification.
+- Rename first-admin configuration keys to `BANORI_USERNAME` and `BANORI_PASSWORD` across the application, Compose, and development configuration. The old `Username`/`Password` keys are no longer read; existing accounts are unchanged.
+- Add regression tests for storage-path migration checks and first-admin configuration, and correct the documented GitHub Actions publishing triggers.
+
+#### ⚠️ Upgrade notes
+
+- Back up and stop the old application first. For an existing bind mount, change `./data:/app/data` to `./data:/app/config`; keep the host directory and its contents. New installations default to `./config:/app/config`.
+- Existing named-volume deployments must retain `banori-data` and its top-level volume declaration while changing the container target to `/app/config`, or copy the volume contents to a host directory before switching to a bind mount. Do not point an existing installation at a new empty directory or delete its volume.
+- Local installations must copy the database and its companion files together with `keys/` into `Banori/config/`. Do not move or delete the Windows `Banori/Data/` source directory. MySQL installations must also preserve local keys.
+- Replace old administrator environment-variable or User Secrets keys with `BANORI_USERNAME` and `BANORI_PASSWORD`. An existing Compose `.env` using these names needs no rename, but custom container environment mappings must use the new names. These settings do not reset existing users.
+
+<a id="v012-zh-cn"></a>
+### 简体中文
+
+本补丁修复 Docker 发布遗漏 Blazor 脚本的问题，并调整运行数据目录和首位管理员配置。已有部署在更新容器前，请先阅读下方升级说明。
+
+#### 🐛 修复
+
+- Docker 发布在复制完整 Razor 源码后重新还原依赖，确保镜像包含 Blazor 框架脚本及静态资源路由，修复发布容器因脚本缺失而无法正常交互保存设置的问题。
+- 旧运行数据的忽略规则收窄到数据库文件和 `keys/`，避免 Windows 大小写不敏感时误忽略源码 `Data/`。新增 `config/` 运行目录的 Git 和 Docker 构建排除规则。
+
+#### 🔧 调整
+
+- 默认 SQLite 数据库改为 `config/banori.db`，Data Protection 密钥改为 `config/keys/`（Docker 内为 `/app/config`），与源码 `Data/` 分离。
+- Compose 默认使用 `./config:/app/config` 目录映射，不再默认使用命名卷；同步目录创建、属主修正、启动诊断和备份文档。
+- 检测到旧 `data/` 或 `App_Data/` 数据且新位置缺少默认数据库或密钥文件时停止启动。此检查用于防止遗漏迁移，不会自动迁移，也不代表完整的数据一致性校验。
+- 首位管理员配置键统一改为 `BANORI_USERNAME`、`BANORI_PASSWORD`，同步应用、Compose 和开发配置。旧 `Username`/`Password` 键不再读取，已有账号不受影响。
+- 新增数据路径迁移检查和管理员配置回归测试，并修正 GitHub Actions 发布触发方式的文档说明。
+
+#### ⚠️ 升级说明
+
+- 先备份并停止旧应用。已有目录映射将 `./data:/app/data` 改为 `./data:/app/config`，保留宿主机目录及内容；新部署默认使用 `./config:/app/config`。
+- 已有命名卷部署应保留 `banori-data` 及顶层卷声明，仅将容器目标改为 `/app/config`；若要切换目录映射，须先将卷内数据复制到宿主机目录。不要改用新空目录或删除原卷。
+- 本地运行须将数据库及配套文件、`keys/` 一起复制到 `Banori/config/`；不要整体移动或删除 Windows 的源码 `Banori/Data/`。MySQL 部署也必须保留本地密钥。
+- 旧管理员环境变量或 User Secrets 键须改为 `BANORI_USERNAME`、`BANORI_PASSWORD`。已有 Compose `.env` 若已使用这些名称，无需改名，但自定义容器环境变量映射须同步更新。这些配置不会重置已有账号。
 
 ## 🚀 Release v0.1.1
 

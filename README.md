@@ -12,7 +12,7 @@
 <br>
 
 <div>
-    <a href="https://github.com/banned2054/Banori/releases/tag/v0.1.1"><img alt="Version 0.1.1" src="https://img.shields.io/badge/version-0.1.1-blue"></a>
+    <a href="https://github.com/banned2054/Banori/releases/tag/v0.1.2"><img alt="Version 0.1.2" src="https://img.shields.io/badge/version-0.1.2-blue"></a>
     <a href="https://dotnet.microsoft.com/"><img alt=".NET 10" src="https://img.shields.io/badge/.NET-10.0-512BD4"></a>
     <a href="https://learn.microsoft.com/aspnet/core/blazor/"><img alt="Blazor" src="https://img.shields.io/badge/Blazor-Interactive_Server-7B2CBF"></a>
     <a href="https://learn.microsoft.com/ef/core/"><img alt="EF Core" src="https://img.shields.io/badge/EF_Core-10-2EA44F"></a>
@@ -75,11 +75,11 @@ docker compose pull
 docker compose up -d
 ```
 
-GitHub Actions 会在 `master` 更新时发布 `latest`，推送 `v*` 标签时发布同名版本镜像，例如：
+GitHub Actions 在发布 GitHub Release 或手动运行 `Publish container image` 工作流时构建并推送镜像；普通分支 push 或单独推送标签不会触发发布。Release 使用 `v*` 标签生成同名版本镜像，符合工作流默认分支条件时同时更新 `latest`，例如：
 
 ```text
 ghcr.io/banned2054/banori:latest
-ghcr.io/banned2054/banori:v0.1.1
+ghcr.io/banned2054/banori:v0.1.2
 ```
 
 ### 数据持久化与迁移
