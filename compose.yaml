@@ -13,8 +13,8 @@ services:
             # rootless Docker 移除 user: 并设 PUID="0"、PGID="0"（映射到宿主机当前用户）。
             # PUID: "1000"
             # PGID: "1000"
-            Username: ${BANORI_USERNAME:-}
-            Password: ${BANORI_PASSWORD:-}
+            BANORI_USERNAME: ${BANORI_USERNAME:-}
+            BANORI_PASSWORD: ${BANORI_PASSWORD:-}
         volumes:
             # 只挂载 Banori 专用目录；已有 ./data 目录可继续使用 ./data:/app/config。
             # 自动修正要求存储允许 chown；共享目录、NFS/ACL 限制及配置示例见 README。

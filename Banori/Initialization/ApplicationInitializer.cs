@@ -22,7 +22,7 @@ public static class ApplicationInitializer
         var options = services.GetRequiredService<IOptions<BootstrapAdminOptions>>().Value;
         if (string.IsNullOrWhiteSpace(options.Username) || string.IsNullOrWhiteSpace(options.Password))
             throw
-                new InvalidOperationException("数据库中没有管理员。请设置 Username 和 Password 环境变量后重新启动。");
+                new InvalidOperationException("数据库中没有管理员。请设置 BANORI_USERNAME 和 BANORI_PASSWORD 环境变量后重新启动。");
 
         var administrator = new ApplicationUser
         {

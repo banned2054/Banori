@@ -117,8 +117,8 @@ internal class Program
 
         builder.Services.Configure<BootstrapAdminOptions>(options =>
         {
-            options.Username = builder.Configuration["Username"] ?? string.Empty;
-            options.Password = builder.Configuration["Password"] ?? string.Empty;
+            options.Username = builder.Configuration["BANORI_USERNAME"] ?? string.Empty;
+            options.Password = builder.Configuration["BANORI_PASSWORD"] ?? string.Empty;
         });
         builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
         builder.Services.AddSingleton(TimeProvider.System);

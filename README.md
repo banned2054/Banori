@@ -121,8 +121,8 @@ services:
       ASPNETCORE_ENVIRONMENT: Production
       PUID: "1000"   # 宿主机账号的 uid（id -u 查看）
       PGID: "1000"   # 宿主机账号的 gid（id -g 查看）
-      Username: ${BANORI_USERNAME:-}
-      Password: ${BANORI_PASSWORD:-}
+      BANORI_USERNAME: ${BANORI_USERNAME:-}
+      BANORI_PASSWORD: ${BANORI_PASSWORD:-}
     volumes:
       - ./config:/app/config
 ```
@@ -166,10 +166,12 @@ SQL 日志可能包含业务数据或 SQL 文本中的字面量，不建议长�
 需要安装 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)。使用空数据库启动时，先通过环境变量设置首位管理员：
 
 ```powershell
-$env:Username = "admin"
-$env:Password = "请替换为强密码"
+$env:BANORI_USERNAME = "admin"
+$env:BANORI_PASSWORD = "请替换为强密码"
 dotnet run --project Banori/Banori.csproj
 ```
+
+首次管理员配置统一使用 `BANORI_USERNAME`、`BANORI_PASSWORD`；旧的 `Username`、`Password` 配置键不再读取。已有用户时不会根据这些变量重置账号。`.env` 是 Compose 的变量来源，本地 `dotnet run` 不会自动加载它；已有 User Secrets 配置也需改用新键。
 
 应用配置也可写入 `Banori/appsettings.json`，或通过环境变量覆盖。分层配置使用双下划线，例如：
 
