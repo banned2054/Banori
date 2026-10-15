@@ -64,26 +64,30 @@ public sealed class DownloadDirectorySettingsStoreTests
     {
         var settings    = new MemoryApplicationSettingStore();
         var directories = new DownloadDirectorySettingsStore(settings);
-        var vm = new SettingsPageViewModel(
-                                           new ManageQbittorrentSettings(settings,
-                                                                         new
-                                                                             FakeQbittorrentSessionFactory(new
-                                                                                          FakeTorrentStore())),
-                                           new NamingTemplateStore(settings), directories,
-                                           new ManageTelegramSettings(settings, new FakeTelegramSender()),
-                                           new ManageGotifySettings(settings, new FakeGotifySender()),
-                                           ProxyServiceTestFactory.CreateEphemeral(),
-                                           NullLogger<SettingsPageViewModel>.Instance);
-        vm.Downloader.MediaDirectory = "Library\\Anime";
-        vm.Downloader.SeedDirectory  = "Seeding";
-        await vm.SaveAsync();
+        var vm =
+            new SettingsPageViewModel(new ManageQbittorrentSettings(settings,
+                                                                    new FakeQbittorrentSessionFactory(new
+                                                                                 FakeTorrentStore())),
+                                      new NamingTemplateStore(settings), directories,
+                                      new ManageTelegramSettings(settings, new FakeTelegramSender()),
+                                      new ManageGotifySettings(settings, new FakeGotifySender()),
+                                      ProxyServiceTestFactory.CreateEphemeral(),
+                                      NullLogger<SettingsPageViewModel>.Instance)
+            {
+                Downloader =
+                {
+                    MediaDirectory = "Library\\Anime",
+                    SeedDirectory  = "Seeding"
+                }
+            };
+        await vm.SaveDownloaderAsync();
         Assert.True(vm.SaveSucceeded);
         Assert.Equal("Library/Anime", vm.Downloader.MediaDirectory);
         Assert.Equal(new DownloadDirectorySettings("Library/Anime", "Seeding"), await directories.GetAsync());
 
         var savedValues = settings.Values.ToArray();
         vm.Downloader.MediaDirectory = "../outside";
-        await vm.SaveAsync();
+        await vm.SaveDownloaderAsync();
         Assert.False(vm.SaveSucceeded);
         Assert.Equal(savedValues, settings.Values.ToArray());
         Assert.Contains("相对目录", vm.StatusMessage);

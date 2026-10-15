@@ -83,11 +83,8 @@ public sealed class SettingsPageViewModel(
         Loaded = true;
     }
 
-    public async Task SaveAsync(CancellationToken cancellationToken = default)
-    {
-        Saving        = true;
-        StatusMessage = null;
-        try
+    public Task SaveDownloaderAsync(CancellationToken cancellationToken = default) =>
+        SaveAsync(async token =>
         {
             // 先校验目录，错误输入不得先覆盖其它下载器设置。
             var directories =
@@ -100,31 +97,48 @@ public sealed class SettingsPageViewModel(
                                                 string.IsNullOrWhiteSpace(Downloader.Password)
                                                     ? null
                                                     : Downloader.Password,
-                                                cancellationToken);
-            await qbittorrentSettings.SaveHookBaseUrlAsync(Downloader.HookBaseUrl, cancellationToken);
-            HookCommands = BuildHookCommands(await qbittorrentSettings.GetHookBaseUrlAsync(cancellationToken),
-                                             _hookToken);
-            await namingTemplateStore.SaveAsync(Downloader.NamingTemplate, cancellationToken);
-            await namingTemplateStore.SaveFileTemplateAsync(Downloader.FileNamingTemplate, cancellationToken);
-            await directorySettingsStore.SaveAsync(directories.MediaDirectory, directories.SeedDirectory,
-                                                   cancellationToken);
+                                                token);
+            await qbittorrentSettings.SaveHookBaseUrlAsync(Downloader.HookBaseUrl, token);
+            HookCommands = BuildHookCommands(await qbittorrentSettings.GetHookBaseUrlAsync(token), _hookToken);
+            await namingTemplateStore.SaveAsync(Downloader.NamingTemplate, token);
+            await namingTemplateStore.SaveFileTemplateAsync(Downloader.FileNamingTemplate, token);
+            await directorySettingsStore.SaveAsync(directories.MediaDirectory, directories.SeedDirectory, token);
             Downloader.MediaDirectory = directories.MediaDirectory;
             Downloader.SeedDirectory  = directories.SeedDirectory;
+            Downloader.Password       = null;
+        }, cancellationToken);
+
+    public Task SaveTelegramAsync(CancellationToken cancellationToken = default) =>
+        SaveAsync(async token =>
+        {
             await telegramSettings.SaveAsync(Telegram.ToSettings(),
                                              string.IsNullOrWhiteSpace(Telegram.BotToken)
                                                  ? null
                                                  : Telegram.BotToken,
-                                             cancellationToken);
+                                             token);
+            Telegram.BotToken = null;
+        }, cancellationToken);
+
+    public Task SaveGotifyAsync(CancellationToken cancellationToken = default) =>
+        SaveAsync(async token =>
+        {
             await gotifySettings.SaveAsync(Gotify.ToSettings(),
                                            string.IsNullOrWhiteSpace(Gotify.AppToken)
                                                ? null
                                                : Gotify.AppToken,
-                                           cancellationToken);
-            SaveSucceeded       = true;
-            StatusMessage       = "设置已保存。";
-            Downloader.Password = null;
-            Telegram.BotToken   = null;
-            Gotify.AppToken     = null;
+                                           token);
+            Gotify.AppToken = null;
+        }, cancellationToken);
+
+    private async Task SaveAsync(Func<CancellationToken, Task> save, CancellationToken cancellationToken)
+    {
+        Saving        = true;
+        StatusMessage = null;
+        try
+        {
+            await save(cancellationToken);
+            SaveSucceeded = true;
+            StatusMessage = "设置已保存。";
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

@@ -43,7 +43,7 @@ else
 {
 	<section id="qbittorrent" class="mt-4">
 		<h2 class="h4 mb-3">qBittorrent 下载器</h2>
-		<EditForm Model="_vm.Downloader" OnValidSubmit="SaveAsync" FormName="downloader-settings">
+		<EditForm Model="_vm.Downloader" OnValidSubmit="SaveDownloaderAsync" FormName="downloader-settings">
 			<DataAnnotationsValidator/>
 			<div class="card settings-card">
 				<div class="card-body">
@@ -156,7 +156,7 @@ else
 	<section id="notifications" class="mt-4">
 		<h2 class="h4 mb-3">通知</h2>
 
-		<EditForm Model="_vm.Telegram" OnValidSubmit="SaveAsync" FormName="telegram-settings">
+		<EditForm Model="_vm.Telegram" OnValidSubmit="SaveTelegramAsync" FormName="telegram-settings">
 			<DataAnnotationsValidator/>
 			<div class="card settings-card">
 				<div class="card-body">
@@ -214,7 +214,7 @@ else
 			</div>
 		</EditForm>
 
-		<EditForm Model="_vm.Gotify" OnValidSubmit="SaveAsync" FormName="gotify-settings">
+		<EditForm Model="_vm.Gotify" OnValidSubmit="SaveGotifyAsync" FormName="gotify-settings">
 			<DataAnnotationsValidator/>
 			<div class="card settings-card mt-3">
 				<div class="card-body">
@@ -292,7 +292,11 @@ else
 		};
 	}
 
-	private Task SaveAsync() => RunAsync(_vm.SaveAsync);
+	private Task SaveDownloaderAsync() => RunAsync(_vm.SaveDownloaderAsync);
+
+	private Task SaveTelegramAsync() => RunAsync(_vm.SaveTelegramAsync);
+
+	private Task SaveGotifyAsync() => RunAsync(_vm.SaveGotifyAsync);
 
 	private Task TestDownloaderAsync() => RunAsync(_vm.TestDownloaderAsync);
 
