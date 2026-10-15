@@ -10,9 +10,9 @@ public sealed class BangumiSubjectMetadataProvider(
 {
     public async Task<SubjectMetadata> GetAsync(int subjectId, CancellationToken cancellationToken = default)
     {
-        var userAgent = configuration["Bangumi:UserAgent"];
+        var userAgent = configuration["UserAgent"];
         if (string.IsNullOrWhiteSpace(userAgent))
-            userAgent = "Banori/0.1.2 (https://github.com/banned2054/Banori)";
+            userAgent = "Banori";
 
         using var httpClient = httpClientFactory.CreateClient("Bangumi");
         using var client = new BangumiClient(new BangumiClientOptions

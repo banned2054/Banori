@@ -166,16 +166,19 @@ internal class Program
         builder.Services.AddSingleton<ISubjectLinkResolver, MikanSubjectLinkResolver>();
         builder.Services.AddSingleton<ISubjectMetadataProvider, BangumiSubjectMetadataProvider>();
         builder.Services.AddScoped<SubjectMetadataCache>();
+        var userAgent = string.IsNullOrWhiteSpace(builder.Configuration["UserAgent"])
+            ? "Banori"
+            : builder.Configuration["UserAgent"]!;
         builder.Services.AddHttpClient("FeedSource", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(30);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Banori/0.1.2");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(userAgent);
         });
         builder.Services.AddHttpClient("Bangumi");
         builder.Services.AddHttpClient("TorrentDownload", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(30);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Banori/0.1.2");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(userAgent);
         });
         builder.Services.AddHostedService<SubscriptionRefreshWorker>();
         builder.Services.AddHostedService<DownloadReconcileWorker>();
