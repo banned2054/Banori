@@ -63,6 +63,9 @@ public sealed record DownloadTaskView
     public          string?            ReplacesNaming   { get; init; }
     public          Guid?              ReplacedByTaskId { get; init; }
     public          string?            ReplacedByNaming { get; init; }
+
+    public bool ShowPendingReplacement => ReplacesNaming is not null &&
+                                          Status is not (DownloadTaskStatus.Completed or DownloadTaskStatus.Replaced);
 }
 
 /// <summary>RSS 链接下载中单个条目的登记结果。</summary>

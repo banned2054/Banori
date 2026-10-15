@@ -153,7 +153,7 @@ else
 						{
 							<div class="text-danger">@task.FailedStep：@task.Error</div>
 						}
-						@if (task.ReplacesNaming is not null)
+						@if (task.ShowPendingReplacement)
 						{
 							<div class="text-body-secondary">完成后将替换：@task.ReplacesNaming</div>
 						}
