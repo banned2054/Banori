@@ -9,7 +9,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Banori.Tests.Data;
+namespace Banori.Tests.Configuration.Data;
 
 /// <summary>
 ///     RemoveOneShotSubscription 迁移的数据验收：一次性订阅及其条目、择优与刷新工作被清除，
@@ -162,8 +162,8 @@ public sealed class RemoveOneShotSubscriptionMigrationTests
             await using var verify = await factory.CreateDbContextAsync();
             // 订阅行含 EF 不再映射的存量列，用原生 SQL 校验。
             var remainingSubscriptionIds = await verify.Database
-                                                       .SqlQueryRaw<Guid>(
-                                                                          "SELECT \"Id\" AS Value FROM \"MediaSubscriptions\"")
+                                                       .SqlQueryRaw<
+                                                            Guid>("SELECT \"Id\" AS Value FROM \"MediaSubscriptions\"")
                                                        .ToListAsync();
             Assert.Equal([regularSubscriptionId], remainingSubscriptionIds);
 

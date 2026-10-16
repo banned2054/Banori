@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Banori.Tests.Data;
+namespace Banori.Tests.Configuration.Data;
 
 public sealed class NamingIngredientsModelConsistencyTests
 {
@@ -56,9 +56,9 @@ public sealed class NamingIngredientsModelConsistencyTests
         Assert.Contains("AddDownloadTaskFiles", migration);
         var fileEntity = db.Model.FindEntityType(typeof(DownloadTaskFile));
         Assert.NotNull(fileEntity);
-        Assert.Contains(fileEntity.GetIndexes(), index => index.IsUnique &&
-                                                          index.Properties.Select(property => property.Name)
-                                                               .SequenceEqual(new[] { "DownloadTaskId", "FileIndex" }));
+        Assert.Contains(fileEntity.GetIndexes(),
+                        index => index.IsUnique && index.Properties.Select(property => property.Name)
+                                                        .SequenceEqual(["DownloadTaskId", "FileIndex"]));
         Assert.Equal(DeleteBehavior.Cascade, Assert.Single(fileEntity.GetForeignKeys()).DeleteBehavior);
     }
 }

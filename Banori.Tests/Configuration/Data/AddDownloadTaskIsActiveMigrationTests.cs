@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Banori.Tests.Data;
+namespace Banori.Tests.Configuration.Data;
 
 /// <summary>
 ///     AddDownloadTaskIsActive 迁移的数据验收：存量任务全部保留，
@@ -122,8 +122,8 @@ public sealed class AddDownloadTaskIsActiveMigrationTests
         }
     }
 
-    private static async Task InsertTaskAsync(ApplicationDbContext db,     Guid           id, string infoHash,
-                                              DownloadTaskStatus   status, DateTimeOffset timestamp)
+    private static async Task InsertTaskAsync(
+        ApplicationDbContext db, Guid id, string infoHash, DownloadTaskStatus status, DateTimeOffset timestamp)
     {
         await db.Database.ExecuteSqlRawAsync("""
                                              INSERT INTO "DownloadTasks"

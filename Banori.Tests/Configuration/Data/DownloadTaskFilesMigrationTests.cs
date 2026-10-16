@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Banori.Tests.Data;
+namespace Banori.Tests.Configuration.Data;
 
 public sealed class DownloadTaskFilesMigrationTests
 {
