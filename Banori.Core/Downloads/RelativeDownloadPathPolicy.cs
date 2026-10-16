@@ -9,18 +9,19 @@ public static class RelativeDownloadPathPolicy
     {
         ArgumentNullException.ThrowIfNull(path);
         var normalized = path.Trim().Replace('\\', '/');
-        if (normalized.Length == 0 || normalized.Length > MaxLength)
+        if (normalized.Length is 0 or > MaxLength)
             throw new ArgumentException($"相对目录必须为 1 至 {MaxLength} 个字符。", nameof(path));
         if (normalized.StartsWith('/') || normalized.Contains(':'))
             throw new ArgumentException("目录必须相对于下载根目录，不能使用绝对路径或盘符。", nameof(path));
 
         var segments = normalized.Split('/');
-        if (segments.Any(segment => segment.Length == 0              || segment is "." or ".." ||
-                                    segment        != segment.Trim() ||
-                                    segment.Any(character => char.IsControl(character) ||
-                                                             "<>\"|?*".Contains(character))))
-            throw new ArgumentException("相对目录不能包含空路径段、.、.. 或无效字符。", nameof(path));
-        return normalized;
+        return segments.Any(segment => segment.Length == 0       ||
+                                       segment is "." or ".."    ||
+                                       segment != segment.Trim() ||
+                                       segment.Any(character => char.IsControl(character) ||
+                                                                "<>\"|?*".Contains(character)))
+            ? throw new ArgumentException("相对目录不能包含空路径段、.、.. 或无效字符。", nameof(path))
+            : normalized;
     }
 
     public static void ValidateDirectories(string mediaDirectory, string seedDirectory)
