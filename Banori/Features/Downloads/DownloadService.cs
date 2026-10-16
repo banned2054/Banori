@@ -523,6 +523,21 @@ public sealed class DownloadService(
                                   },
                                   cancellationToken);
 
+        if (downloadFileService is not null && !string.IsNullOrWhiteSpace(task.DownloadRootPath) &&
+            snapshot.Category is QbittorrentTorrentCategory.Downloading or QbittorrentTorrentCategory.Stopped or
+                                 QbittorrentTorrentCategory.Seeding)
+            try
+            {
+                if (!await downloadFileService.AdoptExistingUnderGateAsync(session, task.Id, snapshot,
+                                                                           cancellationToken))
+                    return;
+            }
+            catch (InvalidOperationException exception)
+            {
+                await MarkFailedAsync(task.Id, task.Status, "文件整理", exception.Message, cancellationToken);
+                return;
+            }
+
         await ApplySnapshotAsync(task.Id, task.Status, snapshot, session, cancellationToken);
     }
 
@@ -970,15 +985,16 @@ public sealed class DownloadService(
         byte[] torrentFile, int? subjectId, CancellationToken cancellationToken)
     {
         if (subjectId is not { } boundSubjectId ||
-            !TorrentFileManifestParser.TryParse(torrentFile, out var manifest)) return;
+            !TorrentDownloadPolicy.TryLoad(torrentFile, out var torrent, out var isMultiFile)) return;
 
         var normalizedTitles = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var file in manifest.Files)
+        foreach (var file in torrent.Files)
         {
-            var extension = Path.GetExtension(file.Path);
+            var path      = TorrentDownloadPolicy.GetRelativePath(torrent, file, isMultiFile);
+            var extension = Path.GetExtension(path);
             if (!ContentFileExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)) continue;
 
-            var parsed = aniParser.Parse(Path.GetFileName(file.Path));
+            var parsed = aniParser.Parse(Path.GetFileName(path));
             if (parsed is null || ReleaseNamePreviewPolicy.FormatEpisodeText(parsed) is null ||
                 string.IsNullOrWhiteSpace(parsed.Title)) continue;
 

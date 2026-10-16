@@ -13,6 +13,7 @@ using Banori.Integrations;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Cryptography;
 using System.Text;
+using Torrent = MonoTorrent.Torrent;
 
 namespace Banori.Features.Downloads;
 
@@ -106,14 +107,13 @@ public sealed class DownloadIntakeService(
         if (!settings.Enabled || !settings.IsConfigured)
             throw new InvalidOperationException("请先在设置页启用并配置 qBittorrent 下载器。");
 
-        if (!TorrentInfoHashExtractor.TryExtractInfoHash(torrentBytes, out var infoHash))
-            throw new InvalidOperationException("无法从种子文件中提取 info-hash，文件可能无效或已损坏。");
+        if (!TorrentDownloadPolicy.TryLoad(torrentBytes, out var torrent, out var isMultiFile))
+            throw new InvalidOperationException("种子元数据无效或不包含受支持的 v1 info-hash。");
 
-        var displayName = TorrentInfoHashExtractor.TryExtractDisplayName(torrentBytes, out var info)
-            ? info
-            : null;
-        var fileTitleCandidates = ParseTorrentFileTitles(torrentBytes);
-        var resolvedSource      = ResolveSiteSource(torrentBytes, null, null, siteSource);
+        var infoHash            = torrent.InfoHashes.V1!.ToHex().ToLowerInvariant();
+        var displayName         = torrent.Name;
+        var fileTitleCandidates = ParseTorrentFileTitles(torrent, isMultiFile);
+        var resolvedSource      = ResolveSiteSource(torrent, null, null, siteSource);
         // 门禁：必须绑定 Bangumi Subject；标题映射未命中且未填 ID 时拒绝登记。
         var uploadedParsed = displayName is null ? null : aniParser.Parse(displayName);
         var binding =
@@ -122,7 +122,8 @@ public sealed class DownloadIntakeService(
             throw new InvalidOperationException(SubjectUnboundMessage);
         var fileTitleFallback = fileTitleCandidates.FirstOrDefault()?.OriginTitle;
         var (namingSnapshot, namingIngredients, namingParsed) =
-            await BuildNamingAsync(displayName, fileTitleFallback, resolvedSource, $"上传种子：{infoHash[..8]}",
+            await BuildNamingAsync(displayName, fileTitleFallback, resolvedSource,
+                                   $"上传种子：{infoHash[..8]}",
                                    uploadedParsed, binding, cancellationToken);
         var directorySettings = await GetDirectoriesAsync(cancellationToken);
 
@@ -156,11 +157,11 @@ public sealed class DownloadIntakeService(
                 // 与 RSS 路径同口径：落选留终止记录承担同 hash 查重，顶替者被删时回退重新排队。
                 var superseded = new DownloadTask
                 {
-                    Id                = Guid.NewGuid(),
-                    InfoHash          = infoHash,
-                    TorrentFile       = torrentBytes,
-                    TorrentUrl        = $"upload://{infoHash}",
-                    SavePath          = SelectSavePath(settings.SavePath, torrentBytes, directorySettings),
+                    Id          = Guid.NewGuid(),
+                    InfoHash    = infoHash,
+                    TorrentFile = torrentBytes,
+                    TorrentUrl  = $"upload://{infoHash}",
+                    SavePath = SelectSavePath(settings.SavePath, torrent, isMultiFile, directorySettings),
                     DownloadRootPath  = settings.SavePath.Trim().TrimEnd('/', '\\'),
                     MediaDirectory    = directorySettings.MediaDirectory,
                     SeedDirectory     = directorySettings.SeedDirectory,
@@ -176,7 +177,7 @@ public sealed class DownloadIntakeService(
                     Status            = DownloadTaskStatus.Replaced,
                     CreatedAtUtc      = timeProvider.GetUtcNow()
                 };
-                AddOriginalFiles(superseded);
+                AddOriginalFiles(superseded, torrent, isMultiFile);
                 db.DownloadTasks.Add(superseded);
                 await db.SaveChangesAsync(cancellationToken);
                 logger.LogInformation("上传种子同集落选，已登记终止记录 {TaskId}（hash {InfoHash}）。",
@@ -189,11 +190,11 @@ public sealed class DownloadIntakeService(
 
         var task = new DownloadTask
         {
-            Id                = Guid.NewGuid(),
-            InfoHash          = infoHash,
-            TorrentFile       = torrentBytes,
-            TorrentUrl        = $"upload://{infoHash}",
-            SavePath          = SelectSavePath(settings.SavePath, torrentBytes, directorySettings),
+            Id          = Guid.NewGuid(),
+            InfoHash    = infoHash,
+            TorrentFile = torrentBytes,
+            TorrentUrl  = $"upload://{infoHash}",
+            SavePath = SelectSavePath(settings.SavePath, torrent, isMultiFile, directorySettings),
             DownloadRootPath  = settings.SavePath.Trim().TrimEnd('/', '\\'),
             MediaDirectory    = directorySettings.MediaDirectory,
             SeedDirectory     = directorySettings.SeedDirectory,
@@ -207,7 +208,7 @@ public sealed class DownloadIntakeService(
             Status            = DownloadTaskStatus.PendingSubmit,
             CreatedAtUtc      = timeProvider.GetUtcNow()
         };
-        AddOriginalFiles(task);
+        AddOriginalFiles(task, torrent, isMultiFile);
         db.DownloadTasks.Add(task);
         // 登记即替换：同事务只翻转现任状态；下载器远端清理留给协调门内对账。
         if (replacesTaskId is { } incumbentId)
@@ -398,16 +399,16 @@ public sealed class DownloadIntakeService(
         FeedSourceItem      item,   ParseResult?   parsed,  string            basePath, Guid? proxyId, string feedHost,
         SelectionRuleConfig config, SubjectBinding binding, CancellationToken cancellationToken)
     {
-        var (torrentBytes, infoHash) = await DownloadTorrentAsync(item.TorrentUri!.AbsoluteUri, proxyId,
-                                                                  cancellationToken);
+        var (torrentBytes, torrent, isMultiFile) = await DownloadTorrentFileAsync(item.TorrentUri!.AbsoluteUri, proxyId,
+            cancellationToken);
+        var infoHash = torrent.InfoHashes.V1!.ToHex().ToLowerInvariant();
 
         // 命名优先按模板渲染（条目标题能被解析出集数时），其次种子内 info.name，均失败回退原始标题。
-        var resolvedSource = ResolveSiteSource(torrentBytes, item.TorrentUri.AbsoluteUri, feedHost, null);
-        var displayName = TorrentInfoHashExtractor.TryExtractDisplayName(torrentBytes, out var info)
-            ? info
-            : null;
+        var resolvedSource = ResolveSiteSource(torrent, item.TorrentUri.AbsoluteUri, feedHost, null);
+        var displayName    = torrent.Name;
         var (namingSnapshot, namingIngredients, namingParsed) =
-            await BuildNamingAsync(item.Title, displayName, resolvedSource, $"RSS 下载：{infoHash[..8]}", parsed,
+            await BuildNamingAsync(item.Title, displayName, resolvedSource,
+                                   $"RSS 下载：{infoHash[..8]}", parsed,
                                    binding, cancellationToken);
         var directorySettings = await GetDirectoriesAsync(cancellationToken);
 
@@ -439,7 +440,7 @@ public sealed class DownloadIntakeService(
                                                  arbitration.SupersededByTaskId);
                 superseded.FailedStep = "择优";
                 superseded.Error      = "同集候选落选，保留终止记录供查重。";
-                AddOriginalFiles(superseded);
+                AddOriginalFiles(superseded, torrent, isMultiFile);
                 db.DownloadTasks.Add(superseded);
                 await db.SaveChangesAsync(cancellationToken);
                 logger.LogInformation("RSS 条目同集落选，已登记终止记录 {TaskId}（hash {InfoHash}）。",
@@ -453,11 +454,12 @@ public sealed class DownloadIntakeService(
         DownloadTask BuildTaskRecord(DownloadTaskStatus status, Guid? replaces, Guid? replacedBy) =>
             new()
             {
-                Id                = Guid.NewGuid(),
-                InfoHash          = infoHash,
-                TorrentFile       = torrentBytes,
-                TorrentUrl        = item.TorrentUri!.AbsoluteUri,
-                SavePath          = SelectSavePath(basePath, torrentBytes, directorySettings),
+                Id          = Guid.NewGuid(),
+                InfoHash    = infoHash,
+                TorrentFile = torrentBytes,
+                TorrentUrl  = item.TorrentUri!.AbsoluteUri,
+                SavePath =
+                    SelectSavePath(basePath, torrent, isMultiFile, directorySettings),
                 DownloadRootPath  = basePath.Trim().TrimEnd('/', '\\'),
                 MediaDirectory    = directorySettings.MediaDirectory,
                 SeedDirectory     = directorySettings.SeedDirectory,
@@ -474,7 +476,7 @@ public sealed class DownloadIntakeService(
             };
 
         var task = BuildTaskRecord(DownloadTaskStatus.PendingSubmit, replacesTaskId, null);
-        AddOriginalFiles(task);
+        AddOriginalFiles(task, torrent, isMultiFile);
         db.DownloadTasks.Add(task);
         // 登记即替换：同事务只翻转现任状态，低优先任务不再进入提交或继续下载；远端清理交由对账。
         if (replacesTaskId is { } incumbentId)
@@ -643,7 +645,7 @@ public sealed class DownloadIntakeService(
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var mappedTitles = await (from mapping in db.SubjectTitleMappings.AsNoTracking()
                                   join media in db.MediaSubjects.AsNoTracking() on mapping.SubjectId equals media.Id
-                                  where normalizedTitles.Contains(mapping.NormalizedTitle)
+                                  where ((IEnumerable<string>)normalizedTitles).Contains(mapping.NormalizedTitle)
                                   select new
                                   {
                                       mapping.NormalizedTitle,
@@ -665,10 +667,11 @@ public sealed class DownloadIntakeService(
     }
 
     /// <summary>按 ByrTorrent 所用的 ParseBatch 路径解析方式，从种子内部文件名提取作品标题候选。</summary>
-    private IReadOnlyList<ParseResult> ParseTorrentFileTitles(byte[] torrentBytes)
+    private IReadOnlyList<ParseResult> ParseTorrentFileTitles(Torrent torrent, bool isMultiFile)
     {
-        if (!TorrentFileManifestParser.TryParse(torrentBytes, out var manifest)) return [];
-        var filePaths = manifest.Files.Select(file => file.Path).ToArray();
+        var filePaths = torrent.Files
+                               .Select(file => TorrentDownloadPolicy.GetRelativePath(torrent, file, isMultiFile))
+                               .ToArray();
         return aniParser.ParseBatch(filePaths)
                         .Where(parsed => !string.IsNullOrWhiteSpace(parsed.Title))
                         .ToArray();
@@ -685,10 +688,17 @@ public sealed class DownloadIntakeService(
     public async Task<(byte[] TorrentBytes, string InfoHash)> DownloadTorrentAsync(
         string torrentUrl, Guid? proxyId, CancellationToken cancellationToken)
     {
+        var (torrentBytes, torrent, _) = await DownloadTorrentFileAsync(torrentUrl, proxyId, cancellationToken);
+        return (torrentBytes, torrent.InfoHashes.V1!.ToHex().ToLowerInvariant());
+    }
+
+    private async Task<(byte[] TorrentBytes, Torrent Torrent, bool IsMultiFile)> DownloadTorrentFileAsync(
+        string torrentUrl, Guid? proxyId, CancellationToken cancellationToken)
+    {
         var torrentBytes = await torrentFileSource.DownloadAsync(new Uri(torrentUrl), proxyId, cancellationToken);
-        return !TorrentInfoHashExtractor.TryExtractInfoHash(torrentBytes, out var infoHash)
-            ? throw new InvalidOperationException("无法从种子文件中提取 info-hash，文件可能无效或已损坏。")
-            : (torrentBytes, infoHash);
+        return !TorrentDownloadPolicy.TryLoad(torrentBytes, out var torrent, out var isMultiFile)
+            ? throw new InvalidOperationException("种子元数据无效或不包含受支持的 v1 info-hash。")
+            : (torrentBytes, torrent, isMultiFile);
     }
 
     /// <summary>
@@ -705,9 +715,13 @@ public sealed class DownloadIntakeService(
         if (await DownloadTaskLookups.FindCompletedDuplicateIdAsync(db, infoHash, cancellationToken) is not null)
             throw new InvalidOperationException("同一资源已有已完成的下载任务。");
 
+        if (!TorrentDownloadPolicy.TryLoad(torrentBytes, out var torrent, out var isMultiFile) ||
+            torrent.InfoHashes.V1!.ToHex().ToLowerInvariant() != infoHash)
+            throw new InvalidOperationException("种子元数据无效或 info-hash 不匹配。");
+
         // 同源同集统一裁决：跨路径（订阅/RSS/上传）互认后按规则比较，现任保留、更优层才顶替；
         // 落选抛出带说明的异常，提交链会把它记入 IntentFailedReason 等待人工处理。
-        var resolvedSource = ResolveSiteSource(torrentBytes, item.TorrentUrl, item.Subscription.FeedUrlProtected, null);
+        var   resolvedSource = ResolveSiteSource(torrent, item.TorrentUrl, item.Subscription.FeedUrlProtected, null);
         Guid? arbitrationReplaces = null;
         if (item.MediaType is not null                                                  &&
             !string.Equals(item.MediaType, "MultipleEpisode", StringComparison.Ordinal) &&
@@ -753,13 +767,13 @@ public sealed class DownloadIntakeService(
         var directorySettings = await GetDirectoriesAsync(cancellationToken);
         var task = new DownloadTask
         {
-            Id                = Guid.NewGuid(),
-            FeedItemId        = item.Id,
-            SubjectId         = item.SubjectId,
-            InfoHash          = infoHash,
-            TorrentFile       = torrentBytes,
-            TorrentUrl        = item.TorrentUrl!,
-            SavePath          = SelectSavePath(settings.SavePath, torrentBytes, directorySettings),
+            Id          = Guid.NewGuid(),
+            FeedItemId  = item.Id,
+            SubjectId   = item.SubjectId,
+            InfoHash    = infoHash,
+            TorrentFile = torrentBytes,
+            TorrentUrl  = item.TorrentUrl!,
+            SavePath = SelectSavePath(settings.SavePath, torrent, isMultiFile, directorySettings),
             DownloadRootPath  = settings.SavePath.Trim().TrimEnd('/', '\\'),
             MediaDirectory    = directorySettings.MediaDirectory,
             SeedDirectory     = directorySettings.SeedDirectory,
@@ -772,7 +786,7 @@ public sealed class DownloadIntakeService(
             CreatedAtUtc      = timeProvider.GetUtcNow(),
             ReplacesTaskId    = replacesTaskId
         };
-        AddOriginalFiles(task);
+        AddOriginalFiles(task, torrent, isMultiFile);
         db.DownloadTasks.Add(task);
         // 订阅事务由调用方提交；此处仅在同一 DbContext 中翻转现任状态，保持原子落库，远端清理由对账承接。
         if (replacesTaskId is { } incumbentId)
@@ -919,50 +933,45 @@ public sealed class DownloadIntakeService(
     ///     来源站点判定：优先读 .torrent 内 tracker（ByrTorrent 同源映射，上传种子也能自动识别），
     ///     依次回退下载地址域名、订阅 feed 主机名、用户手填标注。
     /// </summary>
-    private static string? ResolveSiteSource(byte[]  torrentBytes, string? torrentUrl, string? fallbackHost,
-                                             string? manualSource)
-    {
-        List<string> trackers = [];
-        TorrentInfoHashExtractor.TryExtractTrackerUrls(torrentBytes, trackers);
-        return TorrentSiteSource.FromTrackers(trackers) ??
-               TorrentSiteSource.FromUrl(torrentUrl) ??
-               TorrentSiteSource.FromHost(fallbackHost) ??
-               TorrentSiteSource.Sanitize(manualSource);
-    }
+    private static string? ResolveSiteSource(
+        Torrent torrent, string? torrentUrl, string? fallbackHost, string? manualSource) =>
+        TorrentSiteSource.FromTrackers(torrent.AnnounceUrls.SelectMany(tier => tier)) ??
+        TorrentSiteSource.FromUrl(torrentUrl) ??
+        TorrentSiteSource.FromHost(fallbackHost) ??
+        TorrentSiteSource.Sanitize(manualSource);
 
     private Task<DownloadDirectorySettings> GetDirectoriesAsync(CancellationToken cancellationToken) =>
         directorySettingsStore is null
             ? Task.FromResult(DownloadDirectorySettingsStore.Normalize(null, null))
             : directorySettingsStore.GetAsync(cancellationToken);
 
-    private string SelectSavePath(string basePath, byte[] torrentBytes, DownloadDirectorySettings directories)
+    private string SelectSavePath(string basePath, Torrent torrent, bool isMultiFile,
+                                  DownloadDirectorySettings directories)
     {
         var root = basePath.Trim().Replace('\\', '/').TrimEnd('/');
-        if (!TorrentFileManifestParser.TryParse(torrentBytes, out var manifest))
-            throw new InvalidOperationException("无法读取种子文件清单，不能安全决定下载目录。");
         var policy = fileClassificationPolicy ?? new DownloadFileClassificationPolicy(aniParser);
-        var hasSeed =
-            manifest.Files.Any(file => policy.Classify(file.Path).Kind == Core.Downloads.DownloadFileKind.Seed);
+        var hasSeed = torrent.Files.Any(file => policy.Classify(
+            TorrentDownloadPolicy.GetRelativePath(torrent, file, isMultiFile)).Kind == Core.Downloads.DownloadFileKind.Seed);
         return hasSeed ? root : DownloadPathNamePolicy.JoinSavePath(root, directories.MediaDirectory);
     }
 
-    private void AddOriginalFiles(DownloadTask task)
+    private void AddOriginalFiles(DownloadTask task, Torrent torrent, bool isMultiFile)
     {
-        if (!TorrentFileManifestParser.TryParse(task.TorrentFile, out var manifest))
-            throw new InvalidOperationException("无法读取种子文件清单，不能记录原始路径。");
         var policy = fileClassificationPolicy ?? new DownloadFileClassificationPolicy(aniParser);
-        foreach (var file in manifest.Files)
+        for (var index = 0; index < torrent.Files.Count; index++)
         {
-            var classification = policy.Classify(file.Path);
-            var extension      = Path.GetExtension(file.Path);
+            var file = torrent.Files[index];
+            var path = TorrentDownloadPolicy.GetRelativePath(torrent, file, isMultiFile);
+            var classification = policy.Classify(path);
+            var extension = Path.GetExtension(path);
             var subtitle = extension.Equals(".ass", StringComparison.OrdinalIgnoreCase) ||
                            extension.Equals(".ssa", StringComparison.OrdinalIgnoreCase) ||
                            extension.Equals(".srt", StringComparison.OrdinalIgnoreCase) ||
                            extension.Equals(".sup", StringComparison.OrdinalIgnoreCase);
             task.Files.Add(new DownloadTaskFile
             {
-                Id = Guid.NewGuid(), DownloadTaskId = task.Id, FileIndex = file.Index,
-                OriginalRelativePath = file.Path, CurrentRelativePath = file.Path, Size = file.Length,
+                Id = Guid.NewGuid(), DownloadTaskId = task.Id, FileIndex = index,
+                OriginalRelativePath = path, CurrentRelativePath = path, Size = file.Length,
                 Kind = classification.Kind == Core.Downloads.DownloadFileKind.Seed ? DownloadFileKind.Seed :
                     subtitle ? DownloadFileKind.Subtitle : DownloadFileKind.Anime,
                 ClassificationReason = classification.Reason, UpdatedAtUtc = timeProvider.GetUtcNow()
@@ -997,4 +1006,5 @@ public sealed class DownloadIntakeService(
         Guid?   ReplacesTaskId,
         string? SkipReason,
         Guid?   SupersededByTaskId = null);
+
 }

@@ -28,7 +28,7 @@ public sealed class DownloadFileClassificationPolicy(AniParser aniParser)
 
     public DownloadFileClassification Classify(string path)
     {
-        var normalized = RelativeDownloadPathPolicy.Normalize(path);
+        var normalized = path.Replace('\\', '/');
         var fileName   = normalized[(normalized.LastIndexOf('/') + 1)..];
         var extension  = Path.GetExtension(fileName);
         if (!ContentExtensions.Contains(extension)) return Seed("不支持的正片扩展名");

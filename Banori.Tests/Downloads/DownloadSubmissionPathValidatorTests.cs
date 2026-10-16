@@ -212,11 +212,12 @@ public sealed class DownloadSubmissionPathValidatorTests
         var bytes = TestTorrentBytes.Create(name);
         if (length != 1024)
             bytes = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(bytes).Replace("i1024e", "i" + length + "e"));
-        Assert.True(TorrentInfoHashExtractor.TryExtractInfoHash(bytes, out var hash));
+        Assert.True(TorrentDownloadPolicy.TryLoad(bytes, out var torrent, out _));
         return new DownloadTask
         {
-            Id               = Guid.NewGuid(), InfoHash = hash, TorrentFile = bytes, SavePath = root,
-            DownloadRootPath = "/downloads", Status     = DownloadTaskStatus.PendingSubmit
+            Id = Guid.NewGuid(), InfoHash = torrent.InfoHashes.V1!.ToHex().ToLowerInvariant(), TorrentFile = bytes,
+            SavePath = root,
+            DownloadRootPath = "/downloads", Status = DownloadTaskStatus.PendingSubmit
         };
     }
 
@@ -229,21 +230,28 @@ public sealed class DownloadSubmissionPathValidatorTests
 
     private static byte[] MultiTorrent(string name, params string[] paths)
     {
-        static string B(string value) => Encoding.UTF8.GetByteCount(value) + ":" + value;
-
+        const int pieceLength = 16384;
+        var       totalLength = paths.LongLength * 1024;
+        var       pieceCount  = checked((int)((totalLength + pieceLength - 1) / pieceLength));
+        var       pieces      = new string('0', checked(pieceCount * 20));
         var files = string.Concat(paths.Select(path => "d6:lengthi1024e4:pathl"                 +
                                                        string.Concat(path.Split('/').Select(B)) + "ee"));
-        return Encoding.UTF8.GetBytes("d4:infod5:filesl" + files + "e4:name" + B(name) + "12:piece lengthi16384eee");
+        return Encoding.UTF8.GetBytes("d4:infod5:filesl" + files + "e4:name" + B(name) +
+                                      $"12:piece lengthi{pieceLength}e6:pieces{B(pieces)}ee");
+
+        static string B(string value) => Encoding.UTF8.GetByteCount(value) + ":" + value;
     }
 
     private sealed class Harness : IAsyncDisposable
     {
-        private readonly SqliteConnection                        _connection = new("Data Source=:memory:");
-        public           IDbContextFactory<ApplicationDbContext> Factory   { get; private set; } = null!;
-        public           DownloadSubmissionPathValidator         Validator { get; private set; } = null!;
-        public           DownloadTask                            Task      { get; } = NewTask("episode.mkv");
-        public           FakeTorrentStore                        Store     { get; } = new();
-        public           FakeQbittorrentSession                  Session   { get; private set; } = null!;
+        private readonly SqliteConnection _connection = new("Data Source=:memory:");
+
+        public IDbContextFactory<ApplicationDbContext> Factory { get; private set; } = null!;
+
+        public DownloadSubmissionPathValidator Validator { get; private set; } = null!;
+        public DownloadTask                    Task      { get; }              = NewTask("episode.mkv");
+        public FakeTorrentStore                Store     { get; }              = new();
+        public FakeQbittorrentSession          Session   { get; private set; } = null!;
 
         public async ValueTask DisposeAsync()
         {

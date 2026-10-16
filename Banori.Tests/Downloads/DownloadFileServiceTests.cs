@@ -20,17 +20,18 @@ namespace Banori.Tests.Downloads;
 public sealed class DownloadFileServiceTests
 {
     [Fact]
-    public async Task Initialize_UsesMetadataOriginalAndStableIndex_NotResponseOrder()
+    public async Task Initialize_MatchesOriginalPathsRegardlessOfRemoteIndicesOrResponseOrder()
     {
-        await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv",
-                                                 "【喵萌奶茶屋】[Test Anime][02][1080p][简日双语].mkv");
+        const string    first  = "Original/【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv";
+        const string    second = "Original/【喵萌奶茶屋】[Test Anime][02][1080p][简日双语].mkv";
+        await using var h      = await Harness.Create(first["Original/".Length..], second["Original/".Length..]);
         h.Store.FileIdentities[h.Task.InfoHash] =
-            [new TorrentFileSnapshot(1, "changed-two.mkv", 1025), new TorrentFileSnapshot(0, "changed-one.mkv", 1024)];
+            [new TorrentFileSnapshot(8, second, 1025), new TorrentFileSnapshot(19, first, 1024)];
         await h.Service.InitializeAsync(h.Task.Id);
         var view = await h.Service.ListAsync(h.Task.Id);
-        Assert.Equal("Original/【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv", view.Files[0].OriginalPath);
-        Assert.Equal("changed-one.mkv", view.Files[0].CurrentPath);
-        Assert.Equal("changed-two.mkv", view.Files[1].CurrentPath);
+        Assert.Equal(first, view.Files.Single(file => file.OriginalPath  == first).CurrentPath);
+        Assert.Equal(second, view.Files.Single(file => file.OriginalPath == second).CurrentPath);
+        Assert.Equal(2, view.Files.Select(file => file.Index).Distinct().Count());
         Assert.Empty(h.Store.RenameFileCalls);
     }
 
@@ -47,14 +48,140 @@ public sealed class DownloadFileServiceTests
     }
 
     [Theory]
-    [InlineData(-1, 1024)]
-    [InlineData(0, 99)]
-    public async Task Initialize_InvalidIndexOrSizeRejects(int index, long size)
+    [InlineData("renamed.mkv", 1024)]
+    [InlineData("Original/video.mkv", 99)]
+    [InlineData("original/video.mkv", 1024)]
+    public async Task Initialize_UnknownPathWrongSizeOrCaseRejectsWithoutInventingOriginal(string path, long size)
     {
-        await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
-        h.Store.FileIdentities[h.Task.InfoHash] = [new TorrentFileSnapshot(index, "renamed.mkv", size)];
+        await using var h = await Harness.Create("video.mkv");
+        h.Store.FileIdentities[h.Task.InfoHash] = [new TorrentFileSnapshot(0, path, size)];
         await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.InitializeAsync(h.Task.Id));
         Assert.Empty((await h.Load()).Files);
+        Assert.Empty(h.Store.RenameFileCalls);
+    }
+
+    [Fact]
+    public async Task Initialize_NormalizesRemoteSeparatorsBeforeMatching()
+    {
+        await using var h = await Harness.Create("Extras/notes.txt");
+        h.Store.FileIdentities[h.Task.InfoHash] = [new TorrentFileSnapshot(12, "Original\\Extras\\notes.txt", 1024)];
+        await h.Service.InitializeAsync(h.Task.Id);
+        Assert.Equal("Original/Extras/notes.txt", (await h.Load()).Files.Single().CurrentRelativePath);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Initialize_MissingOrAdditionalRemoteFileRejects(bool extra)
+    {
+        await using var h = await Harness.Create("video.mkv");
+        if (extra) h.Store.FileIdentities[h.Task.InfoHash].Add(new TorrentFileSnapshot(90, ".pad/123", 123));
+        else h.Store.FileIdentities[h.Task.InfoHash].Clear();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.InitializeAsync(h.Task.Id));
+        Assert.Empty((await h.Load()).Files);
+        Assert.Empty(h.Store.RenameFileCalls);
+    }
+
+    [Fact]
+    public async Task Initialize_DuplicateNormalizedRemotePathsRejectBeforePersistingFiles()
+    {
+        await using var h = await Harness.Create("one.mkv", "two.mkv");
+        h.Store.FileIdentities[h.Task.InfoHash] =
+        [
+            new TorrentFileSnapshot(7, "Original/one.mkv", 1024),
+            new TorrentFileSnapshot(22, "Original\\one.mkv", 1025)
+        ];
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.InitializeAsync(h.Task.Id));
+        Assert.Empty((await h.Load()).Files);
+    }
+
+    [Fact]
+    public async Task Initialize_ZeroLengthReorderingPreservesExistingKeysOverridesAndOriginals()
+    {
+        const string    first   = "【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv";
+        const string    second  = "【喵萌奶茶屋】[Test Anime][02][1080p][简日双语].mkv";
+        await using var h       = await Harness.CreateWithFiles((first, 1024), ("empty.txt", 0), (second, 1024));
+        var             firstId = Guid.NewGuid();
+        var             emptyId = Guid.NewGuid();
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            db.DownloadTaskFiles.AddRange(new DownloadTaskFile
+                                          {
+                                              Id = firstId, DownloadTaskId = h.Task.Id, FileIndex = 42,
+                                              OriginalRelativePath = "Original/" + first,
+                                              CurrentRelativePath = "Manual/E07.mkv", Size = 1024,
+                                              Kind = DownloadFileKind.Anime, IsManualOverride = true,
+                                              EpisodeNumberOverride = 7,
+                                              AnimeRelativePathOverride = "Manual/E07.mkv",
+                                              ClassificationReason = "人工分类"
+                                          },
+                                          new DownloadTaskFile
+                                          {
+                                              Id                   = emptyId, DownloadTaskId = h.Task.Id, FileIndex = 0,
+                                              OriginalRelativePath = "Original/empty.txt",
+                                              CurrentRelativePath  = "Original/empty.txt", Size                  = 0,
+                                              Kind                 = DownloadFileKind.Seed, ClassificationReason = "未识别"
+                                          });
+            await db.SaveChangesAsync();
+        }
+
+        h.Store.FileIdentities[h.Task.InfoHash] =
+        [
+            new TorrentFileSnapshot(101, "Original/" + second, 1024),
+            new TorrentFileSnapshot(88, "Original/empty.txt", 0),
+            new TorrentFileSnapshot(5, "Manual/E07.mkv", 1024)
+        ];
+        await h.Service.InitializeAsync(h.Task.Id);
+        var initialized = await h.Load();
+        var firstFile   = initialized.Files.Single(file => file.Id == firstId);
+        Assert.Equal(42, firstFile.FileIndex);
+        Assert.Equal("Original/" + first, firstFile.OriginalRelativePath);
+        Assert.Equal("Manual/E07.mkv", firstFile.CurrentRelativePath);
+        Assert.True(firstFile.IsManualOverride);
+        Assert.Equal(7m, firstFile.EpisodeNumberOverride);
+        Assert.Equal("Manual/E07.mkv", firstFile.AnimeRelativePathOverride);
+        Assert.Equal(0, initialized.Files.Single(file => file.Id               == emptyId).FileIndex);
+        var added = initialized.Files.Single(file => file.OriginalRelativePath == "Original/" + second);
+        Assert.Equal(1, added.FileIndex); // Lowest unused internal key, not the metadata or qB index.
+        Assert.Equal(3, initialized.Files.Select(file => file.FileIndex).Distinct().Count());
+
+        // Re-reading library metadata and a remote reindex must not rewrite legacy keys.
+        h.Store.FileIdentities[h.Task.InfoHash] = h.Store.FileIdentities[h.Task.InfoHash]
+                                                   .AsEnumerable().Reverse()
+                                                   .Select((file, i) => file with { Index = 200 + i }).ToList();
+        await h.Service.InitializeAsync(h.Task.Id);
+        var reinitialized = await h.Load();
+        Assert.Equal(42, reinitialized.Files.Single(file => file.Id              == firstId).FileIndex);
+        Assert.Equal(0, reinitialized.Files.Single(file => file.Id               == emptyId).FileIndex);
+        Assert.Equal(added.Id, reinitialized.Files.Single(file => file.FileIndex == added.FileIndex).Id);
+
+        var edited = await h.Service.ApplyAsync(h.Task.Id, 42,
+                                                new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 8));
+        Assert.Equal("Media/Anime/E08.mkv", edited.Files.Single(file => file.Index == 42).CurrentPath);
+        Assert.Equal("Original/" + first,
+                     (await h.Load()).Files.Single(file => file.Id == firstId).OriginalRelativePath);
+    }
+
+    [Theory]
+    [InlineData("Original/missing.mkv", 1024)]
+    [InlineData("Original/video.mkv", 1025)]
+    public async Task Initialize_PersistedOriginalPathAndSizeMustMatchMetadata(string path, long size)
+    {
+        await using var h = await Harness.Create("video.mkv");
+        await h.Service.InitializeAsync(h.Task.Id);
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var file = await db.DownloadTaskFiles.SingleAsync();
+            file.OriginalRelativePath = path;
+            file.Size                 = size;
+            await db.SaveChangesAsync();
+        }
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.InitializeAsync(h.Task.Id));
+        var persisted = (await h.Load()).Files.Single();
+        Assert.Equal(path, persisted.OriginalRelativePath);
+        Assert.Equal(size, persisted.Size);
+        Assert.Empty(h.Store.RenameFileCalls);
     }
 
     [Fact]
@@ -96,7 +223,8 @@ public sealed class DownloadFileServiceTests
         await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
         await h.Service.InitializeAsync(h.Task.Id);
         var preview =
-            await h.Service.PreviewAsync(h.Task.Id, 0, new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 2.5m));
+            await h.Service.PreviewAsync(h.Task.Id, 0,
+                                         new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 2.5m));
         Assert.Equal("/downloads/Media/Anime/E02.5.mkv", preview.TargetPath);
         Assert.Equal("/downloads/Media/Anime/Original/【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv", preview.CurrentPath);
         Assert.Null((await h.Load()).Files.Single().EpisodeNumberOverride);
@@ -108,7 +236,8 @@ public sealed class DownloadFileServiceTests
     public async Task AnimeUiKind_ForSubtitlePreservesCompoundLanguageSuffix()
     {
         await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].chi.jp.ass");
-        var view = await h.Service.ApplyAsync(h.Task.Id, 0, new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 3));
+        var view = await h.Service.ApplyAsync(h.Task.Id, 0,
+                                              new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 3));
         Assert.Equal(DownloadFileKind.Subtitle, view.Files.Single().Kind);
         Assert.Equal("E03.chi.jp.ass", view.Files.Single().CurrentPath);
     }
@@ -157,6 +286,9 @@ public sealed class DownloadFileServiceTests
         Assert.All(pending.Files, file => Assert.NotNull(file.PendingRenameTo));
         Assert.False(await h.Service.ArchiveCompletedAsync(h.Task.Id));
         h.Store.CompleteMoves();
+        h.Store.FileIdentities[h.Task.InfoHash] = h.Store.FileIdentities[h.Task.InfoHash]
+                                                   .AsEnumerable().Reverse()
+                                                   .Select((file, i) => file with { Index = 90 + i }).ToList();
         Assert.True(await h.Service.ArchiveCompletedAsync(h.Task.Id));
         var complete = await h.Load();
         Assert.Null(complete.PendingSavePath);
@@ -193,13 +325,16 @@ public sealed class DownloadFileServiceTests
         await h.Service.InitializeAsync(h.Task.Id);
         h.Store.AfterRenameFile = () => h.FailSave.Enabled = true;
         await Assert.ThrowsAsync<DbUpdateException>(() => h.Service.ApplyAsync(h.Task.Id, 0,
-                                                                               new DownloadFileEditRequest(DownloadFileKind
-                                                                                  .Anime, Episode : 4)));
+                                                                               new
+                                                                                   DownloadFileEditRequest(DownloadFileKind
+                                                                                      .Anime, Episode : 4)));
         h.FailSave.Enabled      = false;
         h.Store.AfterRenameFile = null;
         var pending = await h.Load();
         Assert.NotNull(pending.Files.Single().PendingRenameTo);
         Assert.Equal(4m, pending.Files.Single().EpisodeNumberOverride);
+        h.Store.FileIdentities[h.Task.InfoHash][0] = h.Store.FileIdentities[h.Task.InfoHash][0] with { Index = 77 };
+        await h.Service.InitializeAsync(h.Task.Id);
         using (await h.Gate.EnterAsync())
         await using (var session = await h.Sessions.CreateAsync())
         {
@@ -208,6 +343,135 @@ public sealed class DownloadFileServiceTests
 
         Assert.Single(h.Store.RenameFileCalls);
         Assert.Equal("E04.mkv", (await h.Load()).Files.Single().CurrentRelativePath);
+    }
+
+    [Fact]
+    public async Task Apply_RemoteReindexAfterEveryRenameDoesNotChangeInternalEditKeys()
+    {
+        await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv",
+                                                 "【喵萌奶茶屋】[Test Anime][02][1080p][简日双语].mkv");
+        await h.Service.InitializeAsync(h.Task.Id);
+        var originals = (await h.Load()).Files.ToDictionary(file => file.FileIndex, file => file.Id);
+        var nextIndex = 50;
+        h.Store.AfterRenameFile = () =>
+            h.Store.FileIdentities[h.Task.InfoHash] = h.Store.FileIdentities[h.Task.InfoHash]
+                                                       .AsEnumerable().Reverse()
+                                                       .Select(file => file with { Index = nextIndex++ }).ToList();
+        await h.Service.ApplyAsync(h.Task.Id, 0, new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 3));
+        var view = await h.Service.ApplyAsync(h.Task.Id, 1,
+                                              new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 4));
+        Assert.Equal("E03.mkv", view.Files.Single(file => file.Index == 0).CurrentPath);
+        Assert.Equal("E04.mkv", view.Files.Single(file => file.Index == 1).CurrentPath);
+        Assert.All((await h.Load()).Files, file => Assert.Equal(originals[file.FileIndex], file.Id));
+        Assert.All(h.Store.FileIdentities[h.Task.InfoHash], file => Assert.True(file.Index >= 50));
+        Assert.Empty(h.Store.SetLocationCalls);
+    }
+
+    [Fact]
+    public async Task PendingRecovery_PartiallyRenamedEqualSizeFilesMatchFromOrToAfterReindex()
+    {
+        const string    first  = "【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv";
+        const string    second = "【喵萌奶茶屋】[Test Anime][02][1080p][简日双语].mkv";
+        await using var h      = await Harness.CreateWithFiles((first, 1024), (second, 1024));
+        await h.Service.InitializeAsync(h.Task.Id);
+        h.Store.AfterRenameFile = () => throw new IOException("Injected lost rename response");
+        await Assert.ThrowsAsync<IOException>(() => h.Service.ApplyAsync(h.Task.Id, 0,
+                                                                         new DownloadFileEditRequest(
+                                                                          DownloadFileKind.Anime, Episode : 3)));
+        h.Store.AfterRenameFile = null;
+        var pending = await h.Load();
+        Assert.All(pending.Files, file => Assert.NotNull(file.PendingRenameTo));
+        Assert.Contains(h.Store.FileIdentities[h.Task.InfoHash], file => file.Path == "E03.mkv");
+        Assert.Contains(h.Store.FileIdentities[h.Task.InfoHash], file => file.Path == "Original/" + second);
+        h.Store.FileIdentities[h.Task.InfoHash] = h.Store.FileIdentities[h.Task.InfoHash]
+                                                   .AsEnumerable().Reverse()
+                                                   .Select((file, i) => file with { Index = 80 + i }).ToList();
+        // Initialize must also accept a half-executed durable journal, without comparing metadata and qB indices.
+        await h.Service.InitializeAsync(h.Task.Id);
+        using (await h.Gate.EnterAsync())
+        await using (var session = await h.Sessions.CreateAsync())
+        {
+            Assert.True(await h.Service.RecoverPendingUnderGateAsync(session, h.Task.Id));
+        }
+
+        Assert.Equal(2, h.Store.RenameFileCalls.Count);
+        Assert.Single(h.Store.RenameFileCalls, call => call.NewPath == "E03.mkv");
+        Assert.Single(h.Store.RenameFileCalls, call => call.NewPath == "E02.mkv");
+        Assert.All((await h.Load()).Files, file =>
+        {
+            Assert.Null(file.PendingRenameFrom);
+            Assert.Null(file.PendingRenameTo);
+        });
+    }
+
+    [Theory]
+    [InlineData("third-path")]
+    [InlineData("wrong-size")]
+    [InlineData("extra")]
+    [InlineData("missing")]
+    [InlineData("duplicate-path")]
+    [InlineData("both-from-and-to")]
+    [InlineData("reused-file")]
+    public async Task PendingRecovery_UnmatchedOrAmbiguousFilesRejectBeforeAnySideEffect(string invalid)
+    {
+        await using var h = await Harness.CreateWithFiles(("one.txt", 1024), ("two.txt", 1024));
+        await h.Service.InitializeAsync(h.Task.Id);
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var task = await db.DownloadTasks.Include(task => task.Files).SingleAsync();
+            task.PendingSavePath = "/downloads";
+            foreach (var file in task.Files)
+            {
+                file.PendingRenameFrom = file.CurrentRelativePath;
+                file.PendingRenameTo   = "Archived/" + file.FileIndex + ".txt";
+            }
+
+            if (invalid == "reused-file")
+                task.Files.Single(file => file.FileIndex == 1).PendingRenameFrom = "Original/one.txt";
+            await db.SaveChangesAsync();
+        }
+
+        h.Store.FileIdentities[h.Task.InfoHash] =
+        [
+            new TorrentFileSnapshot(71, "Original/one.txt", 1024),
+            new TorrentFileSnapshot(99, "Original/two.txt", 1024)
+        ];
+        var files = h.Store.FileIdentities[h.Task.InfoHash];
+        switch (invalid)
+        {
+            case "third-path" :
+                files[1] = files[1] with { Path = "external.txt" };
+                break;
+            case "wrong-size" :
+                files[1] = files[1] with { Size = 999 };
+                break;
+            case "extra" :
+                files.Add(new TorrentFileSnapshot(100, ".pad/123", 123));
+                break;
+            case "missing" :
+                files.RemoveAt(1);
+                break;
+            case "duplicate-path" :
+                files[1] = files[1] with { Path = "Original\\one.txt" };
+                break;
+            case "both-from-and-to" :
+                files[1] = files[1] with { Path = "Archived/0.txt" };
+                break;
+        }
+
+        using (await h.Gate.EnterAsync())
+        await using (var session = await h.Sessions.CreateAsync())
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                                                                    h.Service.RecoverPendingUnderGateAsync(session,
+                                                                        h.Task.Id));
+        }
+
+        Assert.Empty(h.Store.RenameFileCalls);
+        Assert.Empty(h.Store.SetLocationCalls);
+        var pending = await h.Load();
+        Assert.NotNull(pending.PendingSavePath);
+        Assert.All(pending.Files, file => Assert.NotNull(file.PendingRenameTo));
     }
 
     [Fact]
@@ -247,8 +511,9 @@ public sealed class DownloadFileServiceTests
         await h.Service.InitializeAsync(h.Task.Id);
         h.Store.AfterRenameFile = () => h.FailSave.Enabled = true;
         await Assert.ThrowsAsync<DbUpdateException>(() => h.Service.ApplyAsync(h.Task.Id, 0,
-                                                                               new DownloadFileEditRequest(DownloadFileKind
-                                                                                  .Anime, Episode : 4)));
+                                                                               new
+                                                                                   DownloadFileEditRequest(DownloadFileKind
+                                                                                      .Anime, Episode : 4)));
         h.FailSave.Enabled      = false;
         h.Store.AfterRenameFile = null;
         await using (var db = await h.Factory.CreateDbContextAsync())
@@ -302,9 +567,10 @@ public sealed class DownloadFileServiceTests
     {
         await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
         await Assert.ThrowsAsync<ArgumentException>(() => h.Service.ApplyAsync(h.Task.Id, 0,
-                                                                               new DownloadFileEditRequest(DownloadFileKind
-                                                                                      .Anime,
-                                                                                   AnimeRelativePath : path)));
+                                                                               new
+                                                                                   DownloadFileEditRequest(DownloadFileKind
+                                                                                          .Anime,
+                                                                                       AnimeRelativePath : path)));
         Assert.Empty(h.Store.RenameFileCalls);
     }
 
@@ -554,7 +820,10 @@ public sealed class DownloadFileServiceTests
             return ValueTask.CompletedTask;
         }
 
-        public static async Task<Harness> Create(params string[] names)
+        public static Task<Harness> Create(params string[] names) =>
+            CreateWithFiles(names.Select((name, index) => (name, 1024L + index)).ToArray());
+
+        public static async Task<Harness> CreateWithFiles(params (string Path, long Size)[] files)
         {
             var h = new Harness();
             var options = new DbContextOptionsBuilder<ApplicationDbContext>()
@@ -569,11 +838,12 @@ public sealed class DownloadFileServiceTests
                                                 new DownloadFileClassificationPolicy(parser), parser,
                                                 new ReleaseNamePreviewPolicy(),
                                                 new SubjectEpisodeCorrectionPolicy(), TimeProvider.System);
-            var bytes = MultiTorrent(names);
-            Assert.True(TorrentInfoHashExtractor.TryExtractInfoHash(bytes, out var hash));
+            var bytes = MultiTorrent(files);
+            Assert.True(TorrentDownloadPolicy.TryLoad(bytes, out var torrent, out _));
+            var infoHash = torrent.InfoHashes.V1!.ToHex().ToLowerInvariant();
             h.Task = new DownloadTask
             {
-                Id = Guid.NewGuid(), InfoHash = hash, TorrentFile = bytes, SavePath = "/downloads/Media/Anime",
+                Id = Guid.NewGuid(), InfoHash = infoHash, TorrentFile = bytes, SavePath = "/downloads/Media/Anime",
                 DownloadRootPath = "/downloads", MediaDirectory = "Media/Anime", SeedDirectory = "Seed",
                 NamingSnapshot = "Anime", Episode = 1, Status = DownloadTaskStatus.Downloading,
                 NamingIngredients =
@@ -587,9 +857,9 @@ public sealed class DownloadFileServiceTests
                 await db.SaveChangesAsync();
             }
 
-            h.Store.AddTorrent(hash, "Original", QbittorrentTorrentCategory.Seeding, 1, h.Task.SavePath);
-            h.Store.FileIdentities[hash] =
-                names.Select((name, i) => new TorrentFileSnapshot(i, "Original/" + name, 1024 + i)).ToList();
+            h.Store.AddTorrent(infoHash, "Original", QbittorrentTorrentCategory.Seeding, 1, h.Task.SavePath);
+            h.Store.FileIdentities[infoHash] =
+                files.Select((file, i) => new TorrentFileSnapshot(i, "Original/" + file.Path, file.Size)).ToList();
             return h;
         }
 
@@ -608,14 +878,17 @@ public sealed class DownloadFileServiceTests
             await db.SaveChangesAsync();
         }
 
-        private static byte[] MultiTorrent(string[] names)
+        private static byte[] MultiTorrent((string Path, long Size)[] entries)
         {
             static string B(string text) => Encoding.UTF8.GetByteCount(text) + ":" + text;
 
-            var files = string.Concat(names.Select((name, index) =>
-                                                       "d6:lengthi" + (1024 + index) + "e4:pathl" +
-                                                       string.Concat(name.Split('/').Select(B)) + "ee"));
-            return Encoding.UTF8.GetBytes("d4:infod5:filesl" + files + "e4:name8:Original12:piece lengthi16384eee");
+            var files = string.Concat(entries.Select(file =>
+                                                         "d6:lengthi" + file.Size + "e4:pathl" +
+                                                         string.Concat(file.Path.Split('/').Select(B)) + "ee"));
+            var pieceCount = (entries.Sum(file => file.Size) + 16383) / 16384;
+            var pieces     = new string('0', checked((int)pieceCount * 20));
+            return Encoding.UTF8.GetBytes("d4:infod5:filesl"                                + files     +
+                                          "e4:name8:Original12:piece lengthi16384e6:pieces" + B(pieces) + "ee");
         }
     }
 }

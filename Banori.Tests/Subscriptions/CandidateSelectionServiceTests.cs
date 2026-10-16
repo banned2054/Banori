@@ -1148,13 +1148,13 @@ public sealed class CandidateSelectionServiceTests
             await using var db           = await CreateDbContextAsync();
             var             item         = await db.FeedItems.SingleAsync(value => value.Id == itemId);
             var             torrentBytes = CreateSelectionTorrentBytes(item.StableId);
-            Assert.True(TorrentInfoHashExtractor.TryExtractInfoHash(torrentBytes, out var infoHash));
+            Assert.True(TorrentDownloadPolicy.TryLoad(torrentBytes, out var torrent, out _));
             db.DownloadTasks.Add(new DownloadTask
             {
                 Id             = Guid.NewGuid(),
                 FeedItemId     = itemId,
                 SubjectId      = SubjectId,
-                InfoHash       = infoHash,
+                InfoHash       = torrent.InfoHashes.V1!.ToHex().ToLowerInvariant(),
                 TorrentFile    = torrentBytes,
                 TorrentUrl     = item.TorrentUrl!,
                 SavePath       = "/downloads/test",

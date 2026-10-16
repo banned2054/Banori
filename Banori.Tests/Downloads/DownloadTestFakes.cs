@@ -88,7 +88,7 @@ public sealed class FakeTorrentStore
     }
 }
 
-/// <summary>假会话：把提交直接登记进 FakeTorrentStore，用 Core 提取器从字节推导 hash。</summary>
+/// <summary>假会话：把提交直接登记进 FakeTorrentStore，用 TorrentDownloadPolicy 从字节推导 hash。</summary>
 public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorrentSession
 {
     /// <summary>设置后 AddTorrent 抛出该异常，模拟协议错误。</summary>
@@ -128,8 +128,8 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
 
         if (AddException is not null) throw AddException;
 
-        var hash = TorrentInfoHashExtractor.TryExtractInfoHash(torrentBytes, out var infoHash)
-            ? infoHash
+        var hash = TorrentDownloadPolicy.TryLoad(torrentBytes, out var torrent, out _)
+            ? torrent.InfoHashes.V1!.ToHex().ToLowerInvariant()
             : throw new InvalidOperationException("测试种子字节无效。");
 
         if (FailOnDuplicate && store.Torrents.ContainsKey(hash)) return "Fails.";
@@ -174,8 +174,8 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
                                                                     .Where(snapshot => tag is null ||
                                                                                SnapshotFor(snapshot.Hash)
                                                                                   .Tags.Contains(tag,
-                                                                                       StringComparer
-                                                                                          .OrdinalIgnoreCase))
+                                                                                            StringComparer
+                                                                                               .OrdinalIgnoreCase))
                                                                     .Select(snapshot => SnapshotFor(snapshot.Hash))
                                                                     .ToList());
     }
@@ -203,8 +203,8 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
             return Task.FromResult<IReadOnlyList<TorrentFileSnapshot>>(files.ToList());
         return Task.FromResult<IReadOnlyList<TorrentFileSnapshot>>(store.Files.TryGetValue(infoHash, out var names)
                                                                        ? names.Select((name, index) =>
-                                                                           new TorrentFileSnapshot(index, name,
-                                                                               1024)).ToList()
+                                                                                    new TorrentFileSnapshot(index, name,
+                                                                                             1024)).ToList()
                                                                        : []);
     }
 
@@ -376,18 +376,18 @@ public static class TestTorrentBytes
 {
     public static byte[] Create(string name = "Test Anime - 01", string? announce = null)
     {
-        var announceText = announce ?? "http://tracker.example/announce";
-        return Encoding.UTF8.GetBytes(
-                                      $"d8:announce{Encoding.UTF8.GetByteCount(announceText)}:{announceText}" +
-                                      "4:infod6:lengthi1024e"                                                 +
-                                      $"4:name{Encode(name)}"                                                 +
-                                      "12:piece lengthi16384e"                                                +
-                                      "ee");
+        const int length       = 1024;
+        const int pieceLength  = 16384;
+        var       announceText = announce ?? "http://tracker.example/announce";
+        var       pieces       = new string('0', (length + pieceLength - 1) / pieceLength * 20);
+        return Encoding.UTF8.GetBytes($"d8:announce{Encode(announceText)}"             +
+                                      $"4:infod6:lengthi{length}e4:name{Encode(name)}" +
+                                      $"12:piece lengthi{pieceLength}e6:pieces{Encode(pieces)}ee");
     }
 
     public static string InfoHashOf(string name) =>
-        TorrentInfoHashExtractor.TryExtractInfoHash(Create(name), out var hash)
-            ? hash
+        TorrentDownloadPolicy.TryLoad(Create(name), out var torrent, out _)
+            ? torrent.InfoHashes.V1!.ToHex().ToLowerInvariant()
             : throw new InvalidOperationException("测试种子字节无效。");
 
     private static string Encode(string value) => $"{Encoding.UTF8.GetByteCount(value)}:{value}";

@@ -18,6 +18,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using MonoTorrent.BEncoding;
 using System.Text;
 using DownloadFileKind = Banori.Features.Downloads.DownloadFileKind;
 
@@ -178,7 +179,7 @@ public sealed class DownloadServiceTests
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
                                                                 unconfigured
                                                                    .CreateUploadAsync(TestTorrentBytes
-                                                                       .Create("Uploaded Anime - 01")));
+                                                                                .Create("Uploaded Anime - 01")));
 
         using var configured = await CreateHarnessAsync();
         await Assert.ThrowsAsync<InvalidOperationException>(() => configured.CreateUploadAsync([0x62, 0x61, 0x64]));
@@ -488,29 +489,33 @@ public sealed class DownloadServiceTests
         var  original = contentOnly ? NekoTitle("简日双语") : "Unparseable original.mkv";
         var  bytes    = TestTorrentBytes.Create(original);
         Guid taskId;
-        if (entryPoint == "upload")
+        switch (entryPoint)
         {
-            taskId = await harness.CreateUploadAsync(bytes);
-        }
-        else if (entryPoint == "rss")
-        {
-            harness.TorrentNames["directory-snapshot"] = original;
-            harness.FeedReader.Items.Add(RssItem("directory-snapshot", original,
-                                                 "https://mikanani.me/Download/directory-snapshot.torrent"));
-            var result = await harness.CreateFromRssFeedAsync("https://mikanani.me/RSS/preview", subjectId : 42);
-            Assert.Equal(0, result.FailedCount);
-            taskId = Assert.Single(result.Items).TaskId!.Value;
-        }
-        else
-        {
-            var itemId = await SeedAcceptedItemAsync(harness, "directory-snapshot", original);
-            taskId = await harness.CreateDownloadAsync(itemId);
+            case "upload" :
+                taskId = await harness.CreateUploadAsync(bytes);
+                break;
+            case "rss" :
+            {
+                harness.TorrentNames["directory-snapshot"] = original;
+                harness.FeedReader.Items.Add(RssItem("directory-snapshot", original,
+                                                     "https://mikanani.me/Download/directory-snapshot.torrent"));
+                var result = await harness.CreateFromRssFeedAsync("https://mikanani.me/RSS/preview", subjectId : 42);
+                Assert.Equal(0, result.FailedCount);
+                taskId = Assert.Single(result.Items).TaskId!.Value;
+                break;
+            }
+            default :
+            {
+                var itemId = await SeedAcceptedItemAsync(harness, "directory-snapshot", original);
+                taskId = await harness.CreateDownloadAsync(itemId);
+                break;
+            }
         }
 
         // 创建后全局目录与下载根设置变更不能覆写已登记任务，也不能影响本次提交。
         await directories.SaveAsync("New/Anime", "New/Seed");
         await harness.Provider.GetRequiredService<ManageQbittorrentSettings>().SaveAsync(
-         new QbittorrentSettings("http://qb.test:8080", "admin", "/future-downloads", true), "secret");
+             new QbittorrentSettings("http://qb.test:8080", "admin", "/future-downloads", true), "secret");
         var task = await harness.GetTaskAsync(taskId);
         Assert.Equal("/downloads", task.DownloadRootPath);
         Assert.Equal("Library/Anime", task.MediaDirectory);
@@ -549,18 +554,18 @@ public sealed class DownloadServiceTests
         var taskId        = await harness.CreateUploadAsync(bytes);
         var registered    = await harness.GetTaskAsync(taskId);
         Assert.Equal("/downloads", registered.SavePath); // 混合种子必须以全局根为保存目录。
-        Assert.Null(registered.Episode);
+        Assert.Equal(12m, registered.Episode);           // 正片全部落在同一集：由文件集胜者充当任务身份。
         var ingredients =
             Assert.IsType<TorrentNamingIngredients>(TorrentNamingIngredients.FromJson(registered.NamingIngredients));
-        Assert.Equal(string.Empty, ingredients.EpisodeText);
+        Assert.Equal("12", ingredients.EpisodeText);
         Assert.Equal("{title}", ingredients.Template);
         Assert.Equal("{title} E{episode}", ingredients.FileTemplate);
         await using var db = await harness.CreateDbContextAsync();
         var originals = await db.DownloadTaskFiles.AsNoTracking().Where(file => file.DownloadTaskId == taskId)
                                 .OrderBy(file => file.FileIndex).ToListAsync();
         Assert.Equal(originalPaths, originals.Select(file => file.OriginalRelativePath));
-        Assert.Equal(new long[] { 1024, 37 }, originals.Select(file => file.Size));
-        Assert.Equal(new[] { DownloadFileKind.Anime, DownloadFileKind.Seed }, originals.Select(file => file.Kind));
+        Assert.Equal([1024L, 37], originals.Select(file => file.Size));
+        Assert.Equal([DownloadFileKind.Anime, DownloadFileKind.Seed], originals.Select(file => file.Kind));
         Assert.Equal(originalPaths, originals.Select(file => file.CurrentRelativePath));
 
         await directories.SaveAsync("Changed/Media", "Changed/Seed");
@@ -581,30 +586,14 @@ public sealed class DownloadServiceTests
         var archived = await db.DownloadTaskFiles.AsNoTracking().Where(file => file.DownloadTaskId == taskId)
                                .OrderBy(file => file.FileIndex).ToListAsync();
         Assert.Equal(originalPaths, archived.Select(file => file.OriginalRelativePath));
-        Assert.Equal(new[]
-        {
+        Assert.Equal([
             "Library/Anime/测试作品 E12.mp4",
             "Seeding/Originals/Original Pack/Extras/notes.txt"
-        }, archived.Select(file => file.CurrentRelativePath));
+        ], archived.Select(file => file.CurrentRelativePath));
         Assert.All(archived, file => Assert.Null(file.PendingRenameTo));
         Assert.Empty(harness.Store.SetLocationCalls);
         Assert.Empty(harness.Store.RenameFolderCalls);
         Assert.Equal(registered.NamingSnapshot, Assert.Single(harness.Store.RenameCalls).Name);
-    }
-
-    [Fact]
-    public async Task CreateUpload_RejectsUnsafeTorrentNameWithoutPersistingTaskOrFiles()
-    {
-        using var harness = await CreateHarnessAsync(enableFileArchive : true);
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                                                                                harness
-                                                                                   .CreateUploadAsync(TestTorrentBytes
-                                                                                       .Create("Unsafe/name.mp4")));
-        Assert.Contains("文件清单", exception.Message);
-        await using var db = await harness.CreateDbContextAsync();
-        Assert.Empty(await db.DownloadTasks.ToListAsync());
-        Assert.Empty(await db.DownloadTaskFiles.ToListAsync());
-        Assert.Empty(harness.Store.AddCalls);
     }
 
     /// <summary>构造喵萌奶茶屋式发布名：全角斜杠保留标题分隔含义，同时是合法单级种子文件名。</summary>
@@ -875,10 +864,9 @@ public sealed class DownloadServiceTests
         // 订阅登记跨路径直接终止未提交现任；下一轮只提交新任务，不会再提交旧 PendingSubmit。
         await harness.ReconcileAsync();
         Assert.Single(harness.Store.AddCalls);
-        Assert.Equal(task.InfoHash, TorrentInfoHashExtractor.TryExtractInfoHash(
-                                                                                harness.Store.AddCalls[0].Bytes,
-                                                                                out var submittedHash)
-                         ? submittedHash
+        Assert.Equal(task.InfoHash,
+                     TorrentDownloadPolicy.TryLoad(harness.Store.AddCalls[0].Bytes, out var torrent, out _)
+                         ? torrent.InfoHashes.V1!.ToHex().ToLowerInvariant()
                          : null);
         Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(uploadTaskId)).Status);
         Assert.Equal(DownloadTaskStatus.Downloading, (await harness.GetTaskAsync(task.Id)).Status);
@@ -1173,10 +1161,10 @@ public sealed class DownloadServiceTests
         using var harness = await CreateHarnessAsync();
         var pendingId = await harness.CreateDownloadAsync(
                                                           await SeedAcceptedItemAsync(harness, "stale-snapshot",
-                                                              "Snapshot Pending - 01"));
+                                                                   "Snapshot Pending - 01"));
         var sentinelId = await harness.CreateDownloadAsync(
                                                            await SeedAcceptedItemAsync(harness, "stale-sentinel",
-                                                               "Snapshot Sentinel - 01"));
+                                                                    "Snapshot Sentinel - 01"));
         await using (var db = await harness.CreateDbContextAsync())
         {
             var sentinel = await db.DownloadTasks.SingleAsync(task => task.Id == sentinelId);
@@ -1728,8 +1716,8 @@ public sealed class DownloadServiceTests
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                                                                                 harness
                                                                                    .CreateUploadAsync(TestTorrentBytes
-                                                                                           .Create(title),
-                                                                                        subjectId : null));
+                                                                                                .Create(title),
+                                                                                             subjectId : null));
 
         Assert.Contains("Bangumi ID", exception.Message);
         Assert.Equal(0, await CountTasksAsync(harness));
@@ -1886,6 +1874,87 @@ public sealed class DownloadServiceTests
         Assert.Equal(2, harness.Store.RenameFileCalls.Count);
         Assert.Equal(registered.NamingSnapshot, Assert.Single(harness.Store.RenameCalls).Name);
         Assert.Equal("/downloads", completed.SavePath);
+    }
+
+    [Theory]
+    [InlineData(0.5, false, false)]
+    [InlineData(1.0, false, false)]
+    [InlineData(1.0, true, false)]
+    [InlineData(0.5, false, true)]
+    [InlineData(1.0, false, true)]
+    [InlineData(1.0, true, true)]
+    public async Task Reconcile_AdoptsRenamedFiles_UsesOriginalNamesForClassificationAndFileTemplate(
+        double progress, bool alreadyAtTarget, bool withPadding)
+    {
+        using var harness = await CreateHarnessAsync(enableFileArchive : true);
+        await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
+        await harness.Provider.GetRequiredService<DownloadDirectorySettingsStore>()
+                     .SaveAsync("Library/Anime", "Seeding/Originals");
+        var first  = NekoTitle("简日双语", episode : 1);
+        var second = NekoTitle("简日双语", episode : 2);
+        var bytes = CreateMultiFileTorrent("Original Pack", ("Video/" + first, 1024), ("empty.txt", 0),
+                                           ("Nested/Video/"           + second, 1024));
+        if (withPadding)
+        {
+            var (root, _) = BEncodedDictionary.DecodeTorrent(bytes);
+            var info = (BEncodedDictionary)root["info"];
+            ((BEncodedList)info["files"]).Insert(1, new BEncodedDictionary
+            {
+                ["attr"]   = new BEncodedString("p"),
+                ["length"] = new BEncodedNumber(15360),
+                ["path"]   = new BEncodedList { new BEncodedString(".pad"), new BEncodedString("15360") }
+            });
+            info["pieces"] = new BEncodedString(new byte[40]);
+            bytes          = root.Encode();
+        }
+
+        var          id            = await harness.CreateUploadAsync(bytes);
+        var          task          = await harness.GetTaskAsync(id);
+        const string firstTarget   = "Library/Anime/测试作品 E01.mp4";
+        const string secondTarget  = "Library/Anime/测试作品 E02.mp4";
+        const string seedTarget    = "Seeding/Originals/Original Pack/empty.txt";
+        var          firstCurrent  = alreadyAtTarget ? firstTarget : "Old Library: renamed/a.mp4";
+        var          secondCurrent = alreadyAtTarget ? secondTarget : "Old Library: renamed/b.mp4";
+        var          seedCurrent   = alreadyAtTarget ? seedTarget : "Old Library: renamed/empty.txt";
+        harness.Store.AddTorrent(task.InfoHash, "Previously named torrent",
+                                 progress >= 1
+                                     ? QbittorrentTorrentCategory.Seeding
+                                     : QbittorrentTorrentCategory.Downloading,
+                                 progress, "/downloads", [firstCurrent, seedCurrent, secondCurrent]);
+        // qB 4.4+ filters padding and numbers real files consecutively, retaining the zero-length file in place.
+        // Same-sized videos and reversed API response order must not affect the association.
+        harness.Store.FileIdentities[task.InfoHash] =
+        [
+            new TorrentFileSnapshot(2, secondCurrent, 1024),
+            new TorrentFileSnapshot(1, seedCurrent, 0),
+            new TorrentFileSnapshot(0, firstCurrent, 1024)
+        ];
+
+        await harness.ReconcileAsync();
+
+        var adopted = await harness.GetTaskAsync(id);
+        Assert.Equal(progress >= 1 ? DownloadTaskStatus.Completed : DownloadTaskStatus.Downloading, adopted.Status);
+        Assert.Empty(harness.Store.AddCalls);
+        await using var db = await harness.CreateDbContextAsync();
+        var files = await db.DownloadTaskFiles.Where(file => file.DownloadTaskId == id).ToListAsync();
+        var firstFile = files.Single(file => file.OriginalRelativePath == "Original Pack/Video/" + first);
+        var secondFile = files.Single(file => file.OriginalRelativePath == "Original Pack/Nested/Video/" + second);
+        Assert.Equal(DownloadFileKind.Anime, firstFile.Kind);
+        Assert.Equal(DownloadFileKind.Anime, secondFile.Kind);
+        Assert.Equal(firstTarget, firstFile.CurrentRelativePath);
+        Assert.Equal(secondTarget, secondFile.CurrentRelativePath);
+        Assert.Equal(seedTarget, files.Single(file => file.Kind == DownloadFileKind.Seed).CurrentRelativePath);
+        if (alreadyAtTarget)
+        {
+            Assert.Empty(harness.Store.RenameFileCalls);
+        }
+        else
+        {
+            Assert.Contains(harness.Store.RenameFileCalls,
+                            call => call.OldPath == firstCurrent && call.NewPath == firstTarget);
+            Assert.Contains(harness.Store.RenameFileCalls,
+                            call => call.OldPath == secondCurrent && call.NewPath == secondTarget);
+        }
     }
 
     [Fact]
@@ -2416,7 +2485,7 @@ public sealed class DownloadServiceTests
 
         await Assert.ThrowsAsync<QbittorrentException>(() =>
                                                            harness.Service.DeleteAsync(taskId,
-                                                               true, false));
+                                                                    true, false));
 
         Assert.NotNull(await harness.GetTaskAsync(taskId));
     }
@@ -2583,9 +2652,14 @@ public sealed class DownloadServiceTests
     {
         static string Encode(string value) => $"{Encoding.UTF8.GetByteCount(value)}:{value}";
 
+        const int pieceLength = 16384;
+        var       totalLength = files.Sum(file => file.Size);
+        var       pieceCount  = checked((int)((totalLength + pieceLength - 1) / pieceLength));
+        var       pieces      = new string('0', checked(pieceCount * 20));
         var entries = string.Concat(files.Select(file =>
                                                      $"d6:lengthi{file.Size}e4:pathl{string.Concat(file.Path.Split('/').Select(Encode))}ee"));
-        return Encoding.UTF8.GetBytes($"d4:infod5:filesl{entries}e4:name{Encode(name)}ee");
+        return Encoding.UTF8.GetBytes($"d4:infod5:filesl{entries}e4:name{Encode(name)}" +
+                                      $"12:piece lengthi{pieceLength}e6:pieces{Encode(pieces)}ee");
     }
 
     private static async Task SetLegacyIsolationPathAsync(TestHarness harness, Guid taskId)

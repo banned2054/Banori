@@ -17,10 +17,13 @@ public sealed class DownloadSubmissionPathValidator(IDbContextFactory<Applicatio
         // Unknown legacy layouts retain their existing submission/adoption flow.
         if (string.IsNullOrWhiteSpace(task.DownloadRootPath)) return;
         ct.ThrowIfCancellationRequested();
-        if (!TorrentFileManifestParser.TryParse(task.TorrentFile, out var manifest))
-            throw new InvalidOperationException("提交路径检查失败：种子原始文件清单无效或包含重复/不安全路径。");
+        if (!TorrentDownloadPolicy.TryLoad(task.TorrentFile, out var torrent, out var isMultiFile))
+            throw new InvalidOperationException("提交路径检查失败：种子原始文件清单无效或不包含受支持的 v1 info-hash。");
 
-        var targets = manifest.Files.Select(file => Join(task.SavePath, file.Path)).ToArray();
+        var targets = torrent.Files
+                             .Select(file => Join(task.SavePath,
+                                                  TorrentDownloadPolicy.GetRelativePath(torrent, file, isMultiFile)))
+                             .ToArray();
         for (var index = 0; index < targets.Length; index++)
             foreach (var other in targets.Take(index))
                 if (Conflicts(targets[index], other))
@@ -69,10 +72,12 @@ public sealed class DownloadSubmissionPathValidator(IDbContextFactory<Applicatio
                 continue;
             }
 
-            if (TorrentFileManifestParser.TryParse(other.TorrentFile, out var original))
+            if (TorrentDownloadPolicy.TryLoad(other.TorrentFile, out var original, out var originalIsMultiFile))
                 foreach (var file in original.Files)
                 foreach (var candidate in roots)
-                    CheckFile(targets, Join(candidate, file.Path), source + "（原始清单可能占用）");
+                    CheckFile(targets, Join(candidate,
+                                            TorrentDownloadPolicy.GetRelativePath(original, file, originalIsMultiFile)),
+                              source + "（原始清单可能占用）");
             else if (other.Status.IsActive() || other.PendingSavePath is not null)
                 foreach (var candidate in roots)
                     CheckScope(targets, candidate, source + "（文件清单未知）");

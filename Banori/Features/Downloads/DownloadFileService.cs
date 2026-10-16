@@ -123,11 +123,21 @@ public sealed class DownloadFileService(
         return await PlanAndExecuteUnderGateAsync(session, taskId, snapshot, cancellationToken);
     }
 
+    /// <summary>接管同 hash 种子：用原始元数据身份关联 qB 的当前路径，分类和模板解析继续使用原名。</summary>
+    public async Task<bool> AdoptExistingUnderGateAsync(IQbittorrentSession session, Guid taskId,
+                                                        TorrentSnapshot     snapshot,
+                                                        CancellationToken   cancellationToken = default)
+    {
+        if (snapshot.IsMoving) return false;
+        return await PlanAndExecuteUnderGateAsync(session, taskId, snapshot, cancellationToken, true);
+    }
+
     private async Task<bool> PlanAndExecuteUnderGateAsync(IQbittorrentSession session, Guid taskId,
-                                                          TorrentSnapshot snapshot, CancellationToken cancellationToken)
+                                                          TorrentSnapshot snapshot, CancellationToken cancellationToken,
+                                                          bool adoptExisting = false)
     {
         await using var db   = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var             task = await InitializeUnderGateAsync(db, session, taskId, cancellationToken);
+        var             task = await InitializeUnderGateAsync(db, session, taskId, cancellationToken, adoptExisting);
         if (!string.Equals(task.InfoHash, snapshot.Hash, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("下载器快照不属于当前任务。");
         if (HasPending(task)) return await ExecutePendingAsync(db, session, task, cancellationToken);
@@ -222,42 +232,60 @@ public sealed class DownloadFileService(
         return await ExecutePendingAsync(db, session, task, cancellationToken);
     }
 
-    private async Task<DownloadTask> InitializeUnderGateAsync(
-        ApplicationDbContext db, IQbittorrentSession session, Guid taskId, CancellationToken ct)
+    private async Task<DownloadTask> InitializeUnderGateAsync(ApplicationDbContext db,     IQbittorrentSession session,
+                                                              Guid                 taskId, CancellationToken   ct,
+                                                              bool                 adoptExisting = false)
     {
         var task = await LoadAsync(db, taskId, ct);
-        if (!TorrentFileManifestParser.TryParse(task.TorrentFile, out var manifest))
+        if (!TorrentDownloadPolicy.TryLoad(task.TorrentFile, out var torrent, out var isMultiFile))
             throw new InvalidOperationException("种子原始元数据不存在或文件清单无效，不能伪造原始文件路径。");
-        var remote = await session.ListFilesAsync(task.InfoHash, ct);
-        ValidateIdentities(manifest, remote);
-        var existing = task.Files.ToDictionary(file => file.FileIndex);
-        if (existing.Keys.Any(index => !manifest.Files.Any(entry => entry.Index == index)))
-            throw new InvalidOperationException("已保存文件身份与种子元数据不一致。");
-        foreach (var entry in manifest.Files)
+        // Library enumeration (including zero-length files) can change. Match immutable originals, never its indices.
+        var remaining =
+            torrent.Files.ToDictionary(file => TorrentDownloadPolicy.GetRelativePath(torrent, file, isMultiFile),
+                                       StringComparer.Ordinal);
+        var usedIndices = task.Files.Select(file => file.FileIndex).ToHashSet();
+        if (usedIndices.Count != task.Files.Count)
+            throw new InvalidOperationException("已保存文件内部键重复。");
+        foreach (var file in task.Files)
         {
-            var observed = remote.Single(file => file.Index == entry.Index);
-            if (existing.TryGetValue(entry.Index, out var file))
-            {
-                if (file.OriginalRelativePath != entry.Path || file.Size != entry.Length)
-                    throw new InvalidOperationException("持久化原始文件身份与种子元数据不一致，拒绝改写。");
-                if (file.PendingRenameTo is null && file.CurrentRelativePath != observed.Path)
-                    throw new InvalidOperationException("下载器中的文件被外部改名，请人工核对后重试。");
-                continue;
-            }
+            var original = file.OriginalRelativePath.Replace('\\', '/');
+            if (!remaining.Remove(original, out var entry) || file.Size != entry.Length)
+                throw new InvalidOperationException("持久化原始文件身份与种子元数据不一致，拒绝改写。");
+        }
 
-            var classified = classificationPolicy.Classify(entry.Path);
+        var nextIndex = 0;
+        foreach (var (path, entry) in remaining)
+        {
+            while (usedIndices.Contains(nextIndex)) nextIndex++;
+            var classified = classificationPolicy.Classify(path);
             var added = new DownloadTaskFile
             {
-                Id                   = Guid.NewGuid(), DownloadTaskId = task.Id, FileIndex = entry.Index,
-                OriginalRelativePath = entry.Path,
-                CurrentRelativePath  = RelativeDownloadPathPolicy.Normalize(observed.Path),
+                Id                   = Guid.NewGuid(), DownloadTaskId = task.Id, FileIndex = nextIndex,
+                OriginalRelativePath = path, CurrentRelativePath = path,
                 Size                 = entry.Length, Kind = Kind(classified), ClassificationReason = classified.Reason,
                 UpdatedAtUtc         = timeProvider.GetUtcNow()
             };
+            usedIndices.Add(nextIndex++);
             task.Files.Add(added);
             db.Set<DownloadTaskFile>()
               .Add(added); // Explicit Added state: an assigned Guid must not be inferred as an existing row.
         }
+
+        var remote = await session.ListFilesAsync(task.InfoHash, ct);
+        if (adoptExisting && !HasPending(task))
+        {
+            var indices = TorrentDownloadPolicy.GetQbittorrentFileIndices(task.TorrentFile, torrent, isMultiFile);
+            var byIndex = remote.ToDictionary(file => file.Index);
+            foreach (var file in task.Files)
+            {
+                var index = indices[file.OriginalRelativePath];
+                if (!byIndex.TryGetValue(index, out var observed) || observed.Size != file.Size)
+                    throw new InvalidOperationException("下载器文件 index/大小与原始种子不一致，无法接管。");
+                file.CurrentRelativePath = observed.Path.Replace('\\', '/');
+            }
+        }
+
+        MatchRemoteFiles(task.Files, remote, true);
 
         if (task.MediaDirectory is null || task.SeedDirectory is null)
         {
@@ -273,18 +301,46 @@ public sealed class DownloadFileService(
         return task;
     }
 
-    private static void ValidateIdentities(TorrentFileManifest manifest, IReadOnlyList<TorrentFileSnapshot> remote)
+    private static IReadOnlyDictionary<int, TorrentFileSnapshot> MatchRemoteFiles(
+        ICollection<DownloadTaskFile> files, IReadOnlyList<TorrentFileSnapshot> remote, bool allowPendingPaths = false)
     {
-        if (remote.Count                                         != manifest.Files.Count ||
-            remote.Select(file => file.Index).Distinct().Count() != remote.Count)
-            throw new InvalidOperationException("下载器文件 index 列表不完整或重复，拒绝按列表顺序猜测身份。");
-        foreach (var entry in manifest.Files)
+        if (files.Count == 0 || remote.Count != files.Count)
+            throw new InvalidOperationException("下载器文件清单不完整或包含未登记文件，拒绝猜测身份。");
+        var byPath = new Dictionary<string, TorrentFileSnapshot>(StringComparer.Ordinal);
+        foreach (var observed in remote)
         {
-            var observed = remote.SingleOrDefault(file => file.Index == entry.Index);
-            if (observed is null || observed.Size != entry.Length)
-                throw new InvalidOperationException("下载器文件 index/大小无法与原始种子可靠映射。");
-            RelativeDownloadPathPolicy.Normalize(observed.Path);
+            var path = observed.Path.Replace('\\', '/');
+            if (!byPath.TryAdd(path, observed with { Path = path }))
+                throw new InvalidOperationException("下载器文件清单包含重复的规范路径。");
         }
+
+        var matched = new Dictionary<int, TorrentFileSnapshot>();
+        var claimed = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var file in files)
+        {
+            var paths = new HashSet<string>(StringComparer.Ordinal);
+            if (file.PendingRenameFrom is not null || file.PendingRenameTo is not null)
+            {
+                if (file.PendingRenameFrom is null || file.PendingRenameTo is null)
+                    throw new InvalidOperationException("文件操作日志不完整。");
+                if (allowPendingPaths)
+                {
+                    paths.Add(file.PendingRenameFrom.Replace('\\', '/'));
+                    paths.Add(file.PendingRenameTo.Replace('\\', '/'));
+                }
+            }
+
+            if (paths.Count == 0) paths.Add(file.CurrentRelativePath.Replace('\\', '/'));
+            var candidates = paths
+                            .Where(path => byPath.TryGetValue(path, out var observed) && observed.Size == file.Size)
+                            .Select(path => byPath[path]).ToArray();
+            if (candidates.Length != 1 || !claimed.Add(candidates[0].Path) ||
+                !matched.TryAdd(file.FileIndex, candidates[0]))
+                throw new InvalidOperationException("下载器文件路径/大小无法唯一对应持久化身份或改名日志，拒绝猜测。");
+        }
+
+        // Count plus unique claims makes this a bijection: extra entries (including unknown padding) are not ignored.
+        return claimed.Count != remote.Count ? throw new InvalidOperationException("下载器文件清单包含无法对应的文件。") : matched;
     }
 
     private void ApplyEdit(DownloadTaskFile file, DownloadFileEditRequest request)
@@ -453,15 +509,13 @@ public sealed class DownloadFileService(
         var snapshot = await SnapshotAsync(session, task.InfoHash, ct);
         if (snapshot.IsMoving || !SameRoot(snapshot.SavePath, task.SavePath))
             throw new InvalidOperationException("下载器保存目录不一致或仍在移动，拒绝规划。");
-        var remote = await session.ListFilesAsync(task.InfoHash, ct);
+        var remote  = await session.ListFilesAsync(task.InfoHash, ct);
+        var matched = MatchRemoteFiles(task.Files, remote);
         foreach (var file in task.Files)
         {
-            var observed = remote.SingleOrDefault(value => value.Index == file.FileIndex);
-            if (observed is null || observed.Size != file.Size || observed.Path != file.CurrentRelativePath)
-                throw new InvalidOperationException("下载器文件身份或路径已改变，请重新核对。");
             var target = plan.Paths[file.FileIndex];
             // Conservative: reject swaps/chains rather than rename into another file's current path.
-            if (remote.Any(other => other.Index != file.FileIndex && EqualPath(other.Path, target)))
+            if (matched.Any(other => other.Key != file.FileIndex && EqualPath(other.Value.Path, target)))
                 throw new InvalidOperationException("目标路径占用另一文件当前路径，不能安全执行改名。");
         }
 
@@ -473,14 +527,13 @@ public sealed class DownloadFileService(
                                                     IReadOnlyList<TorrentFileSnapshot> remote, CancellationToken ct,
                                                     bool allowCompletedReplacementCollision = false)
     {
-        if (remote.Count != task.Files.Count || remote.Select(file => file.Index).Distinct().Count() != remote.Count)
-            throw new InvalidOperationException("下载器文件身份列表不完整或重复。");
+        var matched = MatchRemoteFiles(task.Files, remote, true);
         var entries = plan.Paths.ToList();
         foreach (var (index, path) in entries)
         {
             RelativeDownloadPathPolicy.Normalize(path);
-            if (entries.Any(other => other.Key  != index && PathsOverlap(path, other.Value)) ||
-                remote.Any(other => other.Index != index && PathsOverlap(path, other.Path)))
+            if (entries.Any(other => other.Key != index && PathsOverlap(path, other.Value)) ||
+                matched.Any(other => other.Key != index && PathsOverlap(path, other.Value.Path)))
                 throw new InvalidOperationException("目标路径与同种子另一文件目标/当前路径相同或互为父子，不能安全执行。");
         }
 
@@ -617,15 +670,9 @@ public sealed class DownloadFileService(
             throw new InvalidOperationException("下载器被外部移动到未知目录，不能恢复操作。");
         var remote = await session.ListFilesAsync(task.InfoHash, ct);
         // Validate every identity and reservation before executing even the first remaining side effect.
-        foreach (var file in task.Files)
-        {
-            if (file.PendingRenameFrom is null || file.PendingRenameTo is null)
-                throw new InvalidOperationException("文件操作日志不完整。");
-            var observed = remote.SingleOrDefault(value => value.Index == file.FileIndex);
-            if (observed is null || observed.Size != file.Size ||
-                (observed.Path != file.PendingRenameFrom && observed.Path != file.PendingRenameTo))
-                throw new InvalidOperationException("恢复时文件身份不匹配或路径既不是原路径也不是目标路径。");
-        }
+        if (task.Files.Any(file => file.PendingRenameFrom is null || file.PendingRenameTo is null))
+            throw new InvalidOperationException("文件操作日志不完整。");
+        var matched = MatchRemoteFiles(task.Files, remote, true);
 
         var pendingPlan =
             new FilePlan(targetRoot, task.Files.ToDictionary(file => file.FileIndex, file => file.PendingRenameTo!));
@@ -633,20 +680,17 @@ public sealed class DownloadFileService(
                                            snapshot.Progress >= 1);
         foreach (var file in task.Files.OrderBy(value => value.FileIndex))
         {
-            var observed = remote.SingleOrDefault(value => value.Index == file.FileIndex);
-            if (observed is null || observed.Size != file.Size) throw new InvalidOperationException("恢复时文件身份不匹配。");
-            if (file.PendingRenameTo is null || file.PendingRenameFrom is null)
-                throw new InvalidOperationException("文件操作日志不完整。");
-            if (observed.Path == file.PendingRenameTo) continue; // Remote succeeded, DB acknowledgement was lost.
-            if (observed.Path != file.PendingRenameFrom)
-                throw new InvalidOperationException("恢复时文件路径既不是原路径也不是目标路径，拒绝猜测。");
-            await session.RenameTorrentFileAsync(task.InfoHash, file.PendingRenameFrom, file.PendingRenameTo, ct);
+            var observed = matched[file.FileIndex];
+            var from     = file.PendingRenameFrom!.Replace('\\', '/');
+            var to       = RelativeDownloadPathPolicy.Normalize(file.PendingRenameTo!);
+            if (observed.Path == to) continue; // Remote succeeded, DB acknowledgement was lost.
+            await session.RenameTorrentFileAsync(task.InfoHash, from, to, ct);
         }
 
-        remote = await session.ListFilesAsync(task.InfoHash, ct);
-        if (task.Files.Any(file => !remote.Any(observed => observed.Index == file.FileIndex &&
-                                                           observed.Size  == file.Size      &&
-                                                           observed.Path  == file.PendingRenameTo))) return false;
+        remote  = await session.ListFilesAsync(task.InfoHash, ct);
+        matched = MatchRemoteFiles(task.Files, remote, true);
+        if (task.Files.Any(file => matched[file.FileIndex].Path !=
+                                   RelativeDownloadPathPolicy.Normalize(file.PendingRenameTo!))) return false;
         await ValidateTargetOccupancyAsync(db, session, task, pendingPlan, remote, ct,
                                            snapshot.Progress >= 1);
         if (!SameRoot(snapshot.SavePath, targetRoot)) await session.SetLocationAsync(task.InfoHash, targetRoot, ct);
@@ -708,7 +752,7 @@ public sealed class DownloadFileService(
     }
 
     private static string Join(string root, string relative) =>
-        Root(root) + "/" + RelativeDownloadPathPolicy.Normalize(relative);
+        Root(root) + "/" + relative.Replace('\\', '/');
 
     private static bool SameRoot(string left, string right) =>
         string.Equals(Root(left), Root(right), StringComparison.Ordinal);

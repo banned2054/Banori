@@ -82,8 +82,10 @@ public sealed class DownloadFileClassificationPolicyTests
     }
 
     [Fact]
-    public void UnsafePath_IsNotSilentlyClassified()
+    public void SourcePath_IsUsedForClassificationWithoutApplyingTargetPathRestrictions()
     {
-        Assert.Throws<ArgumentException>(() => _policy.Classify("../" + Name + ".mkv"));
+        var classified = _policy.Classify("Release: 2026/" + Name + ".mkv");
+        Assert.Equal(DownloadFileKind.Content, classified.Kind);
+        Assert.Equal("Release: 2026/" + Name + ".mkv", classified.Path);
     }
 }
