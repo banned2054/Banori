@@ -2,9 +2,49 @@
 
 ## 📘 Versions
 
+- [Unreleased / 未发布](#unreleased)
 - [v0.1.2](#-release-v012)
 - [v0.1.1](#-release-v011)
 - [v0.1.0](#-release-v010)
+
+<a id="unreleased"></a>
+## Unreleased / 未发布
+
+[English](#unreleased-english) | [简体中文](#unreleased-zh-cn)
+
+<a id="unreleased-english"></a>
+### English
+
+Changes under development for the next release. Deployments that customized the old Bangumi User-Agent key should review the notes below.
+
+#### 🐛 Fixed
+
+- Settings are now saved and validated per card. Saving the qBittorrent, Telegram, or Gotify card persists only that card's settings and no longer writes other cards' unsaved drafts; invalid input in another card no longer fails the current save. A blank secret still keeps the stored value, and only the saved card's secret input is cleared.
+- The download list no longer shows the "will replace … after completion" hint once a task has completed or has itself been replaced by a newer task. Failed or lost tasks keep the hint because they can still be retried.
+- Multi-file torrents are now classified from their whole file set: files are parsed individually and grouped by episode, same-episode release variants are arbitrated with the same ranking rules used across torrents (loser variants are archived to the seed directory instead of colliding on one name), a pack spanning several episodes registers as a batch without an episode identity, and a single-episode pack registers that episode. Previously the first parseable file's title stamped the whole torrent, so a batch pack could wrongly replace or be replaced by single-episode tasks.
+- Adopting an existing torrent now associates qBittorrent's current file paths with metadata-derived file indexes. The mapping follows qBittorrent 4.4+'s consecutive numbering after excluding padding, retaining zero-length files in their original positions. Classification and file-template rendering use the original torrent names even if the files were already renamed; content is organized under the configured Anime directory using the file template.
+
+#### 🔧 Changed
+
+- Consolidate the outbound User-Agent into a single top-level `UserAgent` setting shared by the Bangumi, feed, and torrent-download HTTP clients; previously the feed and torrent clients hard-coded it. The old `Bangumi:UserAgent` key (and `Bangumi__UserAgent` environment override) is no longer read — switch it to `UserAgent` if you customized it.
+- Read torrent file lists, info-hashes, display names, and trackers through MonoTorrent's top-level API, relying on its parsing behavior instead of duplicating metadata and path validation. Adapt file paths to qBittorrent's root-folder and separator conventions. File reconciliation and rename recovery now use paths and sizes rather than assuming MonoTorrent's list positions match qBittorrent file indexes.
+
+<a id="unreleased-zh-cn"></a>
+### 简体中文
+
+以下为下一版本开发中的变更。自定义过 Bangumi User-Agent 键的部署请留意下方调整说明。
+
+#### 🐛 修复
+
+- 设置页按卡片独立保存与校验。保存 qBittorrent、Telegram 或 Gotify 任一卡片只写入该卡片的设置，不再连同其他卡片的未保存草稿一起持久化，其他卡片的错误输入也不再导致当前保存失败。密钥留空仍沿用已保存值，保存后仅清空当前卡片的密钥输入框。
+- 下载列表中，任务完成后或被更新的任务顶替后，不再继续显示「完成后将替换：×××」提示；失败或丢失的任务因仍可重试，保留该提示。
+- 多文件种子按整个文件集判定：逐文件解析后按集分组，同集多版本用与跨种子相同的择优规则在包内决胜，落选版本归入做种目录，不再与其他版本争用同一归档名；正片跨集的包按合集登记、不落单集身份，正片同集的包登记该集。此前只用首个可解析文件的标题充当整个种子的身份，合集会被错误盖章成单集并参与错误的顶替。
+- 接管下载器中的已有种子时，根据原始元数据关联 qBittorrent 的当前文件路径；映射遵循 qBittorrent 4.4+ 过滤 padding 后连续编号的行为，并保留空文件的原始位置。即使文件已经改过名，分类与文件模板仍使用种子内的原始文件名；正片按模板整理到用户配置的 Anime 目录。
+
+#### 🔧 调整
+
+- 出站请求的 User-Agent 统一收敛为顶层 `UserAgent` 配置项，由 Bangumi、RSS 订阅与种子下载客户端共用；此前订阅与下载客户端为硬编码。旧 `Bangumi:UserAgent` 键（及环境变量 `Bangumi__UserAgent`）不再读取，自定义过该值的部署需改用 `UserAgent`。
+- 种子文件列表、info-hash、显示名与 tracker 改由 MonoTorrent 顶层 API 读取，沿用库的解析行为，不再重复校验元数据与文件路径；文件路径仅适配 qBittorrent 的根目录与分隔符约定。文件核对与改名恢复按路径和大小匹配，不再假定 MonoTorrent 列表位置等于 qBittorrent 文件 index。
 
 ## 🚀 Release v0.1.2
 

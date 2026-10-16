@@ -22,9 +22,17 @@ public sealed class DownloadFileClassificationPolicy(AniParser aniParser)
 
     private static readonly string[] FilterWords = ["Deculture Ver.", "SPs", "Scans", "CDs", "Bonus"];
 
+    private static readonly HashSet<string> VideoExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".wmv", ".mov", ".flv"
+    };
+
     private static readonly Regex SpecialFragment = new(@"\[(?:cm|menu|nced|pv|ncop)\d{2}\]",
                                                         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
                                                         TimeSpan.FromSeconds(1));
+
+    /// <summary>正片视频文件（ContentExtensions 去掉字幕类）；包内同集择优只让视频版本参与竞争。</summary>
+    public static bool IsVideo(string path) => VideoExtensions.Contains(Path.GetExtension(path));
 
     public DownloadFileClassification Classify(string path)
     {

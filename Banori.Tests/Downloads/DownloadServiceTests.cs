@@ -596,6 +596,114 @@ public sealed class DownloadServiceTests
         Assert.Equal(registered.NamingSnapshot, Assert.Single(harness.Store.RenameCalls).Name);
     }
 
+    /// <summary>合集上传（无意义种子名、正片跨集）：不落集数身份，归档时逐文件按各自集数命名。</summary>
+    [Fact]
+    public async Task CreateUpload_MultiEpisodePack_RegistersAsBatchWithoutEpisodeIdentity()
+    {
+        using var harness = await CreateHarnessAsync(enableFileArchive : true);
+        await harness.SaveNamingTemplateAsync("{title}");
+        await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
+        var directories = harness.Provider.GetRequiredService<DownloadDirectorySettingsStore>();
+        await directories.SaveAsync("Library/Anime", "Seeding/Originals");
+        var title12       = NekoTitle("简日双语", episode : 12);
+        var title13       = NekoTitle("简日双语", episode : 13);
+        var originalPaths = new[] { $"Batch/Video/{title12}", $"Batch/Video/{title13}" };
+        var bytes         = CreateMultiFileTorrent("Batch", ("Video/" + title12, 1024), ("Video/" + title13, 37));
+        var taskId        = await harness.CreateUploadAsync(bytes);
+        var registered    = await harness.GetTaskAsync(taskId);
+        Assert.Null(registered.Episode);                               // 跨集正片视为合集：不参与同集裁决。
+        Assert.Equal("/downloads/Library/Anime", registered.SavePath); // 全部正片：直接落在媒体目录。
+        await using (var db = await harness.CreateDbContextAsync())
+        {
+            var originals = await db.DownloadTaskFiles.AsNoTracking().Where(file => file.DownloadTaskId == taskId)
+                                    .OrderBy(file => file.FileIndex).ToListAsync();
+            Assert.Equal([DownloadFileKind.Anime, DownloadFileKind.Anime],
+                         originals.Select(file => file.Kind));
+            Assert.Equal(originalPaths, originals.Select(file => file.OriginalRelativePath));
+        }
+
+        await harness.ReconcileAsync(); // 提交进假下载器，后续完成链才有可对账的种子。
+        harness.Store.FileIdentities[registered.InfoHash] =
+        [
+            new TorrentFileSnapshot(0, originalPaths[0], 1024),
+            new TorrentFileSnapshot(1, originalPaths[1], 37)
+        ];
+        harness.Store.Files[registered.InfoHash] = [.. originalPaths];
+        CompleteTorrent(harness, registered.InfoHash);
+        await harness.ReconcileAsync();
+
+        var completed = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
+        await using var db2 = await harness.CreateDbContextAsync();
+        var archived = await db2.DownloadTaskFiles.AsNoTracking().Where(file => file.DownloadTaskId == taskId)
+                                .OrderBy(file => file.FileIndex).ToListAsync();
+        Assert.Equal(["测试作品 E12.mp4", "测试作品 E13.mp4"],
+                     archived.Select(file => file.CurrentRelativePath));
+    }
+
+    /// <summary>同集多版本同包上传：包内用同一择优规则决胜，落选版本归 Seed，胜者充当任务身份。</summary>
+    [Fact]
+    public async Task CreateUpload_SameEpisodeVariants_ArbitratesInPackAndDemotesLoserToSeed()
+    {
+        using var harness = await CreateHarnessAsync(enableFileArchive : true);
+        await harness.SaveSelectionRulesAsync(NekoRules()); // 简日（JpSc）优先于繁日。
+        await harness.SaveNamingTemplateAsync("{title}");
+        await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
+        var directories = harness.Provider.GetRequiredService<DownloadDirectorySettingsStore>();
+        await directories.SaveAsync("Library/Anime", "Seeding/Originals");
+        var scTitle       = NekoTitle("简日双语");
+        var tcTitle       = NekoTitle("繁日双语");
+        var originalPaths = new[] { $"Original Pack/Video/{scTitle}", $"Original Pack/Video/{tcTitle}" };
+        var bytes = CreateMultiFileTorrent("Original Pack", ("Video/" + scTitle, 1024),
+                                           ("Video/"                  + tcTitle, 37));
+        var taskId     = await harness.CreateUploadAsync(bytes);
+        var registered = await harness.GetTaskAsync(taskId);
+        Assert.Equal(12m, registered.Episode);           // 胜者版本充当任务身份。
+        Assert.Equal("/downloads", registered.SavePath); // 包内含落选 Seed 文件：以全局根为保存目录。
+        await using var db = await harness.CreateDbContextAsync();
+        var originals = await db.DownloadTaskFiles.AsNoTracking().Where(file => file.DownloadTaskId == taskId)
+                                .OrderBy(file => file.FileIndex).ToListAsync();
+        Assert.Equal([DownloadFileKind.Anime, DownloadFileKind.Seed], originals.Select(file => file.Kind));
+        Assert.Equal("同集包内择优落选", originals[1].ClassificationReason);
+
+        await harness.ReconcileAsync(); // 提交进假下载器，后续完成链才有可对账的种子。
+        harness.Store.FileIdentities[registered.InfoHash] =
+        [
+            new TorrentFileSnapshot(0, originalPaths[0], 1024),
+            new TorrentFileSnapshot(1, originalPaths[1], 37)
+        ];
+        harness.Store.Files[registered.InfoHash] = [.. originalPaths];
+        CompleteTorrent(harness, registered.InfoHash);
+        await harness.ReconcileAsync();
+
+        var completed = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
+        var archived = await db.DownloadTaskFiles.AsNoTracking().Where(file => file.DownloadTaskId == taskId)
+                               .OrderBy(file => file.FileIndex).ToListAsync();
+        Assert.Equal("Library/Anime/测试作品 E12.mp4", archived[0].CurrentRelativePath);
+        Assert.Equal("Seeding/Originals/Original Pack/Video/" + tcTitle, archived[1].CurrentRelativePath);
+    }
+
+    /// <summary>标题可解析的多文件包：身份仍来自标题，但包内同集多版本照常择优、落选归 Seed。</summary>
+    [Fact]
+    public async Task CreateUpload_TitledMultiFilePack_KeepsTitleIdentityAndDemotesLoserToSeed()
+    {
+        using var harness = await CreateHarnessAsync(enableFileArchive : true);
+        await harness.SaveSelectionRulesAsync(NekoRules());
+        var scTitle    = NekoTitle("简日双语");
+        var tcTitle    = NekoTitle("繁日双语");
+        var bytes      = CreateMultiFileTorrent(scTitle, ("Video/" + scTitle, 1024), ("Video/" + tcTitle, 37));
+        var taskId     = await harness.CreateUploadAsync(bytes);
+        var registered = await harness.GetTaskAsync(taskId);
+        Assert.Equal(12m, registered.Episode);
+        Assert.Equal("/downloads", registered.SavePath);
+        await using var db = await harness.CreateDbContextAsync();
+        var originals = await db.DownloadTaskFiles.AsNoTracking().Where(file => file.DownloadTaskId == taskId)
+                                .OrderBy(file => file.FileIndex).ToListAsync();
+        Assert.Equal([DownloadFileKind.Anime, DownloadFileKind.Seed], originals.Select(file => file.Kind));
+        Assert.Equal("同集包内择优落选", originals[1].ClassificationReason);
+    }
+
     /// <summary>构造喵萌奶茶屋式发布名：全角斜杠保留标题分隔含义，同时是合法单级种子文件名。</summary>
     private static string NekoTitle(string language, string resolution = "1080p", int episode = 12) =>
         $"【喵萌奶茶屋】★07月新番★[{NekoSeriesTitle.Replace(" ", " ／ ")}][{episode}][{resolution}]" +
