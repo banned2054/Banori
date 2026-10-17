@@ -7,14 +7,15 @@ using System.Security.Claims;
 
 namespace Banori.Components.Account;
 
-// This is a server-side AuthenticationStateProvider that revalidates the security stamp for the connected user
-// every 30 minutes an interactive circuit is connected.
+// 活跃连接与 Cookie 使用同一安全戳检查周期，避免改密后旧连接继续沿用更长的验证间隔。
 internal sealed class IdentityRevalidatingAuthenticationStateProvider(
-    ILoggerFactory            loggerFactory,
-    IServiceScopeFactory      scopeFactory,
-    IOptions<IdentityOptions> options) : RevalidatingServerAuthenticationStateProvider(loggerFactory)
+    ILoggerFactory                          loggerFactory,
+    IServiceScopeFactory                    scopeFactory,
+    IOptions<IdentityOptions>               options,
+    IOptions<SecurityStampValidatorOptions> securityStampOptions)
+    : RevalidatingServerAuthenticationStateProvider(loggerFactory)
 {
-    protected override TimeSpan RevalidationInterval => TimeSpan.FromMinutes(30);
+    protected override TimeSpan RevalidationInterval => securityStampOptions.Value.ValidationInterval;
 
     protected override async Task<bool> ValidateAuthenticationStateAsync(
         AuthenticationState authenticationState, CancellationToken cancellationToken)

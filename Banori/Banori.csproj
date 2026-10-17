@@ -26,4 +26,8 @@
 		<InternalsVisibleTo Include="Banori.Tests" />
 	</ItemGroup>
 
+	<ItemGroup>
+		<EmbeddedResource Include="Security\common-passwords.txt" />
+	</ItemGroup>
+
 </Project>

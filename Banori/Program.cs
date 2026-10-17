@@ -22,6 +22,7 @@ using Banori.Integrations.Bangumi;
 using Banori.Integrations.Mikan;
 using Banori.Integrations.Notifications;
 using Banori.Integrations.Qbittorrent;
+using Banori.Security;
 using Banori.Workers;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -29,6 +30,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Migrations;
+using System.Threading.RateLimiting;
 
 namespace Banori;
 
@@ -63,6 +65,8 @@ internal class Program
                     options.DefaultSignInScheme = IdentityConstants.ExternalScheme;
                 })
                .AddIdentityCookies();
+
+        builder.Services.ConfigureOptions<TrustedProxyOptionsSetup>();
 
         var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ??
                                throw new InvalidOperationException("未配置连接字符串 DefaultConnection。");
@@ -113,7 +117,55 @@ internal class Program
                .AddEntityFrameworkStores<ApplicationDbContext>()
                .AddSignInManager()
                .AddErrorDescriber<ChineseIdentityErrorDescriber>()
-               .AddDefaultTokenProviders();
+               .AddDefaultTokenProviders()
+               .AddPasswordValidator<CommonPasswordValidator>();
+
+        // 基础被动防线：最低 8 位 + 常见泄露密码黑名单，取代大小写/数字/符号组合规则（存量部署不受影响）；
+        // stamp 间隔决定改密后旧会话的最迟失效时间。
+        builder.Services.Configure<IdentityOptions>(options =>
+        {
+            options.Password.RequiredLength         = 8;
+            options.Password.RequireUppercase       = false;
+            options.Password.RequireLowercase       = false;
+            options.Password.RequireDigit           = false;
+            options.Password.RequireNonAlphanumeric = false;
+        });
+        builder.Services.Configure<SecurityStampValidatorOptions>(options => options.ValidationInterval =
+                                                                      TimeSpan.FromMinutes(10));
+        builder.Services.AddSingleton<CommonPasswordBlocklist>();
+
+        builder.Services.AddRateLimiter(options =>
+        {
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            options.OnRejected = async (context, cancellationToken) =>
+            {
+                context.HttpContext.Response.Headers.RetryAfter =
+                    ((int)BaselineRateLimiting.Window.TotalSeconds).ToString();
+                await context.HttpContext.Response.WriteAsync("请求过于频繁，请稍后再试。", cancellationToken);
+            };
+            options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+            {
+                if (BaselineRateLimiting.IsAuthenticationSubmit(context.Request.Path, context.Request.Method))
+                    return RateLimitPartition.GetFixedWindowLimiter(BaselineRateLimiting.AuthPartitionKey(context), _ =>
+                                                                        new FixedWindowRateLimiterOptions
+                                                                        {
+                                                                            PermitLimit = BaselineRateLimiting
+                                                                               .AuthPermitLimit,
+                                                                            Window     = BaselineRateLimiting.Window,
+                                                                            QueueLimit = 0
+                                                                        });
+                if (BaselineRateLimiting.IsHookCallback(context.Request.Path))
+                    return RateLimitPartition.GetFixedWindowLimiter(BaselineRateLimiting.HookPartitionKey(context), _ =>
+                                                                        new FixedWindowRateLimiterOptions
+                                                                        {
+                                                                            PermitLimit = BaselineRateLimiting
+                                                                               .HookPermitLimit,
+                                                                            Window     = BaselineRateLimiting.Window,
+                                                                            QueueLimit = 0
+                                                                        });
+                return RateLimitPartition.GetNoLimiter("default");
+            });
+        });
 
         builder.Services.Configure<BootstrapAdminOptions>(options =>
         {
@@ -247,6 +299,9 @@ internal class Program
 
     private static void InitApplication(WebApplication app)
     {
+        // 在 HSTS、HTTPS 重定向和 IP 限流之前恢复可信代理转发的信息。
+        app.UseForwardedHeaders();
+
         if (app.Environment.IsDevelopment())
         {
             app.UseMigrationsEndPoint();
@@ -259,24 +314,41 @@ internal class Program
 
         app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages : true);
         app.UseHttpsRedirection();
+        app.UseRateLimiter();
         app.UseAntiforgery();
         app.MapStaticAssets();
         // qBittorrent“运行外部程序”钩子：凭令牌回调，立即唤醒对账轮（15 秒轮询仍为兜底）。
+        // POST 用 X-Hook-Token 头承载令牌以免落入反向代理访问日志；GET 保留 query 兼容既有命令模板。
         app.MapGet("/hooks/qbittorrent",
                    async (QbittorrentHookService hook, HttpRequest request, CancellationToken cancellationToken) =>
-                   {
-                       var result = await hook.HandleAsync(request.Query["token"].FirstOrDefault(),
-                                                           request.Query["hash"].FirstOrDefault(),
-                                                           request.Query["event"].FirstOrDefault(),
-                                                           cancellationToken);
-                       return result switch
-                       {
-                           QbittorrentHookResult.Accepted    => Results.Ok(),
-                           QbittorrentHookResult.InvalidHash => Results.BadRequest(),
-                           _                                 => Results.StatusCode(StatusCodes.Status403Forbidden)
-                       };
-                   });
+                       await HandleQbittorrentHookAsync(hook, request, false, cancellationToken));
+        // 钩子自带令牌鉴权，qB 侧 curl 回调无法携带防伪令牌，必须显式豁免。
+        app.MapPost("/hooks/qbittorrent",
+                    async (QbittorrentHookService hook, HttpRequest request, CancellationToken cancellationToken) =>
+                        await HandleQbittorrentHookAsync(hook, request, true, cancellationToken))
+           .DisableAntiforgery();
         app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
         app.MapAdditionalIdentityEndpoints();
+    }
+
+    private static async Task<IResult> HandleQbittorrentHookAsync(
+        QbittorrentHookService hook, HttpRequest request, bool preferHeaderToken, CancellationToken cancellationToken)
+    {
+        var token = preferHeaderToken
+            ? request.Headers["X-Hook-Token"].FirstOrDefault() ?? request.Query["token"].FirstOrDefault()
+            : request.Query["token"].FirstOrDefault();
+
+        var result = await hook.HandleAsync(token,
+                                            request.Query["hash"].FirstOrDefault(),
+                                            request.Query["event"].FirstOrDefault(),
+                                            cancellationToken);
+        // 错误响应必须带响应体：空主体的 4xx/5xx 会被状态码页拿去以原方法重执行 /not-found，
+        // POST 会撞上组件页的防伪校验，403 被替换成 400。
+        return result switch
+        {
+            QbittorrentHookResult.Accepted    => Results.Ok(),
+            QbittorrentHookResult.InvalidHash => Results.BadRequest("hash 参数不是合法的 v1 info-hash。"),
+            _                                 => Results.Text("令牌无效。", statusCode : StatusCodes.Status403Forbidden)
+        };
     }
 }

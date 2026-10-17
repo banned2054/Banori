@@ -179,8 +179,10 @@ public sealed class SettingsPageViewModel(
         var host = string.IsNullOrWhiteSpace(baseUrl)
             ? "<Banori 地址>"
             : baseUrl.Trim().TrimEnd('/');
-        var added     = $"curl -s \"{host}/hooks/qbittorrent?token={token}&hash=%I&event=added\"";
-        var completed = $"curl -s \"{host}/hooks/qbittorrent?token={token}&hash=%I&event=completed\"";
+        // 令牌放请求头而非 URL，避免落入反向代理的访问日志。
+        var added = $"curl -s -X POST -H \"X-Hook-Token: {token}\" \"{host}/hooks/qbittorrent?hash=%I&event=added\"";
+        var completed =
+            $"curl -s -X POST -H \"X-Hook-Token: {token}\" \"{host}/hooks/qbittorrent?hash=%I&event=completed\"";
         return (added, completed);
     }
 

@@ -135,6 +135,23 @@ rootless Docker 下容器内的 UID 0 映射到宿主机当前用户。移除 `u
 
 > 下载整理还需要 qBittorrent。它可以运行在另一容器或主机上；在「设置」中填写 qBittorrent 可访问的下载路径，并确保 Banori 与 qBittorrent 对该路径的挂载映射一致。仅让 Banori 容器连接到 qBittorrent 并不足以让它访问下载文件。
 
+### HTTPS 反向代理与登录限流
+
+公网访问应通过 HTTPS 反向代理，并限制 Banori 的后端端口仅供代理访问。应用仅信任 `ReverseProxy:KnownProxies` 中显式列出的代理 IP，读取其 `X-Forwarded-For` 和 `X-Forwarded-Proto`；默认空列表会忽略这些头，包括来自回环地址的转发头。
+
+在原有 Compose 的 `environment` 中追加实际代理地址（下面地址仅作示例，必须替换为 Banori 接收到连接时看到的代理 IP）：
+
+```yaml
+    environment:
+      ReverseProxy__KnownProxies__0: "172.20.0.2"
+```
+
+也可在 `appsettings.json` 中设置 `"ReverseProxy": { "KnownProxies": ["172.20.0.2"] }`。多个独立入口代理可继续添加数组项；目前每个请求只接受最近一层可信代理的转发信息，不支持跨多层代理追溯。代理应正确设置或清理上述转发头，不能直接透传客户端提交的值。不要使用全局信任所有来源的 `ASPNETCORE_FORWARDEDHEADERS_ENABLED` 配置替代此白名单。
+
+若代理运行在宿主机且使用发布端口访问容器，应用看到的地址可能是 Docker 网桥网关；应核对实际连接地址，并通过监听地址及防火墙限制该端口的来源。例如代理与 Docker 同机时，可将端口映射改为 `127.0.0.1:7340:7340`，让宿主机上的代理访问它。代理位于另一容器时，应使用受控的容器网络和固定代理地址。
+
+认证入口按客户端 IP 共用每分钟 5 次提交额度，密码、2FA、恢复码及通行密钥请求均计入，成功提交也会计数；超额返回 `429` 与 `Retry-After`。反代部署必须配置可信代理，否则所有用户可能共用代理 IP 的额度。另有独立的账号密码失败锁定。改密后，Cookie 和活跃 Blazor 连接都每 10 分钟重新验证安全戳。
+
 ### 日志与诊断
 
 默认保留 `Information` 及以上的业务日志；EF Core 的 `Microsoft.EntityFrameworkCore.Database.Command` 类别只输出 `Warning` 及以上日志，不输出每条执行成功的 SQL。该默认设置同时适用于生产和开发环境。
