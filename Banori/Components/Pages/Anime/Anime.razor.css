@@ -2,7 +2,9 @@
 
 .anime-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    /* 轨道数是每行海报数的 4 倍、每张海报占 4 轨（每行 2/3/4/6 张对应 8/12/16/24 轨），
+       面板才能按两张海报的宽度对齐轨道 */
+    grid-template-columns: repeat(8, 1fr);
     gap: 1rem;
     align-items: start;
     /* 全宽面板落在点击行的下一行，同时 dense 让同行剩余海报回填该行 */
@@ -13,19 +15,21 @@
 }
 
 @media (min-width: 576px) {
-    .anime-grid { grid-template-columns: repeat(3, 1fr); }
+    .anime-grid { grid-template-columns: repeat(12, 1fr); }
 }
 
 @media (min-width: 768px) {
-    .anime-grid { grid-template-columns: repeat(4, 1fr); }
+    .anime-grid { grid-template-columns: repeat(16, 1fr); }
 }
 
 @media (min-width: 1200px) {
-    .anime-grid { grid-template-columns: repeat(6, 1fr); }
+    .anime-grid { grid-template-columns: repeat(24, 1fr); }
 }
 
 .anime-card {
     cursor: pointer;
+    /* 一张海报占 4 轨，与 .anime-grid 各断点的总轨道数配套 */
+    grid-column: span 4;
     border: none;
     background: transparent;
     text-align: center;
@@ -78,15 +82,19 @@
     -webkit-box-orient: vertical;
 }
 
-/* 行下探出面板：占据展开卡片下一行的两列格子，如同在此插入两张卡片，海报向后顺延两格；
+/* 行下探出面板：起点与被点击海报对齐、落在其下一行，恒占 8 轨（两张海报，海报向后顺延）；
    高度与所在行海报卡片齐平（该行无海报时按 3:2 兜底），单集列表超出时面板内滚动 */
 .anime-panel {
     position: relative;
-    grid-column: min(mod(var(--i, 0), var(--cols)) + 1, var(--cols) - 1) / span 2;
+    /* 宽度必须锁定为格子宽：stretch 行高叠加 aspect-ratio 会把宽度反推成 1.5 倍行高并溢出格子 */
+    width: 100%;
+    grid-column: min(mod(var(--i, 0), var(--cols)) * 4 + 1,
+                     var(--cols) * 4 - var(--panel-span) + 1) / span var(--panel-span);
     align-self: stretch;
     aspect-ratio: 3 / 2;
-    /* 断点列数与 .anime-grid 的媒体查询保持一致 */
+    /* 断点海报列数（--cols）与面板轨数（--panel-span）同 .anime-grid 的媒体查询保持一致 */
     --cols: 2;
+    --panel-span: 8;
 }
 
 @media (min-width: 576px) {
