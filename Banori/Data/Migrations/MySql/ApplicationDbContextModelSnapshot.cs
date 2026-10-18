@@ -176,6 +176,9 @@ namespace Banori.Data.Migrations.MySql
                         .HasColumnType("int")
                         .HasComputedColumnSql("CASE WHEN `Status` IN ('PendingSubmit', 'Submitting', 'Downloading', 'Paused') THEN 1 ELSE NULL END", true);
 
+                    b.Property<string>("ArchiveReview")
+                        .HasColumnType("longtext");
+
                     b.Property<int>("AttemptCount")
                         .HasColumnType("int");
 
@@ -213,6 +216,13 @@ namespace Banori.Data.Migrations.MySql
 
                     b.Property<bool>("IsUserPaused")
                         .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("IsolationState")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasDefaultValue("None");
 
                     b.Property<DateTimeOffset?>("LastSyncedAtUtc")
                         .HasColumnType("datetime(6)");
@@ -289,6 +299,9 @@ namespace Banori.Data.Migrations.MySql
 
                     b.Property<long?>("TotalSize")
                         .HasColumnType("bigint");
+
+                    b.Property<string>("VerificationIntent")
+                        .HasColumnType("longtext");
 
                     b.Property<int>("Version")
                         .HasColumnType("int");
@@ -372,6 +385,14 @@ namespace Banori.Data.Migrations.MySql
 
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
                         .HasColumnType("datetime(6)");
+
+                    b.Property<string>("VerificationOutcome")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<string>("VerificationPath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
 
                     b.HasKey("Id");
 
@@ -1192,7 +1213,6 @@ namespace Banori.Data.Migrations.MySql
                     b.Navigation("RefreshWorkItems");
                 });
 #pragma warning restore 612, 618
-        
         }
     }
 }

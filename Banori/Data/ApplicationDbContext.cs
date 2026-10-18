@@ -144,6 +144,10 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             // 显式默认值：存量行升级时必须得到合法枚举值，空字符串会破坏字符串转换读取。
             entity.Property(item => item.PreparationStage).HasConversion<string>().HasMaxLength(32)
                   .HasDefaultValue(DownloadPreparationStage.None);
+            entity.Property(item => item.VerificationIntent);
+            entity.Property(item => item.IsolationState).HasConversion<string>().HasMaxLength(32)
+                  .HasDefaultValue(DownloadIsolationState.None);
+            entity.Property(item => item.ArchiveReview);
             entity.Property(item => item.FailedStep).HasMaxLength(50);
             entity.Property(item => item.Error).HasMaxLength(1000);
             entity.HasIndex(item => item.FeedItemId);
@@ -176,6 +180,8 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             // 存量行升级时默认承担下载：跳过必须由择优计划显式声明。
             entity.Property(item => item.IsSelectedForDownload).HasDefaultValue(true);
             entity.Property(item => item.SelectionReason).HasMaxLength(1000);
+            entity.Property(item => item.VerificationOutcome).HasMaxLength(32);
+            entity.Property(item => item.VerificationPath).HasMaxLength(1000);
             entity.HasIndex(item => new { item.DownloadTaskId, item.FileIndex }).IsUnique();
             entity.HasOne(item => item.DownloadTask).WithMany(item => item.Files)
                   .HasForeignKey(item => item.DownloadTaskId).OnDelete(DeleteBehavior.Cascade);

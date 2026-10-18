@@ -63,6 +63,20 @@ public sealed class DownloadTask
     /// <summary>停止添加后的准备阶段；用于解释当前推进位置，实际推进以下载器真实状态比对为准。</summary>
     public DownloadPreparationStage PreparationStage { get; set; }
 
+    /// <summary>
+    ///     复用校验意图 JSON：候选根、逐文件映射快照、子步骤与请求记录。每个远端请求前先落库；
+    ///     进入隔离时原子清空。非空时对账优先按校验流程推进。
+    /// </summary>
+    public string? VerificationIntent { get; set; }
+
+    /// <summary>隔离流程状态（放弃复用、转为任务专属根独立下载）；默认 None。</summary>
+    public DownloadIsolationState IsolationState { get; set; }
+
+    /// <summary>
+    ///     归档受阻原因 JSON：正常完成后自动归档，仅在占用或共享布局阻塞时保留原因。
+    /// </summary>
+    public string? ArchiveReview { get; set; }
+
     public int     AttemptCount { get; set; }
     public double? Progress     { get; set; }
     public long?   TotalSize    { get; set; }

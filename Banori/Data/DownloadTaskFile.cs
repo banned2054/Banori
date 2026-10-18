@@ -33,6 +33,12 @@ public sealed class DownloadTaskFile
     /// <summary>因更高优先级任务逐集胜出而取消下载时指向承接方任务；承接方被删除且本任务仍活动时回退为重新下载。</summary>
     public Guid? SupersededByTaskId { get; set; }
 
+    /// <summary>复用校验结果（ReusedVerified/ReuseUnverified）；仅描述该次映射的确认状态，不证明字节内容不同。</summary>
+    public string? VerificationOutcome { get; set; }
+
+    /// <summary>结果登记时的规范化完整路径；路径、选择或大小变化后结果作废，不得再据此享受路径例外。</summary>
+    public string? VerificationPath { get; set; }
+
     // Journal is committed before the remote request. Recovery matches normalized from/to paths plus Size, never indices.
     public string?        PendingRenameFrom { get; set; }
     public string?        PendingRenameTo   { get; set; }

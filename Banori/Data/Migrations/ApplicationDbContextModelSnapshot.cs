@@ -171,6 +171,9 @@ namespace Banori.Data.Migrations
                         .HasColumnType("INTEGER")
                         .HasComputedColumnSql("CASE WHEN `Status` IN ('PendingSubmit', 'Submitting', 'Downloading', 'Paused') THEN 1 ELSE NULL END", true);
 
+                    b.Property<string>("ArchiveReview")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("AttemptCount")
                         .HasColumnType("INTEGER");
 
@@ -208,6 +211,13 @@ namespace Banori.Data.Migrations
 
                     b.Property<bool>("IsUserPaused")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("IsolationState")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("None");
 
                     b.Property<DateTimeOffset?>("LastSyncedAtUtc")
                         .HasColumnType("TEXT");
@@ -284,6 +294,9 @@ namespace Banori.Data.Migrations
 
                     b.Property<long?>("TotalSize")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("VerificationIntent")
+                        .HasColumnType("TEXT");
 
                     b.Property<int>("Version")
                         .HasColumnType("INTEGER");
@@ -366,6 +379,14 @@ namespace Banori.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("VerificationOutcome")
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("VerificationPath")
+                        .HasMaxLength(1000)
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
@@ -1179,7 +1200,6 @@ namespace Banori.Data.Migrations
                     b.Navigation("RefreshWorkItems");
                 });
 #pragma warning restore 612, 618
-        
         }
     }
 }
