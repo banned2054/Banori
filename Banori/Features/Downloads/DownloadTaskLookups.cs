@@ -63,6 +63,63 @@ internal static class DownloadTaskLookups
         => task.Files.Any(file => file.SupersededByTaskId != null);
 
     /// <summary>
+    ///     文件的职责集数：文件级集数（人工覆盖 &gt; 修正解析）优先，唯一选中正片承载时回退任务级
+    ///     集数；与登记、完成切换的覆盖口径一致，供职责判定与包含承接复用。
+    /// </summary>
+    internal static decimal? DutyEpisode(
+        AniParser parser, DownloadTask task, DownloadTaskFile file, IReadOnlyList<DownloadTaskFile> taskFiles,
+        Func<DownloadTask, DownloadTaskFile, decimal?> episodeOf)
+        => episodeOf(task, file) ??
+           (task.Episode is { } episode && IsSingleEpisodeCarrier(parser, task, file, episode, taskFiles)
+               ? episode
+               : null);
+
+    /// <summary>
+    ///     单个文件是否仍承担职责：人工覆盖的选中文件是人工固定资源；内容文件在其集数上的现任
+    ///     属于其他任务时已被覆盖（数据另有人承载），集数无法解析的内容视为独有职责；Seed 附件
+    ///     的回收是独立策略，不单独构成职责。
+    /// </summary>
+    internal static bool FileHoldsResidualDuty(
+        AniParser parser, DownloadTask task, DownloadTaskFile file, IReadOnlyList<DownloadTaskFile> taskFiles,
+        IReadOnlyList<EpisodeVersion> rows, HashSet<Guid> ownFileIds,
+        Func<DownloadTask, DownloadTaskFile, decimal?> episodeOf)
+    {
+        if (!file.IsSelectedForDownload) return false;
+        if (file.IsManualOverride) return true;
+        if (file.Kind == DownloadFileKind.Seed) return false;
+
+        var episode = DutyEpisode(parser, task, file, taskFiles, episodeOf);
+        if (episode is null) return true;
+        var incumbent = rows.FirstOrDefault(row => row.Episode == episode)?.IncumbentVideoFileId;
+        return incumbent is null || ownFileIds.Contains(incumbent.Value);
+    }
+
+    /// <summary>
+    ///     职责耗尽判定（冗余种子清理与包含承接共用）：仍被每集登记表引用（现任或待完成优胜）、
+    ///     仍存在未被其他现任覆盖的选中内容文件（含无法解析集数的独有内容）、存在人工固定资源，
+    ///     或存在未清的执行意图与操作日志（改名、归档待核对、校验、隔离）时，任务仍有职责，
+    ///     不得退出。SelectionSyncPending 不在此列：选择下推只是执行尾巴，退出后无需再下推。
+    /// </summary>
+    internal static bool HasResidualDuties(
+        AniParser parser, DownloadTask task, IReadOnlyList<DownloadTaskFile> files,
+        IReadOnlyList<EpisodeVersion> rows, Func<DownloadTask, DownloadTaskFile, decimal?> episodeOf)
+    {
+        if (task.VerificationIntent is not null                   ||
+            task.IsolationState    != DownloadIsolationState.None ||
+            task.PendingSavePath   is not null                    ||
+            task.ArchiveReview     is not null                    ||
+            files.Any(file => file.PendingRenameFrom is not null))
+            return true;
+
+        var ownFileIds = files.Select(file => file.Id).ToHashSet();
+        if (rows.Any(row => ownFileIds.Contains(row.IncumbentVideoFileId ?? Guid.Empty) ||
+                            ownFileIds.Contains(row.PendingVideoFileId   ?? Guid.Empty)))
+            return true;
+
+        return files.Any(file => FileHoldsResidualDuty(parser, task, file, files, rows, ownFileIds, episodeOf));
+    }
+
+    /// <summary>
     ///     活动任务查重：同 hash 一律冲突；因低优先级被替换的终止记录同样挡住重复登记（其存在即查重依据，
     ///     重复添加该资源直接终止）；条目路径额外覆盖同条目换源的情况，上传路径没有条目来源。
     /// </summary>

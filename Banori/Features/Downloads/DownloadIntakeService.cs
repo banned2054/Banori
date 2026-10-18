@@ -176,7 +176,7 @@ public sealed class DownloadIntakeService(
                                         identity is null
                                             ? null
                                             : BuildAdhocCandidate(infoHash, null, identity, binding.SubjectId));
-        var verdicts = await ArbitrateEpisodesAsync(db, config, scopes, binding.SubjectId,
+        var verdicts = await ArbitrateEpisodesAsync(db, task, config, scopes, binding.SubjectId,
                                                     TitleNormalizer.Normalize(identity?.Title ?? string.Empty),
                                                     resolvedSource, infoHash, null, cancellationToken);
         ApplyLosingSelections(task, verdicts);
@@ -434,7 +434,7 @@ public sealed class DownloadIntakeService(
                                             ? null
                                             : BuildAdhocCandidate(item.StableId, item.PublishedAtUtc, identity,
                                                                   binding.SubjectId));
-        var verdicts = await ArbitrateEpisodesAsync(db, config, scopes, binding.SubjectId,
+        var verdicts = await ArbitrateEpisodesAsync(db, task, config, scopes, binding.SubjectId,
                                                     TitleNormalizer.Normalize(identity?.Title ?? string.Empty),
                                                     resolvedSource, infoHash, null, cancellationToken);
         ApplyLosingSelections(task, verdicts);
@@ -578,9 +578,12 @@ public sealed class DownloadIntakeService(
     ///     既有未替换任务对决，复用现任保留语义——同规则层级不换（防抖），仅更高层级或同字幕组更高
     ///     修订版本才顶替。占用者以任务级集数（单集任务既有身份）或文件级集数（合集任务的选中正片）
     ///     覆盖该集；跨路径互认与订阅豁免口径沿用既有任务级裁决。纯决策无副作用，结论由调用方应用。
+    ///     例外（包含关系承接，设计第四阶段）：同内容平级的现任保留可被覆盖面更大的新包翻转——
+    ///     占用者全部职责文件都能由新包逐文件承担且新包确有独有内容时，该集改判新包胜出。
     /// </summary>
     private async Task<List<EpisodeVerdict>> ArbitrateEpisodesAsync(
-        ApplicationDbContext db,        SelectionRuleConfig config, IReadOnlyList<EpisodeScope> scopes,
+        ApplicationDbContext db,        DownloadTask     task, SelectionRuleConfig config,
+        IReadOnlyList<EpisodeScope> scopes,
         int?                 subjectId, string seriesKey, string? siteSource, string infoHash, int? exemptSubjectId,
         CancellationToken    cancellationToken)
     {
@@ -604,6 +607,15 @@ public sealed class DownloadIntakeService(
                                                task.Status           != DownloadTaskStatus.Replaced)
                                 .ToListAsync(cancellationToken);
 
+        // 包含承接判定素材：Subject 全量登记表（职责覆盖口径）、新任务全文件清单与选中内容清单。
+        var registryRows           = await db.EpisodeVersions.AsNoTracking()
+                                             .Where(row => row.SubjectId == subjectId)
+                                             .ToListAsync(cancellationToken);
+        var incomingManifest       = ManifestKeys(task);
+        var incomingSelectedKeys   = task.Files
+                                         .Where(file => file.Kind != DownloadFileKind.Seed && file.IsSelectedForDownload)
+                                         .Select(ManifestKey)
+                                         .ToList();
         var verdicts = new List<EpisodeVerdict>(scopes.Count);
         foreach (var scope in scopes)
         {
@@ -677,8 +689,16 @@ public sealed class DownloadIntakeService(
                                                             .Select(candidates.Select(item => item.Candidate).ToList(),
                                                                     config).Winner ?? candidates[0].Candidate)
                                       .FeedItemId);
-            var verdict = rankingPolicy.Select([incumbent.Candidate, scope.Incoming], config, incumbent.TaskId);
-            verdicts.Add(verdict.Winner?.FeedItemId == scope.Incoming.FeedItemId
+            var verdict   = rankingPolicy.Select([incumbent.Candidate, scope.Incoming], config, incumbent.TaskId);
+            var incomingWins = verdict.Winner?.FeedItemId == scope.Incoming.FeedItemId;
+            // 包含关系承接：同内容平级本由现任保留防抖，但占用者的全部职责文件都能由覆盖面更大的
+            // 新包逐文件承担、且新包确有独有内容（严格超集）时，该集改判新包胜出——正片保持选中，
+            // 由复用校验确认同内容后逐集承接现任，占用者职责耗尽即由冗余清理退场。
+            if (!incomingWins && incumbent.Completed &&
+                IsContainmentTakeover(incumbent.TaskId, incumbent.VideoFileId, scope, occupants, registryRows,
+                                      incomingManifest, incomingSelectedKeys))
+                incomingWins = true;
+            verdicts.Add(incomingWins
                              ? new EpisodeVerdict(scope.Episode, true, incumbent.TaskId, incumbent.Naming,
                                                   incumbent.Completed, incumbent.VideoFileId)
                              : new EpisodeVerdict(scope.Episode, false, incumbent.TaskId, incumbent.Naming,
@@ -687,6 +707,48 @@ public sealed class DownloadIntakeService(
 
         return verdicts;
     }
+
+    /// <summary>
+    ///     包含关系承接判定（纯清单线索，内容确认交给复用校验）：占用者已完成；双方该集承载正片
+    ///     同名同大小；占用者每个职责文件（见 FileHoldsResidualDuty）都能在新包清单中找到同名同
+    ///     大小对应；且新任务确有占用者清单之外的选中内容文件（严格超集——等价集合沿用现任保留，
+    ///     不因遍历顺序换包）。部分重叠（占用者另有独有职责）不翻转，双方各自保留。
+    /// </summary>
+    private bool IsContainmentTakeover(
+        Guid incumbentTaskId, Guid? incumbentVideoFileId, EpisodeScope scope,
+        IReadOnlyList<DownloadTask> occupants, IReadOnlyList<EpisodeVersion> registryRows,
+        HashSet<(string Name, long Size)> incomingManifest, IReadOnlyList<(string Name, long Size)> incomingSelectedKeys)
+    {
+        if (incumbentVideoFileId is not { } carrierId) return false;
+        var incumbent = occupants.FirstOrDefault(task => task.Id == incumbentTaskId);
+        if (incumbent is null) return false;
+
+        var carrier = incumbent.Files.FirstOrDefault(file => file.Id == carrierId);
+        var incomingCarrier = scope.VideoFiles.FirstOrDefault(file => file.Kind == DownloadFileKind.Anime) ??
+                              scope.VideoFiles.FirstOrDefault();
+        if (carrier is null || incomingCarrier is null || ManifestKey(carrier) != ManifestKey(incomingCarrier))
+            return false;
+
+        var incumbentFiles  = incumbent.Files.ToList();
+        var ownFileIds      = incumbent.Files.Select(file => file.Id).ToHashSet();
+        var incumbentDuties = incumbent.Files
+                                       .Where(file => DownloadTaskLookups.FileHoldsResidualDuty(
+                                                  aniParser, incumbent, file, incumbentFiles, registryRows,
+                                                  ownFileIds, episodeResolver.EpisodeOf))
+                                       .Select(ManifestKey)
+                                       .ToList();
+        if (incumbentDuties.Any(key => !incomingManifest.Contains(key))) return false;
+
+        var incumbentManifest = ManifestKeys(incumbent);
+        return incomingSelectedKeys.Any(key => !incumbentManifest.Contains(key));
+    }
+
+    /// <summary>种子清单键：原始相对路径的文件名（忽略大小写）与大小；同名同大小只是内容相同的线索。</summary>
+    private static (string Name, long Size) ManifestKey(DownloadTaskFile file) =>
+        (DownloadEpisodeResolver.FileName(file.OriginalRelativePath).ToLowerInvariant(), file.Size);
+
+    private static HashSet<(string Name, long Size)> ManifestKeys(DownloadTask task) =>
+        [.. task.Files.Select(ManifestKey)];
 
     /// <summary>
     ///     占用者在该集上仍承担的选中内容文件：任务级身份命中时全部选中内容文件归属该集
@@ -767,14 +829,16 @@ public sealed class DownloadIntakeService(
     /// <summary>
     ///     胜出集登记：每集登记表写入待完成优胜（指向本任务该集胜者正片；已完成现任的正片一并入表，
     ///     供完成期迁让与逐集切换）；未完成占用者执行承接——该集文件取消选择等待对账下推到下载器，
-    ///     其余集职责保留继续下载，全部内容职责被承接后整任务翻转 Replaced（任务级替换字段自此只作
-    ///     展示摘要）。已完成占用者不动：新版本完成前旧成片仍是现任，保留做种与展示。
+    ///     其余集职责保留继续下载，职责全部耗尽（登记表不再引用、选中内容均已被其他现任覆盖、无
+    ///     人工固定资源；见 HasResidualDuties）后整任务翻转 Replaced，任务级替换字段自此只作展示摘要。
+    ///     已完成占用者不动：新版本完成前旧成片仍是现任，保留做种与展示，其退出由冗余清理收敛。
     /// </summary>
     private async Task ApplyWinningEpisodesAsync(
         ApplicationDbContext          db,       DownloadTask      task, IReadOnlyList<EpisodeScope> scopes,
         IReadOnlyList<EpisodeVerdict> verdicts, CancellationToken cancellationToken)
     {
         if (task.SubjectId is not { } subjectId) return;
+        List<EpisodeVersion>? registryRows = null;
         foreach (var verdict in verdicts.Where(verdict => verdict.Winner))
         {
             // 缺集胜出（无占用者）不写登记表：没有承接关系，现任在完成时直接落表；
@@ -821,13 +885,17 @@ public sealed class DownloadIntakeService(
 
             DownloadTaskLookups.RefreshSelectedTotals(incumbent);
             incumbent.SelectionSyncPending = true;
-            if (incumbent.Files.Any(file => file.IsSelectedForDownload && file.Kind != DownloadFileKind.Seed))
+            registryRows ??= await db.EpisodeVersions
+                                     .Where(value => value.SubjectId == subjectId)
+                                     .ToListAsync(cancellationToken);
+            if (DownloadTaskLookups.HasResidualDuties(aniParser, incumbent, incumbent.Files.ToList(), registryRows,
+                                                      episodeResolver.EpisodeOf))
                 continue;
 
             incumbent.Status           =   DownloadTaskStatus.Replaced;
             incumbent.ReplacedByTaskId =   task.Id;
             task.ReplacesTaskId        ??= incumbent.Id;
-            logger.LogInformation("任务 {TaskId} 的全部内容职责已被更高优先级任务 {NewTaskId} 承接，整任务翻转被替换。",
+            logger.LogInformation("任务 {TaskId} 的全部职责已被更高优先级任务 {NewTaskId} 承接，整任务翻转被替换。",
                                   incumbent.Id, task.Id);
         }
     }
@@ -1156,7 +1224,7 @@ public sealed class DownloadIntakeService(
 
         var scopes = BuildEpisodeScopes(task, fileAnalysis, identityCandidate is null ? null : item.Episode,
                                         identityCandidate);
-        var verdicts = await ArbitrateEpisodesAsync(db, config, scopes, item.SubjectId,
+        var verdicts = await ArbitrateEpisodesAsync(db, task, config, scopes, item.SubjectId,
                                                     TitleNormalizer.Normalize(item.ParsedTitle),
                                                     resolvedSource, infoHash, item.SubjectId,
                                                     cancellationToken);

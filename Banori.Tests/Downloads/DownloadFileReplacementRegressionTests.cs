@@ -13,7 +13,11 @@ public sealed partial class DownloadServiceTests
         using var harness = await CreateHarnessAsync(enableFileArchive : true);
         await harness.SaveSelectionRulesAsync(NekoRules());
         await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
-        var incumbentId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语")), "mikan");
+        // 旧合集承担第 11、12 集，新合集只有第 12 集相同内容并带来缺集第 13 集：部分重叠不构成
+        // 包含承接（旧包仍独有第 11 集职责），第 12 集沿用现任保留语义落选。
+        var incumbentId = await harness.CreateUploadAsync(BatchTorrent(
+                                                                   NekoTitle("简日双语", episode : 11),
+                                                                   NekoTitle("简日双语", episode : 12)), "mikan");
         await harness.ReconcileAsync();
         var incumbentHash = (await harness.GetTaskAsync(incumbentId)).InfoHash;
         CompleteTorrent(harness, incumbentHash);
@@ -35,9 +39,16 @@ public sealed partial class DownloadServiceTests
         Assert.False(skipped.IsSelectedForDownload);
         Assert.DoesNotContain(harness.Store.RenameFileCalls,
                               call => call.Hash == batchHash && call.NewPath == "测试作品 E12.mp4");
-        Assert.Equal(await FindAnimeFileIdAsync(harness, incumbentId),
-                     (await FindEpisodeVersionAsync(harness, 12))!.IncumbentVideoFileId);
+        // 现任合集的第 12 集正片（FileIndex 1；首个正片是第 11 集）仍是该集现任。
+        var incumbentEp12 =
+            await db.DownloadTaskFiles.SingleAsync(file => file.DownloadTaskId == incumbentId && file.FileIndex == 1);
+        Assert.Equal(incumbentEp12.Id, (await FindEpisodeVersionAsync(harness, 12))!.IncumbentVideoFileId);
         Assert.NotNull((await FindEpisodeVersionAsync(harness, 13))!.IncumbentVideoFileId);
+        // 部分重叠双方保留：旧合集仍有第 11 集独有职责，不被翻转或移除。
+        var incumbentTask = await harness.GetTaskAsync(incumbentId);
+        Assert.Equal(DownloadTaskStatus.Completed, incumbentTask.Status);
+        Assert.Null(incumbentTask.ReplacedByTaskId);
+        Assert.Empty(harness.Store.DeleteCalls);
     }
 
     [Theory]

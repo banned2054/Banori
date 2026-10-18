@@ -2081,16 +2081,23 @@ public sealed partial class DownloadServiceTests
         CompleteTorrent(harness, v2Hash);
         await harness.ReconcileAsync();
 
-        // v1 保持 Completed（历史成片，任务不再整包翻 Replaced）；现任与承接来源在登记表里。
-        var stillCompleted = await harness.GetTaskAsync(taskIdV1);
-        Assert.Equal(DownloadTaskStatus.Completed, stillCompleted.Status);
-        Assert.Null(stillCompleted.ReplacedByTaskId);
+        // 第四阶段职责耗尽：v1 的唯一集现任已切到 v2，翻转为被替换；当前轮种子仍在，下一轮对账
+        // 由清理环保留内容移除（deleteFiles=false），历史数据仍留在磁盘可供复用。
+        var retiredV1 = await harness.GetTaskAsync(taskIdV1);
+        Assert.Equal(DownloadTaskStatus.Replaced, retiredV1.Status);
+        Assert.Equal(taskIdV2, retiredV1.ReplacedByTaskId);
         var switched = await FindEpisodeVersionAsync(harness);
         Assert.NotNull(switched);
         Assert.Equal(await FindAnimeFileIdAsync(harness, taskIdV2), switched.IncumbentVideoFileId);
         Assert.Equal(await FindAnimeFileIdAsync(harness, taskIdV1), switched.SupersededVideoFileId);
         Assert.Null(switched.PendingVideoFileId);
         Assert.Equal(2, harness.Store.Torrents.Count);
+
+        await harness.ReconcileAsync();
+        var v1Hash = TestTorrentBytes.InfoHashOf("Test Anime - 01");
+        Assert.Single(harness.Store.DeleteCalls, call => call.Hash == v1Hash);
+        Assert.False(harness.Store.DeleteCalls.Single(call => call.Hash == v1Hash).DeleteFiles);
+        Assert.Single(harness.Store.Torrents);
     }
 
     [Fact]
@@ -2796,8 +2803,10 @@ public sealed partial class DownloadServiceTests
         CompleteTorrent(harness, TestTorrentBytes.InfoHashOf("Test Anime - 01 v3"));
         await harness.ReconcileAsync();
 
-        // v1 保持 Completed，现任经登记表切到 v3 的正片；失败的 v2 不参与。
-        Assert.Equal(DownloadTaskStatus.Completed, (await harness.GetTaskAsync(taskIdV1)).Status);
+        // v1 的唯一集现任已切到 v3（第四阶段职责耗尽），翻转为被替换等待清理；失败的 v2 不参与。
+        var retiredV1 = await harness.GetTaskAsync(taskIdV1);
+        Assert.Equal(DownloadTaskStatus.Replaced, retiredV1.Status);
+        Assert.Equal(taskIdV3, retiredV1.ReplacedByTaskId);
         var registry = await FindEpisodeVersionAsync(harness);
         Assert.NotNull(registry);
         Assert.Equal(await FindAnimeFileIdAsync(harness, taskIdV3), registry.IncumbentVideoFileId);
@@ -2834,8 +2843,10 @@ public sealed partial class DownloadServiceTests
         var completedV2 = await harness.GetTaskAsync(taskIdV2);
         Assert.Equal(DownloadTaskStatus.Completed, completedV2.Status);
         Assert.Null(completedV2.ReplacedByTaskId);
-        var stillCompletedV1 = await harness.GetTaskAsync(taskIdV1);
-        Assert.Equal(DownloadTaskStatus.Completed, stillCompletedV1.Status);
+        // v1 的唯一集现任经版本守卫切到 v2，职责耗尽翻转为被替换（第四阶段），等待清理移除种子。
+        var retiredV1 = await harness.GetTaskAsync(taskIdV1);
+        Assert.Equal(DownloadTaskStatus.Replaced, retiredV1.Status);
+        Assert.Equal(taskIdV2, retiredV1.ReplacedByTaskId);
         var registry = await FindEpisodeVersionAsync(harness);
         Assert.NotNull(registry);
         Assert.Equal(await FindAnimeFileIdAsync(harness, taskIdV2), registry.IncumbentVideoFileId);
@@ -2893,11 +2904,14 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(await FindAnimeFileIdAsync(harness, taskIdV1), registered.IncumbentVideoFileId);
         Assert.Equal(await FindAnimeFileIdAsync(harness, taskIdV3), registered.PendingVideoFileId);
 
-        // v2 先完成：经版本守卫兜底切换现任；登记的最新待完成优胜（v3）保持不变。
+        // v2 先完成：经版本守卫兜底切换现任，v1 职责耗尽翻转为被替换（第四阶段）；
+        // 登记的最新待完成优胜（v3）保持不变。
         await harness.ReconcileAsync();
         CompleteTorrent(harness, TestTorrentBytes.InfoHashOf("Test Anime - 01 v2"));
         await harness.ReconcileAsync();
-        Assert.Equal(DownloadTaskStatus.Completed, (await harness.GetTaskAsync(taskIdV1)).Status);
+        var retiredV1 = await harness.GetTaskAsync(taskIdV1);
+        Assert.Equal(DownloadTaskStatus.Replaced, retiredV1.Status);
+        Assert.Equal(taskIdV2, retiredV1.ReplacedByTaskId);
         var interim = await FindEpisodeVersionAsync(harness);
         Assert.Equal(await FindAnimeFileIdAsync(harness, taskIdV2), interim.IncumbentVideoFileId);
         Assert.Equal(await FindAnimeFileIdAsync(harness, taskIdV1), interim.SupersededVideoFileId);
@@ -2934,20 +2948,21 @@ public sealed partial class DownloadServiceTests
         var taskIdV3 = await harness.CreateDownloadAsync(itemIdV3);
         Assert.Null((await harness.GetTaskAsync(taskIdV2)).ReplacesTaskId);
 
-        // v3 先完成：登记的优胜切换现任，v1 保持 Completed。
+        // v3 先完成：登记的优胜切换现任，v1 职责耗尽翻转为被替换（第四阶段）。
         await harness.ReconcileAsync();
         CompleteTorrent(harness, TestTorrentBytes.InfoHashOf("Test Anime - 01 v3"));
         await harness.ReconcileAsync();
-        Assert.Equal(DownloadTaskStatus.Completed, (await harness.GetTaskAsync(taskIdV1)).Status);
+        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(taskIdV1)).Status);
 
-        // v2 后完成：现任版本（v3）更高，版本守卫不允许反向替换，登记保持不动。
+        // v2 后完成：现任版本（v3）更高，版本守卫不允许反向替换，登记保持不动；
+        // v2 未承接任何职责，保持完成状态不翻转。
         CompleteTorrent(harness, TestTorrentBytes.InfoHashOf("Test Anime - 01 v2"));
         await harness.ReconcileAsync();
 
         var completedV2 = await harness.GetTaskAsync(taskIdV2);
         Assert.Equal(DownloadTaskStatus.Completed, completedV2.Status);
         Assert.Null(completedV2.ReplacedByTaskId);
-        Assert.Equal(DownloadTaskStatus.Completed, (await harness.GetTaskAsync(taskIdV1)).Status);
+        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(taskIdV1)).Status);
         var completedV3 = await harness.GetTaskAsync(taskIdV3);
         Assert.Equal(DownloadTaskStatus.Completed, completedV3.Status);
         var registry = await FindEpisodeVersionAsync(harness);
@@ -3042,7 +3057,7 @@ public sealed partial class DownloadServiceTests
         NekoTitle(language, episode : episode)[..^4] + ".ass";
 
     [Fact]
-    public async Task CreateFromUpload_BatchAgainstCompletedSingle_DeselectsLostEpisodesAndSubtitles()
+    public async Task CreateFromUpload_BatchContainingCompletedSingle_TakesOverEpisodeKeepsSelection()
     {
         using var harness = await CreateHarnessAsync();
         await harness.SaveSelectionRulesAsync(NekoRules());
@@ -3056,8 +3071,9 @@ public sealed partial class DownloadServiceTests
         await harness.ReconcileAsync();
         Assert.Equal(DownloadTaskStatus.Completed, (await harness.GetTaskAsync(incumbentId)).Status);
 
-        // 新合集：第 12 集（同组同版本，现任保留）落选，第 13 集缺集胜出；
-        // 落选集的随行字幕一并取消选择，无法解析集数的附件保持默认下载。
+        // 新合集严格包含旧单集（第 12 集同名同大小）且带有缺集第 13 集（第四阶段包含承接）：
+        // 第 12 集改判合集胜出并保持选中，登记表记录待完成优胜，由后续校验或下载承接现任；
+        // 附件保持默认下载。
         var batchId = await harness.CreateUploadAsync(BatchTorrent(NekoTitle("简日双语", episode : 12),
                                                                    NekoSubtitleName("简日双语", 12),
                                                                    NekoTitle("简日双语", episode : 13),
@@ -3070,34 +3086,31 @@ public sealed partial class DownloadServiceTests
                             .OrderBy(file => file.FileIndex)
                             .ToListAsync();
         Assert.Equal(DownloadFileKind.Seed, files[4].Kind);
-        Assert.False(files[0].IsSelectedForDownload);
-        Assert.Contains("同集已有更优任务", files[0].SelectionReason);
-        Assert.False(files[1].IsSelectedForDownload);
-        Assert.Contains("随本集视频落选", files[1].SelectionReason);
+        Assert.True(files[0].IsSelectedForDownload);
+        Assert.Null(files[0].SelectionReason);
+        Assert.True(files[1].IsSelectedForDownload);
         Assert.True(files[2].IsSelectedForDownload);
         Assert.True(files[3].IsSelectedForDownload);
         Assert.True(files[4].IsSelectedForDownload);
 
         var task = await harness.GetTaskAsync(batchId);
-        Assert.Equal(3072, task.SelectedTotalBytes);
+        Assert.Equal(5120, task.SelectedTotalBytes);
         Assert.Null(task.ReplacesTaskId);
 
-        // 现任登记不受落选影响；缺集胜出不写登记表（完成时直接落现任）。
+        // 登记表：第 12 集现任仍是旧单集，待完成优切换为合集正片（承接关系）；缺集第 13 集不写表。
         var registry12 = await FindEpisodeVersionAsync(harness, 12);
         Assert.NotNull(registry12);
         Assert.Equal(await FindAnimeFileIdAsync(harness, incumbentId), registry12.IncumbentVideoFileId);
-        Assert.Null(registry12.PendingVideoFileId);
+        Assert.Equal(await FindAnimeFileIdAsync(harness, batchId), registry12.PendingVideoFileId);
         Assert.Null(await FindEpisodeVersionAsync(harness, 13));
 
-        // 准备流程把落选文件的选择下推到下载器：第 12 集正片与字幕被跳过，其余正常下载。
-        // 轮次：提交（停止添加）→ 发出选择变更 → 确认后完成命名并启动。
+        // 准备流程不再为第 12 集下发跳过选择；任务正常启动。
         await harness.ReconcileAsync();
         await harness.ReconcileAsync();
         await harness.ReconcileAsync();
         var batchHash = (await harness.GetTaskAsync(batchId)).InfoHash;
-        Assert.Contains(harness.Store.SelectionCalls,
-                        call => call.Hash == batchHash && !call.Download &&
-                                call.Indices.OrderBy(index => index).SequenceEqual([0, 1]));
+        Assert.DoesNotContain(harness.Store.SelectionCalls,
+                              call => call.Hash == batchHash && !call.Download && call.Indices.Contains(0));
         Assert.Contains(batchHash, harness.Store.ResumeCalls);
     }
 
