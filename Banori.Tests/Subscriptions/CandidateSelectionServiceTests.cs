@@ -942,6 +942,7 @@ public sealed class CandidateSelectionServiceTests
                                                                                provider
                                                                                   .GetRequiredService<TimeProvider>()),
                                                       UnusedSubjectLinkResolver.Instance,
+                                                      new SubjectEpisodeCorrectionPolicy(),
                                                       provider.GetRequiredService<TimeProvider>(),
                                                       NullLogger<DownloadIntakeService>.Instance);
         // 门闸必须进程级共享：与应用的单例注册一致，两个服务实例（模拟刷新 worker 与

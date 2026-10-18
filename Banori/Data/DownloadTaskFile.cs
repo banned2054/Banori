@@ -30,6 +30,9 @@ public sealed class DownloadTaskFile
     /// <summary>不承担下载的原因（如“同集包内择优落选”）；null 表示默认选中，人工覆盖的选择另行标记。</summary>
     public string? SelectionReason { get; set; }
 
+    /// <summary>因更高优先级任务逐集胜出而取消下载时指向承接方任务；承接方被删除且本任务仍活动时回退为重新下载。</summary>
+    public Guid? SupersededByTaskId { get; set; }
+
     // Journal is committed before the remote request. Recovery matches normalized from/to paths plus Size, never indices.
     public string?        PendingRenameFrom { get; set; }
     public string?        PendingRenameTo   { get; set; }

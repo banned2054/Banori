@@ -36,30 +36,4 @@ internal static class DownloadTaskLookups
                        .Select(task => (Guid?)task.Id)
                        .FirstOrDefaultAsync(cancellationToken);
     }
-
-    /// <summary>
-    ///     查找本任务完成后应标记为被替换的旧任务：同 Subject + Episode、不同 hash、未被他任务替换的已完成任务，
-    ///     优先更高版本。失败任务没有可供替代的旧文件；不越过比自己更高的版本，避免旧版本反向替换新资源。
-    /// </summary>
-    internal static async Task<Guid?> FindReplacementTargetAsync(ApplicationDbContext db, int? subjectId,
-                                                                 decimal? episode, string infoHash, int version,
-                                                                 CancellationToken cancellationToken)
-    {
-        if (subjectId is null || episode is null) return null;
-
-        var candidates = await db.DownloadTasks.AsNoTracking()
-                                 .Where(candidate => candidate.SubjectId        == subjectId                    &&
-                                                     candidate.Episode          == episode                      &&
-                                                     candidate.InfoHash         != infoHash                     &&
-                                                     candidate.ReplacedByTaskId == null                         &&
-                                                     candidate.Status           == DownloadTaskStatus.Completed &&
-                                                     candidate.Version          <= version)
-                                 .Select(candidate => new { candidate.Id, candidate.Version, candidate.CreatedAtUtc })
-                                 .ToListAsync(cancellationToken);
-        // SQLite 不支持 DateTimeOffset 服务端排序，取回后内存排序（与代码库其余处理一致）。
-        return candidates.OrderByDescending(candidate => candidate.Version)
-                         .ThenByDescending(candidate => candidate.CreatedAtUtc)
-                         .Select(candidate => (Guid?)candidate.Id)
-                         .FirstOrDefault();
-    }
 }

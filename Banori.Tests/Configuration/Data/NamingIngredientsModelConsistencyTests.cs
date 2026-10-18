@@ -52,8 +52,8 @@ public sealed class NamingIngredientsModelConsistencyTests
         }
 
         var migration = assembly.Migrations.Keys.Last();
-        // 迁移序列里必须同时能看到文件表与其后的准备流程字段迁移；新增迁移后更新这里的最新迁移名。
-        Assert.Contains("AddTorrentPreparationAndFileSelection", migration);
+        // 迁移序列里必须同时能看到文件表与其后的逐集登记表迁移；新增迁移后更新这里的最新迁移名。
+        Assert.Contains("AddEpisodeVersionRegistry", migration);
         Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddDownloadTaskFiles"));
         var fileEntity = db.Model.FindEntityType(typeof(DownloadTaskFile));
         Assert.NotNull(fileEntity);
@@ -61,5 +61,13 @@ public sealed class NamingIngredientsModelConsistencyTests
                         index => index.IsUnique && index.Properties.Select(property => property.Name)
                                                         .SequenceEqual(["DownloadTaskId", "FileIndex"]));
         Assert.Equal(DeleteBehavior.Cascade, Assert.Single(fileEntity.GetForeignKeys()).DeleteBehavior);
+
+        // 每集登记表：Subject + 集数唯一，文件引用不设外键（承接回退由清理逻辑负责）。
+        var episodeEntity = db.Model.FindEntityType(typeof(EpisodeVersion));
+        Assert.NotNull(episodeEntity);
+        Assert.Contains(episodeEntity.GetIndexes(),
+                        index => index.IsUnique && index.Properties.Select(property => property.Name)
+                                                        .SequenceEqual(["SubjectId", "Episode"]));
+        Assert.Empty(episodeEntity.GetForeignKeys());
     }
 }

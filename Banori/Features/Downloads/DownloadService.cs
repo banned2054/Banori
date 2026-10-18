@@ -42,8 +42,12 @@ public sealed class DownloadService(
     ILogger<DownloadService>                logger,
     SubjectEpisodeCorrectionPolicy          episodeCorrectionPolicy,
     DownloadFileService?                    downloadFileService     = null,
-    DownloadSubmissionPathValidator?        submissionPathValidator = null)
+    DownloadSubmissionPathValidator?        submissionPathValidator = null,
+    DownloadEpisodeResolver?                episodeResolver         = null)
 {
+    private readonly DownloadEpisodeResolver episodeResolver =
+        episodeResolver ?? new DownloadEpisodeResolver(aniParser, episodeCorrectionPolicy);
+
     /// <summary>响应丢失后的自动重新提交上限；达到上限视为提交失败，等待人工重试。</summary>
     public const int MaxAutoSubmitAttempts = 5;
 
@@ -132,10 +136,13 @@ public sealed class DownloadService(
 
         // 登记期替换只落库，不在登记事务内等待 qB；在全局协调门内清理被替换且未完成的资源。
         // 单项清理失败只记录日志，下一轮按同样的未完成记录继续，不阻塞本轮提交与核对。
+        // 逐集承接退出的任务（文件带承接记录）保留内容移除种子：承接方尚未完成时旧数据仍是
+        // 恢复线索；历史整任务替换保持连文件删除的既有行为。
         List<DownloadTask> superseded;
         await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
             superseded = await db.DownloadTasks.AsNoTracking()
+                                 .Include(task => task.Files)
                                  .Where(task => task.Status           == DownloadTaskStatus.Replaced &&
                                                 task.ReplacedByTaskId != null                        &&
                                                 task.CompletedAtUtc   == null)
@@ -149,7 +156,9 @@ public sealed class DownloadService(
                 if (stillOwned) continue;
                 var foundOld = await session.FindTorrentsAsync([oldTask.InfoHash], cancellationToken);
                 if (foundOld.Count > 0)
-                    await session.DeleteTorrentAsync(oldTask.InfoHash, true, cancellationToken);
+                    await session.DeleteTorrentAsync(oldTask.InfoHash,
+                                                     !oldTask.Files.Any(file => file.SupersededByTaskId != null),
+                                                     cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -400,8 +409,8 @@ public sealed class DownloadService(
         return deletedCount;
     }
 
-    /// <summary>清理指向待删任务的替换引用：替换者被删的旧任务回退为已完成，其余任务对待删任务的替换声明置空。</summary>
-    private static async Task ClearReplacementReferencesAsync(
+    /// <summary>清理指向待删任务的替换引用：替换者被删的旧任务回退为已完成，其余任务对待删任务的替换声明置空；逐集承接的文件在所属任务仍活动时恢复下载职责；每集登记表回退待完成与现任引用。</summary>
+    private async Task ClearReplacementReferencesAsync(
         ApplicationDbContext db, IReadOnlyCollection<Guid> deletedIds, CancellationToken cancellationToken)
     {
         var referencing = await db.DownloadTasks
@@ -423,6 +432,152 @@ public sealed class DownloadService(
 
             if (other.ReplacesTaskId is { } replaces && deletedIds.Contains(replaces))
                 other.ReplacesTaskId = null;
+        }
+
+        // 承接方被删除且被承接文件所属任务仍活动：恢复其下载职责，等待对账把选择下推回下载器。
+        // 已被整任务翻转或进入终态的所属任务不复活，与上面的墓碑规则保持同一口径。
+        var revivedParentIds = await db.DownloadTaskFiles
+                                       .Where(file => file.SupersededByTaskId != null &&
+                                                      deletedIds.Contains(file.SupersededByTaskId.Value))
+                                       .Select(file => file.DownloadTaskId)
+                                       .Distinct()
+                                       .ToListAsync(cancellationToken);
+        foreach (var parentId in revivedParentIds.Where(id => !deletedIds.Contains(id)))
+        {
+            var parent = await db.DownloadTasks.Include(task => task.Files)
+                                  .SingleOrDefaultAsync(task => task.Id == parentId, cancellationToken);
+            if (parent is null || parent.Status is not (DownloadTaskStatus.PendingSubmit
+                    or DownloadTaskStatus.Submitting or DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused))
+                continue;
+
+            var revived = false;
+            foreach (var file in parent.Files.Where(file => file.SupersededByTaskId is not null &&
+                                                             deletedIds.Contains(file.SupersededByTaskId.Value)))
+            {
+                file.IsSelectedForDownload = true;
+                file.SelectionReason       = null;
+                file.SupersededByTaskId    = null;
+                file.UpdatedAtUtc          = timeProvider.GetUtcNow();
+                revived                    = true;
+            }
+
+            if (!revived) continue;
+            parent.SelectedTotalBytes     = parent.Files.Where(file => file.IsSelectedForDownload)
+                                                      .Sum(file => file.Size);
+            parent.SelectionSyncPending   = true;
+        }
+
+        // 每集登记表：待完成优胜随承接方删除而清空；现任被删时回退到它承接的上一任（也删则清空）。
+        var deletedFileIds = (await db.DownloadTaskFiles.AsNoTracking()
+                                      .Where(file => deletedIds.Contains(file.DownloadTaskId))
+                                      .Select(file => file.Id)
+                                      .ToListAsync(cancellationToken)).ToHashSet();
+        if (deletedFileIds.Count > 0)
+        {
+            var rows = await db.EpisodeVersions
+                               .Where(row => row.PendingVideoFileId   != null ||
+                                             row.IncumbentVideoFileId != null ||
+                                             row.SupersededVideoFileId != null)
+                               .ToListAsync(cancellationToken);
+            foreach (var row in rows)
+            {
+                if (row.PendingVideoFileId is { } pending && deletedFileIds.Contains(pending))
+                    row.PendingVideoFileId = null;
+                if (row.IncumbentVideoFileId is { } incumbent && deletedFileIds.Contains(incumbent))
+                {
+                    row.IncumbentVideoFileId = row.SupersededVideoFileId is { } superseded &&
+                                               !deletedFileIds.Contains(superseded)
+                        ? superseded
+                        : null;
+                    row.SupersededVideoFileId = null;
+                }
+                else if (row.SupersededVideoFileId is { } superseded && deletedFileIds.Contains(superseded))
+                    row.SupersededVideoFileId = null;
+            }
+        }
+    }
+
+    /// <summary>
+    ///     完成收尾的逐集现任切换：选中正片按文件级集数（人工覆盖 &gt; 修正解析；唯一正片解析不出
+    ///     集数时回退任务级集数）逐集登记为可播放版本，原先指向旧文件的关系保留为承接来源，
+    ///     供删除回退；本任务此前登记的待完成优胜一并清空。
+    /// </summary>
+    private async Task SwitchEpisodeIncumbentsAsync(
+        ApplicationDbContext db, DownloadTask task, CancellationToken cancellationToken)
+    {
+        if (task.SubjectId is not { } subjectId) return;
+        var videos = await db.DownloadTaskFiles.AsNoTracking()
+                             .Where(file => file.DownloadTaskId      == task.Id &&
+                                            file.Kind                == DownloadFileKind.Anime &&
+                                            file.IsSelectedForDownload)
+                             .ToListAsync(cancellationToken);
+        if (videos.Count == 0 && task.Episode is not null)
+        {
+            // 文件全部不可解析（无内容分类）的单文件任务：任务级集数身份承载唯一文件。
+            var selected = await db.DownloadTaskFiles.AsNoTracking()
+                                   .Where(file => file.DownloadTaskId      == task.Id &&
+                                                  file.IsSelectedForDownload)
+                                   .ToListAsync(cancellationToken);
+            if (selected.Count == 1) videos = selected;
+        }
+
+        if (videos.Count == 0) return;
+
+        var byEpisode = new Dictionary<decimal, DownloadTaskFile>();
+        foreach (var video in videos)
+        {
+            var episode = episodeResolver.EpisodeOf(task, video) ??
+                          (task.Episode is { } taskEpisode && videos.Count == 1 ? taskEpisode : null);
+            if (episode is not { } key || byEpisode.ContainsKey(key)) continue;
+            byEpisode[key] = video;
+        }
+        if (byEpisode.Count == 0) return;
+
+        var fileIds = videos.Select(file => file.Id).ToHashSet();
+        var rows = await db.EpisodeVersions
+                           .Where(row => row.SubjectId == subjectId)
+                           .ToListAsync(cancellationToken);
+        var incumbentFileIds = rows.Where(row => row.IncumbentVideoFileId is not null)
+                                   .Select(row => row.IncumbentVideoFileId!.Value)
+                                   .ToList();
+        var incumbentTaskVersions = incumbentFileIds.Count == 0
+            ? new Dictionary<Guid, (int Version, bool Replaceable)>()
+            : await db.DownloadTaskFiles.AsNoTracking()
+                      .Where(file => incumbentFileIds.Contains(file.Id))
+                      .Join(db.DownloadTasks.AsNoTracking(),
+                            file => file.DownloadTaskId, owner => owner.Id,
+                            (file, owner) => new { file.Id, owner.Version, owner.Status, owner.ReplacedByTaskId })
+                      .ToDictionaryAsync(item => item.Id,
+                                         item => (Version    : item.Version,
+                                                  Replaceable: item.Status         == DownloadTaskStatus.Completed &&
+                                                               item.ReplacedByTaskId == null),
+                                         cancellationToken);
+        foreach (var (episode, video) in byEpisode)
+        {
+            var row = rows.FirstOrDefault(row => row.Episode == episode);
+            if (row is null)
+            {
+                row = new EpisodeVersion { SubjectId = subjectId, Episode = episode };
+                db.EpisodeVersions.Add(row);
+                rows.Add(row);
+            }
+            else if (row.IncumbentVideoFileId is { } incumbent &&
+                     (row.PendingVideoFileId is not { } pending || !fileIds.Contains(pending)))
+            {
+                // 本任务不是登记在案的待完成优胜（未在对决中胜出，或属于不互相竞争的来源）。
+                // 例外沿用条目链完成期替换的版本守卫：现任所属任务已完成且版本不高于本任务时，
+                // 仍允许切换——覆盖两个订阅条目任务先后完成、登记时互相豁免的场景。
+                if (!incumbentTaskVersions.TryGetValue(incumbent, out var guard) ||
+                    !guard.Replaceable || guard.Version > task.Version)
+                    continue;
+            }
+
+            if (row.IncumbentVideoFileId is { } previousIncumbent && previousIncumbent != video.Id)
+                row.SupersededVideoFileId = previousIncumbent;
+            row.IncumbentVideoFileId = video.Id;
+            if (row.PendingVideoFileId is { } ownPending && fileIds.Contains(ownPending))
+                row.PendingVideoFileId = null;
+            row.UpdatedAtUtc = timeProvider.GetUtcNow();
         }
     }
 
@@ -644,6 +799,38 @@ public sealed class DownloadService(
             return;
         }
 
+        // 登记侧逐集择优改动了已进入下载（或人工暂停）任务的文件选择：把本地计划与下载器实际
+        // 选择比对下推。发出变更或存在无法寻址的文件时本轮到此为止，只同步进度，下一轮确认后再清旗。
+        if (task.SelectionSyncPending &&
+            task is not { IsSystemPaused: true } &&
+            snapshot is
+            {
+                IsMoving: false,
+                Category: QbittorrentTorrentCategory.Downloading or QbittorrentTorrentCategory.Stopped
+                       or QbittorrentTorrentCategory.Seeding
+            })
+            try
+            {
+                var selectionTask = await LoadTaskWithFilesAsync(task.Id, cancellationToken);
+                if (selectionTask is not null &&
+                    await TryApplyFileSelectionAsync(session, selectionTask, cancellationToken, false))
+                {
+                    await ApplySnapshotAsync(task.Id, task.Status, snapshot, session, cancellationToken);
+                    return;
+                }
+
+                await UpdateTaskAsync(task.Id, task.Status,
+                                      update => update.SelectionSyncPending = false, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "下载任务 {TaskId} 的文件选择同步失败，下一轮重试。", task.Id);
+            }
+
         // 首轮扫到即改名：下载中（含人工暂停）任务一旦文件仍保持登记原始路径，立即执行命名计划，
         // 不等下载完成；失败只留待下一轮重试，不阻塞本轮进度推进。已完成快照走完成链的归档校验。
         if (snapshot is
@@ -747,9 +934,10 @@ public sealed class DownloadService(
     /// <summary>
     ///     核对下载器实际文件选择与计划的一致性，不一致时发出补做请求。返回 true 表示本轮不应推进
     ///     后续步骤（已发出变更等待确认，或有文件身份无法确认——缺项不代表选择已确认）。
+    ///     markStage 为 false 时供准备外（逐集承接下推）复用，不改写解释用的准备阶段。
     /// </summary>
     private async Task<bool> TryApplyFileSelectionAsync(
-        IQbittorrentSession session, DownloadTask task, CancellationToken cancellationToken)
+        IQbittorrentSession session, DownloadTask task, CancellationToken cancellationToken, bool markStage = true)
     {
         if (!TorrentDownloadPolicy.TryLoad(task.TorrentFile, out var torrent, out var isMultiFile)) return false;
 
@@ -789,8 +977,10 @@ public sealed class DownloadService(
         if (toDownload.Count > 0)
             await session.SetTorrentFileSelectionAsync(task.InfoHash, toDownload, true, cancellationToken);
 
-        await UpdateTaskAsync(task.Id, DownloadTaskStatus.Downloading,
-                              update => update.PreparationStage = DownloadPreparationStage.Applying, cancellationToken);
+        if (markStage)
+            await UpdateTaskAsync(task.Id, DownloadTaskStatus.Downloading,
+                                  update => update.PreparationStage = DownloadPreparationStage.Applying,
+                                  cancellationToken);
         logger.LogInformation("任务 {TaskId} 已发出文件选择变更（跳过 {SkipCount} 个、恢复下载 {DownloadCount} 个），等待下载器确认。",
                               task.Id, toSkip.Count, toDownload.Count);
         return true;
@@ -1076,13 +1266,14 @@ public sealed class DownloadService(
         trackedTask.FailedStep      = null;
         trackedTask.Error           = null;
 
-        // 登记期只翻转现任状态（见 SupersedeIncumbentAsync），远端清理由对账承接；此处是兜底：
-        // 清理对账间隙仍残留的未完成替换对象——未下完的连种子带文件删除（不留半成品冗余数据），
-        // 已下完的沿用版本守卫语义仅标记、保留文件。删除下载器种子失败不阻断完成，留待人工处理。
-        var supersededHashes = new List<string>();
+        // 登记期只翻转现任状态（见 ApplyWinningEpisodesAsync），远端清理由对账承接；此处是兜底：
+        // 清理对账间隙仍残留的未完成替换对象——未下完的旧任务移除种子；文件删除仅限历史整任务
+        // 替换语义，逐集承接退出的任务保留内容。删除下载器种子失败不阻断完成，留待人工处理。
+        var supersededRemovals = new List<(string Hash, bool DeleteFiles)>();
         if (trackedTask.ReplacesTaskId is { } arbitrationTargetId)
         {
             var arbitrationTarget = await completionDb.DownloadTasks
+                                                      .Include(value => value.Files)
                                                       .SingleOrDefaultAsync(value => value.Id == arbitrationTargetId,
                                                                             cancellationToken);
             if (arbitrationTarget is not null                                     &&
@@ -1094,37 +1285,24 @@ public sealed class DownloadService(
                 var stillDownloading = arbitrationTarget.Status != DownloadTaskStatus.Completed;
                 arbitrationTarget.Status           = DownloadTaskStatus.Replaced;
                 arbitrationTarget.ReplacedByTaskId = taskId;
-                if (stillDownloading) supersededHashes.Add(arbitrationTarget.InfoHash);
+                if (stillDownloading)
+                    supersededRemovals.Add((arbitrationTarget.InfoHash,
+                                            !arbitrationTarget.Files.Any(file => file.SupersededByTaskId != null)));
             }
         }
 
-        // 创建时记录的替换对象可能已过期：完成时按当前状态重新选择并直接赋值；
-        // 查不到候选（旧任务已被更晚完成的任务替换、或仅剩更高版本任务）时清除声明，避免保留过期关系。
-        // 遵守版本守卫：新任务只替换不高于自身版本的已完成项。若登记期的旧目标已被
-        // 更高版本取代，清除过期声明而不跳过守卫去替换更高版本。
-        trackedTask.ReplacesTaskId = await DownloadTaskLookups.FindReplacementTargetAsync(completionDb,
-            trackedTask.SubjectId,
-            trackedTask.Episode, trackedTask.InfoHash,
-            trackedTask.Version, cancellationToken);
-
-        if (trackedTask.ReplacesTaskId is { } oldTaskId)
-        {
-            var oldTask = await completionDb.DownloadTasks
-                                            .SingleOrDefaultAsync(value => value.Id == oldTaskId, cancellationToken);
-            if (oldTask is not null && oldTask.Status != DownloadTaskStatus.Replaced)
-            {
-                oldTask.Status           = DownloadTaskStatus.Replaced;
-                oldTask.ReplacedByTaskId = taskId;
-            }
-        }
+        // 逐集切换现任：本任务的选中正片按文件级集数独立登记为该集可播放版本，并清掉自己此前
+        // 登记的待完成优胜。已完成旧任务不再整任务翻 Replaced——旧合集可能仍有其他现任集，
+        // 任务级替换字段自此只保留登记期摘要，现任关系以每集登记表为准。
+        await SwitchEpisodeIncumbentsAsync(completionDb, trackedTask, cancellationToken);
 
         await completionDb.SaveChangesAsync(cancellationToken);
-        foreach (var supersededHash in supersededHashes)
+        foreach (var (supersededHash, deleteFiles) in supersededRemovals)
             try
             {
-                await session.DeleteTorrentAsync(supersededHash, true, cancellationToken);
-                logger.LogInformation("高优先任务 {TaskId} 完成，已顶替删除下载器中的低优先种子 {Hash}。", taskId,
-                                      supersededHash);
+                await session.DeleteTorrentAsync(supersededHash, deleteFiles, cancellationToken);
+                logger.LogInformation("高优先任务 {TaskId} 完成，已顶替移除下载器中的低优先种子 {Hash}（连带文件：{DeleteFiles}）。",
+                                      taskId, supersededHash, deleteFiles);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1133,7 +1311,7 @@ public sealed class DownloadService(
             catch (Exception exception)
             {
                 logger.LogWarning(exception,
-                                  "顶替删除下载器中的低优先种子 {Hash} 失败，任务已标记被替换，请人工删除种子。", supersededHash);
+                                  "顶替移除下载器中的低优先种子 {Hash} 失败，任务已标记被替换，请人工删除种子。", supersededHash);
             }
 
         logger.LogInformation("下载任务 {TaskId} 已完成并改名为 {TargetName}。", taskId, targetName);

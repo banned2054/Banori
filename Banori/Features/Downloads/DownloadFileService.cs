@@ -159,9 +159,10 @@ public sealed class DownloadFileService(
     }
 
     /// <summary>
-    ///     新任务已完成且需要覆盖已完成替换任务的不同大小文件时，先把旧文件移入隐藏备份目录。
-    ///     这样旧 torrent 在替换完成前仍能做种；文件操作沿用现有持久化日志，进程重启后可恢复。
-    ///     下载中只预检路径，不移动旧成片。
+    ///     新任务已完成且需要腾出目标路径时，先把承接对象文件移入隐藏保留目录：每集登记表中本任务
+    ///     为待完成优胜的集，其已完成现任的现行文件；以及被本任务逐集承接取消选择的休眠部分数据。
+    ///     这样旧 torrent 在替换完成前仍能做种、休眠数据可恢复；文件操作沿用现有持久化日志，进程
+    ///     重启后可恢复。同路径同大小视为同一资源交叉做种，不迁让。下载中只预检路径，不移动旧成片。
     /// </summary>
     private async Task<bool> MoveConflictingReplacementFilesAsideAsync(ApplicationDbContext db,
                                                                        IQbittorrentSession session, DownloadTask task,
@@ -170,17 +171,8 @@ public sealed class DownloadFileService(
     {
         if (snapshot.Progress < 1) return true;
 
-        var replacementId = await DownloadTaskLookups.FindReplacementTargetAsync(
-         db, task.SubjectId, task.Episode, task.InfoHash, task.Version, ct);
-        if (replacementId is null) return true;
-
-        var incumbent = await db.DownloadTasks.Include(value => value.Files)
-                                .SingleOrDefaultAsync(value => value.Id == replacementId, ct);
-        if (incumbent is null                      || incumbent.Status      != DownloadTaskStatus.Completed ||
-            incumbent.ReplacedByTaskId is not null || incumbent.Files.Count == 0) return true;
-
-        // Finish an interrupted move before deciding which old paths still collide.
-        if (HasPending(incumbent) && !await ExecutePendingAsync(db, session, incumbent, ct)) return false;
+        var asideCandidates = await LoadReplacementAsideFilesAsync(db, task, ct);
+        if (asideCandidates.Count == 0) return true;
 
         var targets = plan.Paths.Values.SelectMany(path => new[] { Join(plan.Root, path), Join(task.SavePath, path) })
                           .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -192,41 +184,112 @@ public sealed class DownloadFileService(
             targetSizes[Join(task.SavePath, pair.Value)] = sizeByIndex[pair.Key];
         }
 
-        var replacementPaths = incumbent.Files.ToDictionary(file => file.FileIndex, file => file.CurrentRelativePath);
-        var filesToMoveAside = new HashSet<int>();
-        foreach (var file in incumbent.Files)
+        foreach (var ownerTaskId in asideCandidates.Select(item => item.Owner.Id).Distinct())
         {
-            var occupied = Join(incumbent.SavePath, file.CurrentRelativePath);
-            foreach (var target in targets)
+            // 种子已不在下载器（外部移除或承接清理已执行）：无法借其迁让，占用校验按放行集合处理。
+            var ownerSnapshot = (await session.FindTorrentsAsync([asideCandidates.First(item => item.Owner.Id == ownerTaskId)
+                                                                      .Owner.InfoHash], ct)).SingleOrDefault();
+            if (ownerSnapshot is null) continue;
+            if (ownerSnapshot.IsMoving) return false;
+
+            // 迁让对象的文件操作必须经 tracked 实体执行；先完成其未确认操作再规划保留位置。
+            var owner = await db.DownloadTasks.Include(value => value.Files)
+                                .SingleOrDefaultAsync(value => value.Id == ownerTaskId, ct);
+            if (owner is null || owner.Files.Count == 0) continue;
+            if (HasPending(owner) && !await ExecutePendingAsync(db, session, owner, ct)) return false;
+
+            var candidateIndices = asideCandidates.Where(item => item.Owner.Id == ownerTaskId)
+                                                  .Select(item => item.File.FileIndex)
+                                                  .ToHashSet();
+            var replacementPaths = owner.Files.ToDictionary(file => file.FileIndex, file => file.CurrentRelativePath);
+            var filesToMoveAside = new HashSet<int>();
+            foreach (var file in owner.Files.Where(file => candidateIndices.Contains(file.FileIndex)))
             {
-                if (!PathsOverlap(target, occupied)) continue;
-                var sameFile = EqualPath(target, occupied)                           &&
-                               targetSizes.TryGetValue(target, out var expectedSize) && expectedSize == file.Size;
-                if (!sameFile) filesToMoveAside.Add(file.FileIndex);
+                var occupied = Join(owner.SavePath, file.CurrentRelativePath);
+                foreach (var target in targets)
+                {
+                    if (!PathsOverlap(target, occupied)) continue;
+                    var sameFile = EqualPath(target, occupied)                           &&
+                                   targetSizes.TryGetValue(target, out var expectedSize) && expectedSize == file.Size;
+                    if (!sameFile) filesToMoveAside.Add(file.FileIndex);
+                }
+            }
+
+            if (filesToMoveAside.Count == 0) continue;
+
+            foreach (var file in owner.Files.Where(file => filesToMoveAside.Contains(file.FileIndex)))
+            {
+                var extension = Path.GetExtension(file.CurrentRelativePath);
+                replacementPaths[file.FileIndex] = RelativeDownloadPathPolicy.Normalize(
+                 $".replaced/{owner.Id:N}/{task.Id:N}-{file.FileIndex}{extension}");
+            }
+
+            var replacementPlan = new FilePlan(owner.SavePath, replacementPaths);
+            await ValidatePlanAsync(db, session, owner, replacementPlan, ct);
+            Stage(owner, replacementPlan);
+            await db.SaveChangesAsync(ct);
+            if (!await ExecutePendingAsync(db, session, owner, ct)) return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    ///     本任务完成替换时的迁让与放行对象：每集登记表中本任务为待完成优胜的集，其现任视频文件
+    ///     （现任所属任务须已完成且未被声明替换）；以及被本任务逐集承接取消选择的休眠文件
+    ///     （所属任务任意状态——部分承接的合集仍在下载其余集）。
+    /// </summary>
+    private async Task<List<(DownloadTask Owner, DownloadTaskFile File)>> LoadReplacementAsideFilesAsync(
+        ApplicationDbContext db, DownloadTask task, CancellationToken ct)
+    {
+        var result = new List<(DownloadTask, DownloadTaskFile)>();
+        var myVideoIds = task.Files.Where(file => file.Kind == DownloadFileKind.Anime && file.IsSelectedForDownload)
+                             .Select(file => file.Id)
+                             .ToList();
+
+        if (myVideoIds.Count > 0 && task.SubjectId is { } subjectId)
+        {
+            var incumbentFileIds = await db.EpisodeVersions.AsNoTracking()
+                                           .Where(row => row.SubjectId == subjectId && row.PendingVideoFileId != null)
+                                           .ToListAsync(ct);
+            var wanted = incumbentFileIds
+                        .Where(row => myVideoIds.Contains(row.PendingVideoFileId!.Value) &&
+                                      row.IncumbentVideoFileId != null)
+                        .Select(row => row.IncumbentVideoFileId!.Value)
+                        .ToList();
+            if (wanted.Count > 0)
+            {
+                var owners = await db.DownloadTasks.Include(value => value.Files).AsNoTracking()
+                                     .Where(owner => owner.Status           == DownloadTaskStatus.Completed &&
+                                                     owner.ReplacedByTaskId == null                     &&
+                                                     owner.Files.Any(file => wanted.Contains(file.Id)))
+                                     .ToListAsync(ct);
+                foreach (var owner in owners)
+                    foreach (var file in owner.Files.Where(file => wanted.Contains(file.Id)))
+                        result.Add((owner, file));
             }
         }
 
-        if (filesToMoveAside.Count == 0) return true;
+        var dormantOwners = await db.DownloadTasks.Include(value => value.Files).AsNoTracking()
+                                    .Where(owner => owner.Id != task.Id &&
+                                                    owner.Files.Any(file => file.SupersededByTaskId == task.Id))
+                                    .ToListAsync(ct);
+        foreach (var owner in dormantOwners)
+            foreach (var file in owner.Files.Where(file => file.SupersededByTaskId == task.Id &&
+                                                           !file.IsSelectedForDownload))
+                result.Add((owner, file));
 
-        // A completed incumbent may have been removed from qBittorrent outside this app.
-        // In that case there is no torrent through which we can move its old file aside;
-        // the completed replacement may still claim the exact target path below.
-        var incumbentSnapshot = (await session.FindTorrentsAsync([incumbent.InfoHash], ct)).SingleOrDefault();
-        if (incumbentSnapshot is null) return true;
-        if (incumbentSnapshot.IsMoving) return false;
+        return result;
+    }
 
-        foreach (var file in incumbent.Files.Where(file => filesToMoveAside.Contains(file.FileIndex)))
-        {
-            var extension = Path.GetExtension(file.CurrentRelativePath);
-            replacementPaths[file.FileIndex] = RelativeDownloadPathPolicy.Normalize(
-             $".replaced/{incumbent.Id:N}/{task.Id:N}-{file.FileIndex}{extension}");
-        }
-
-        var replacementPlan = new FilePlan(incumbent.SavePath, replacementPaths);
-        await ValidatePlanAsync(db, session, incumbent, replacementPlan, ct);
-        Stage(incumbent, replacementPlan);
-        await db.SaveChangesAsync(ct);
-        return await ExecutePendingAsync(db, session, incumbent, ct);
+    /// <summary>逐集承接的等路径放行集合：迁让对象的现行文件绝对路径（迁让由 MoveConflicting 执行，放行覆盖交叉做种与种子已移除的休眠数据）。</summary>
+    private async Task<HashSet<string>> LoadReplacementAllowedPathsAsync(
+        ApplicationDbContext db, DownloadTask task, CancellationToken ct)
+    {
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (owner, file) in await LoadReplacementAsideFilesAsync(db, task, ct))
+            allowed.Add(Join(owner.SavePath, file.CurrentRelativePath));
+        return allowed;
     }
 
     /// <summary>调用方必须持有同一个 DownloadCoordinationGate；仅恢复已持久化日志，不重新分类或规划。</summary>
@@ -554,9 +617,12 @@ public sealed class DownloadFileService(
             targetSizes[Join(task.SavePath, pair.Value)] = sizeByIndex[pair.Key];
         }
 
-        var replacementTargetId =
-            await DownloadTaskLookups.FindReplacementTargetAsync(db, task.SubjectId, task.Episode, task.InfoHash,
-                                                                 task.Version, ct);
+        // 逐集承接的等路径放行：本任务为登记表待完成优胜的集，其已完成现任的现行文件路径
+        // （同大小视为同一资源交叉做种，不同大小先经 MoveConflicting 迁让），以及被本任务承接
+        // 取消选择的休眠文件路径（迁让同样由 MoveConflicting 负责，种子已移除时直接放行覆盖）。
+        var replacementAllowedPaths = allowCompletedReplacementCollision
+            ? await LoadReplacementAllowedPathsAsync(db, task, ct)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var others = await db.DownloadTasks.Include(value => value.Files).AsNoTracking()
                              .Where(value => value.Id != task.Id).ToListAsync(ct);
         var managedTasksByHash = others.GroupBy(value => value.InfoHash, StringComparer.OrdinalIgnoreCase)
@@ -590,12 +656,8 @@ public sealed class DownloadFileService(
                 {
                     if (!PathsOverlap(target, path)) continue;
                     var matchingReplacementFile = allowCompletedReplacementCollision &&
-                                                  other.Id == replacementTargetId    &&
-                                                  other is
-                                                  {
-                                                      Status: DownloadTaskStatus.Completed, ReplacedByTaskId: null
-                                                  }                        &&
-                                                  !hasPendingFileOperation &&
+                                                  replacementAllowedPaths.Contains(path) &&
+                                                  !hasPendingFileOperation             &&
                                                   EqualPath(target, path);
                     if (matchingReplacementFile) continue;
                     var owner = string.IsNullOrWhiteSpace(other.NamingSnapshot)
@@ -623,11 +685,13 @@ public sealed class DownloadFileService(
                 foreach (var file in await session.ListFilesAsync(other.Hash, ct))
                 {
                     var occupied = otherRoot + "/" + (file.Path ?? string.Empty).Trim().TrimStart('/');
-                    foreach (var target in targets)
+                foreach (var target in targets)
+                {
+                    if (!PathsOverlap(target, occupied)) continue;
+                    // 逐集承接放行覆盖等路径的迁让对象（交叉做种或休眠数据），与数据库侧同一集合。
+                    if (allowCompletedReplacementCollision && replacementAllowedPaths.Contains(occupied)) continue;
+                    switch (managedTask)
                     {
-                        if (!PathsOverlap(target, occupied)) continue;
-                        switch (managedTask)
-                        {
                             case null when
                                 targetSizes.TryGetValue(target, out var expected) &&
                                 expected == file.Size :

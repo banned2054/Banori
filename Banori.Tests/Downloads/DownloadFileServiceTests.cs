@@ -620,14 +620,16 @@ public sealed class DownloadFileServiceTests
             await db.SaveChangesAsync();
         }
 
+        // 先物化文件计划：登记表的待完成优胜需要指向本任务的正片文件。
+        await h.Service.InitializeAsync(h.Task.Id);
         await h.Update(task =>
         {
-            task.SubjectId      = 123;
-            task.Version        = 2;
-            task.ReplacesTaskId = incumbentId;
+            task.SubjectId = 123;
+            task.Version   = 2;
         });
         await using (var db = await h.Factory.CreateDbContextAsync())
         {
+            var incumbentFileId = Guid.NewGuid();
             var incumbent = new DownloadTask
             {
                 Id        = incumbentId, InfoHash = new string('a', 40), SavePath = "/downloads/Media/Anime",
@@ -635,10 +637,18 @@ public sealed class DownloadFileServiceTests
             };
             incumbent.Files.Add(new DownloadTaskFile
             {
-                Id                   = Guid.NewGuid(), DownloadTaskId = incumbent.Id, FileIndex = 0,
+                Id                   = incumbentFileId, DownloadTaskId = incumbent.Id, FileIndex = 0,
                 OriginalRelativePath = "old.mkv", CurrentRelativePath = "E01.mkv", Size         = 1024
             });
             db.Add(incumbent);
+            // 逐集承接关系以登记表为准：本任务是待完成优胜，旧现任的正片是承接对象。
+            var myFileId = await db.DownloadTaskFiles.AsNoTracking()
+                                   .Where(file => file.DownloadTaskId == h.Task.Id)
+                                   .Select(file => file.Id).SingleAsync();
+            db.EpisodeVersions.Add(new EpisodeVersion
+            {
+                SubjectId = 123, Episode = 1, IncumbentVideoFileId = incumbentFileId, PendingVideoFileId = myFileId
+            });
             await db.SaveChangesAsync();
         }
 

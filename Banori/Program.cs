@@ -204,6 +204,7 @@ internal class Program
         builder.Services.AddScoped<DashboardQueries>();
         builder.Services.AddScoped<AnimeQueries>();
         builder.Services.AddSingleton<DownloadCoordinationGate>();
+        builder.Services.AddSingleton<DownloadEpisodeResolver>();
         builder.Services.AddScoped<DownloadService>();
         builder.Services.AddScoped<DownloadFileService>();
         builder.Services.AddScoped<DownloadIntakeService>();

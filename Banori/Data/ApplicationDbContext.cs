@@ -16,6 +16,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
     public DbSet<SubjectTitleMapping>  SubjectTitleMappings   => Set<SubjectTitleMapping>();
     public DbSet<DownloadTask>         DownloadTasks          => Set<DownloadTask>();
     public DbSet<DownloadTaskFile>     DownloadTaskFiles      => Set<DownloadTaskFile>();
+    public DbSet<EpisodeVersion>       EpisodeVersions        => Set<EpisodeVersion>();
     public DbSet<CandidateSelection>   CandidateSelections    => Set<CandidateSelection>();
     public DbSet<NotificationDelivery> NotificationDeliveries => Set<NotificationDelivery>();
     public DbSet<ProxyServer>          ProxyServers           => Set<ProxyServer>();
@@ -178,6 +179,16 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.HasIndex(item => new { item.DownloadTaskId, item.FileIndex }).IsUnique();
             entity.HasOne(item => item.DownloadTask).WithMany(item => item.Files)
                   .HasForeignKey(item => item.DownloadTaskId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<EpisodeVersion>(entity =>
+        {
+            entity.ToTable("EpisodeVersions");
+            entity.HasKey(item => item.Id);
+            entity.Property(item => item.MediaType).HasMaxLength(50).IsRequired();
+            entity.Property(item => item.Episode).HasPrecision(18, 4);
+            // 文件引用不设外键：承接方任务删除时由清理逻辑回退引用，而不是级联清除登记。
+            entity.HasIndex(item => new { item.SubjectId, item.Episode }).IsUnique();
         });
 
         builder.Entity<CandidateSelection>(entity =>

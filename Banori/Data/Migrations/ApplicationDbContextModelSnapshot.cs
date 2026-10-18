@@ -3,7 +3,7 @@ using System;
 using Banori.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -13,6 +13,7 @@ namespace Banori.Data.Migrations
     [DbContext(typeof(ApplicationDbContext))]
     partial class ApplicationDbContextModelSnapshot : ModelSnapshot
     {
+        /// <inheritdoc />
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
@@ -255,6 +256,9 @@ namespace Banori.Data.Migrations
                     b.Property<long?>("SelectedTotalBytes")
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("SelectionSyncPending")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("SiteSource")
                         .HasMaxLength(50)
                         .HasColumnType("TEXT");
@@ -358,6 +362,9 @@ namespace Banori.Data.Migrations
                     b.Property<long>("Size")
                         .HasColumnType("INTEGER");
 
+                    b.Property<Guid?>("SupersededByTaskId")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
                         .HasColumnType("TEXT");
 
@@ -367,6 +374,44 @@ namespace Banori.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("DownloadTaskFiles", (string)null);
+                });
+
+            modelBuilder.Entity("Banori.Data.EpisodeVersion", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("Episode")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("IncumbentVideoFileId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("MediaType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("PendingVideoFileId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("SubjectId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<Guid?>("SupersededVideoFileId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SubjectId", "Episode")
+                        .IsUnique();
+
+                    b.ToTable("EpisodeVersions", (string)null);
                 });
 
             modelBuilder.Entity("Banori.Data.FeedItem", b =>
@@ -1134,6 +1179,7 @@ namespace Banori.Data.Migrations
                     b.Navigation("RefreshWorkItems");
                 });
 #pragma warning restore 612, 618
+        
         }
     }
 }

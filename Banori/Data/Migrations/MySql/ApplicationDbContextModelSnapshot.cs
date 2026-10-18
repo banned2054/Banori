@@ -4,6 +4,7 @@ using Banori.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -260,6 +261,9 @@ namespace Banori.Data.Migrations.MySql
                     b.Property<long?>("SelectedTotalBytes")
                         .HasColumnType("bigint");
 
+                    b.Property<bool>("SelectionSyncPending")
+                        .HasColumnType("tinyint(1)");
+
                     b.Property<string>("SiteSource")
                         .HasMaxLength(50)
                         .HasColumnType("varchar(50)");
@@ -363,6 +367,9 @@ namespace Banori.Data.Migrations.MySql
                     b.Property<long>("Size")
                         .HasColumnType("bigint");
 
+                    b.Property<Guid?>("SupersededByTaskId")
+                        .HasColumnType("char(36)");
+
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
                         .HasColumnType("datetime(6)");
 
@@ -372,6 +379,46 @@ namespace Banori.Data.Migrations.MySql
                         .IsUnique();
 
                     b.ToTable("DownloadTaskFiles", (string)null);
+                });
+
+            modelBuilder.Entity("Banori.Data.EpisodeVersion", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Episode")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<Guid?>("IncumbentVideoFileId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("MediaType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
+                    b.Property<Guid?>("PendingVideoFileId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int>("SubjectId")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("SupersededVideoFileId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SubjectId", "Episode")
+                        .IsUnique();
+
+                    b.ToTable("EpisodeVersions", (string)null);
                 });
 
             modelBuilder.Entity("Banori.Data.FeedItem", b =>
@@ -1145,6 +1192,7 @@ namespace Banori.Data.Migrations.MySql
                     b.Navigation("RefreshWorkItems");
                 });
 #pragma warning restore 612, 618
+        
         }
     }
 }

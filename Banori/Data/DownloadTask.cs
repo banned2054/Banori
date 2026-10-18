@@ -70,6 +70,9 @@ public sealed class DownloadTask
     /// <summary>文件选择计划中选中文件的总大小；存在跳过文件时 Progress 记录的是所选内容进度。</summary>
     public long? SelectedTotalBytes { get; set; }
 
+    /// <summary>登记侧逐集择优改动了本任务的文件选择，等待对账把变更下推到下载器并确认。</summary>
+    public bool SelectionSyncPending { get; set; }
+
     /// <summary>本任务完成后应标记为被替换的旧任务；无外键，仅记录替换关系。</summary>
     public Guid? ReplacesTaskId { get; set; }
 
