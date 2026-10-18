@@ -71,7 +71,7 @@ public sealed class CandidateSelectionServiceTests
             Assert.Equal("/downloads", task.DownloadRootPath);
             Assert.Equal(DownloadDirectorySettings.DefaultMediaDirectory, task.MediaDirectory);
             Assert.Equal(DownloadDirectorySettings.DefaultSeedDirectory, task.SeedDirectory);
-            Assert.Equal("/downloads/Media/Anime", task.SavePath);
+            Assert.Equal("/downloads", task.SavePath);
             var file = Assert.Single(task.Files);
             Assert.Equal(task.Id, file.DownloadTaskId);
             Assert.Equal(0, file.FileIndex);

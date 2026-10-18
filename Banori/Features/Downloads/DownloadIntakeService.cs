@@ -150,14 +150,15 @@ public sealed class DownloadIntakeService(
         var identity = namingParsed is { } parsedIdentity && IsEpisodeScoped(parsedIdentity)
             ? parsedIdentity
             : null;
+        var taskId = Guid.NewGuid();
         var task = new DownloadTask
         {
-            Id          = Guid.NewGuid(),
+            Id          = taskId,
             InfoHash    = infoHash,
             TorrentFile = torrentBytes,
             TorrentUrl  = $"upload://{infoHash}",
-            SavePath = SelectSavePath(settings.SavePath, torrent, isMultiFile, directorySettings,
-                                      fileAnalysis.DemotedSeedPaths),
+            // 普通任务直接使用正式根；提交前统一按已有数据与旧版替换关系决定是否需要暂存。
+            SavePath          = settings.SavePath.Trim().TrimEnd('/', '\\'),
             DownloadRootPath  = settings.SavePath.Trim().TrimEnd('/', '\\'),
             MediaDirectory    = directorySettings.MediaDirectory,
             SeedDirectory     = directorySettings.SeedDirectory,
@@ -407,14 +408,14 @@ public sealed class DownloadIntakeService(
         var identity = namingParsed is { } parsedIdentity && IsEpisodeScoped(parsedIdentity)
             ? parsedIdentity
             : null;
+        var taskId = Guid.NewGuid();
         var task = new DownloadTask
         {
-            Id          = Guid.NewGuid(),
-            InfoHash    = infoHash,
-            TorrentFile = torrentBytes,
-            TorrentUrl  = item.TorrentUri!.AbsoluteUri,
-            SavePath =
-                SelectSavePath(basePath, torrent, isMultiFile, directorySettings, fileAnalysis.DemotedSeedPaths),
+            Id                = taskId,
+            InfoHash          = infoHash,
+            TorrentFile       = torrentBytes,
+            TorrentUrl        = item.TorrentUri!.AbsoluteUri,
+            SavePath          = basePath.Trim().TrimEnd('/', '\\'),
             DownloadRootPath  = basePath.Trim().TrimEnd('/', '\\'),
             MediaDirectory    = directorySettings.MediaDirectory,
             SeedDirectory     = directorySettings.SeedDirectory,
@@ -811,9 +812,11 @@ public sealed class DownloadIntakeService(
             foreach (var file in CoveringFiles(incumbent, verdict.Episode))
             {
                 file.IsSelectedForDownload = false;
-                file.SelectionReason       = $"已被更优任务替代：{task.NamingSnapshot}";
-                file.SupersededByTaskId    = task.Id;
-                file.UpdatedAtUtc          = timeProvider.GetUtcNow();
+                if (file.VerificationOutcome == DownloadFileVerificationOutcomes.ReusedVerified)
+                    file.VerificationOutcome = DownloadFileVerificationOutcomes.ReuseUnverified;
+                file.SelectionReason    = $"已被更优任务替代：{task.NamingSnapshot}";
+                file.SupersededByTaskId = task.Id;
+                file.UpdatedAtUtc       = timeProvider.GetUtcNow();
             }
 
             DownloadTaskLookups.RefreshSelectedTotals(incumbent);
@@ -1102,16 +1105,16 @@ public sealed class DownloadIntakeService(
         var fileAnalysis      = AnalyzeTorrentFiles(infoHash, torrent, isMultiFile, config);
         var settings          = await qbittorrentSettings.GetAsync(cancellationToken);
         var directorySettings = await GetDirectoriesAsync(cancellationToken);
+        var taskId            = Guid.NewGuid();
         var task = new DownloadTask
         {
-            Id          = Guid.NewGuid(),
-            FeedItemId  = item.Id,
-            SubjectId   = item.SubjectId,
-            InfoHash    = infoHash,
-            TorrentFile = torrentBytes,
-            TorrentUrl  = item.TorrentUrl!,
-            SavePath = SelectSavePath(settings.SavePath, torrent, isMultiFile, directorySettings,
-                                      fileAnalysis.DemotedSeedPaths),
+            Id                = taskId,
+            FeedItemId        = item.Id,
+            SubjectId         = item.SubjectId,
+            InfoHash          = infoHash,
+            TorrentFile       = torrentBytes,
+            TorrentUrl        = item.TorrentUrl!,
+            SavePath          = settings.SavePath.Trim().TrimEnd('/', '\\'),
             DownloadRootPath  = settings.SavePath.Trim().TrimEnd('/', '\\'),
             MediaDirectory    = directorySettings.MediaDirectory,
             SeedDirectory     = directorySettings.SeedDirectory,
@@ -1222,21 +1225,6 @@ public sealed class DownloadIntakeService(
         directorySettingsStore is null
             ? Task.FromResult(DownloadDirectorySettingsStore.Normalize(null, null))
             : directorySettingsStore.GetAsync(cancellationToken);
-
-    private string SelectSavePath(string                              basePath, Torrent torrent, bool isMultiFile,
-                                  DownloadDirectorySettings           directories,
-                                  IReadOnlyDictionary<string, string> demotedSeedPaths)
-    {
-        var root   = basePath.Trim().Replace('\\', '/').TrimEnd('/');
-        var policy = fileClassificationPolicy ?? new DownloadFileClassificationPolicy(aniParser);
-        var hasSeed = torrent.Files.Any(file =>
-        {
-            var path = TorrentDownloadPolicy.GetRelativePath(torrent, file, isMultiFile);
-            return demotedSeedPaths.ContainsKey(path) ||
-                   policy.Classify(path).Kind == Core.Downloads.DownloadFileKind.Seed;
-        });
-        return hasSeed ? root : DownloadPathNamePolicy.JoinSavePath(root, directories.MediaDirectory);
-    }
 
     private void AddOriginalFiles(
         DownloadTask task, Torrent torrent, bool isMultiFile, IReadOnlyDictionary<string, string> demotedSeedPaths)

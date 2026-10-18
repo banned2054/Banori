@@ -70,13 +70,16 @@ public sealed partial class DownloadServiceTests
         await harness.ReconcileAsync();
 
         Assert.Equal(DownloadTaskStatus.Completed, (await harness.GetTaskAsync(replacementId)).Status);
+        // 旧任务的成片与关联字幕一并迁入 .replaced，下载期间保留旧版，完成后才迁让。
         await using var db = await harness.CreateDbContextAsync();
         var oldFiles = await db.DownloadTaskFiles.Where(file => file.DownloadTaskId == incumbentId).ToListAsync();
+        // 旧任务的原始身份保持不变，当前路径已移入保留目录。
         Assert.All(oldFiles, file => Assert.StartsWith(".replaced/", file.CurrentRelativePath));
+        // 完成后，替换方的视频与关联字幕自动一同迁入正式位置（字幕随视频整体移动）。
         var newSubtitles = await db.DownloadTaskFiles.Where(file => file.DownloadTaskId == replacementId &&
                                                                     file.Kind           == DownloadFileKind.Subtitle)
                                    .ToListAsync();
-        Assert.Equal(tracks.Select(track => "测试作品 E12" + track + ".ass").Order(),
+        Assert.Equal(tracks.Select(track => "Media/Anime/测试作品 E12" + track + ".ass").Order(),
                      newSubtitles.Select(file => file.CurrentRelativePath).Order());
         Assert.Equal(await FindAnimeFileIdAsync(harness, replacementId),
                      (await FindEpisodeVersionAsync(harness, 12))!.IncumbentVideoFileId);
@@ -88,15 +91,14 @@ public sealed partial class DownloadServiceTests
         using var harness = await CreateHarnessAsync(enableFileArchive : true);
         await harness.SaveSelectionRulesAsync(NekoRules());
         await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
-        var oldId = await harness.CreateUploadAsync(BatchTorrent(
-                                                                 NekoTitle("繁日双语", episode : 12),
+        var oldId = await harness.CreateUploadAsync(BatchTorrent(NekoTitle("繁日双语", episode : 12),
                                                                  NekoTitle("繁日双语", episode : 13)), "mikan");
         await harness.ReconcileAsync();
         await harness.ReconcileAsync();
         var oldHash = (await harness.GetTaskAsync(oldId)).InfoHash;
-        var replacementBytes = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(BatchTorrent(
-                                                                                   NekoTitle("简日双语", episode : 12),
-                                                                                   NekoTitle("简日双语", episode : 14)))
+        var replacementBytes = Encoding.UTF8.GetBytes(Encoding.UTF8
+                                                              .GetString(BatchTorrent(NekoTitle("简日双语", episode : 12),
+                                                                             NekoTitle("简日双语", episode : 14)))
                                                               .Replace("6:lengthi1024e", "6:lengthi2048e",
                                                                        StringComparison.Ordinal));
         var replacementId = await harness.CreateUploadAsync(replacementBytes, "mikan");
@@ -108,6 +110,7 @@ public sealed partial class DownloadServiceTests
         await using var db = await harness.CreateDbContextAsync();
         var dormant = await db.DownloadTaskFiles.AsNoTracking()
                               .SingleAsync(file => file.DownloadTaskId == oldId && file.FileIndex == 0);
+        // 休眠数据仍占正式路径时先迁入 .replaced，保持数据并让出新版本目标。
         Assert.StartsWith(".replaced/", dormant.CurrentRelativePath);
         CompleteTorrent(harness, oldHash);
         await harness.ReconcileAsync();
@@ -125,8 +128,7 @@ public sealed partial class DownloadServiceTests
     {
         using var harness = await CreateHarnessAsync(enableFileArchive : true);
         await harness.SaveSelectionRulesAsync(NekoRules());
-        var oldId = await harness.CreateUploadAsync(BatchTorrent(
-                                                                 NekoTitle("繁日双语", episode : 12),
+        var oldId = await harness.CreateUploadAsync(BatchTorrent(NekoTitle("繁日双语", episode : 12),
                                                                  NekoTitle("繁日双语", episode : 14)), "mikan");
         await harness.ReconcileAsync();
         var files = harness.Provider.GetRequiredService<DownloadFileService>();
@@ -150,7 +152,7 @@ public sealed partial class DownloadServiceTests
         var oldId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("繁日双语")), "mikan");
         await harness.ReconcileAsync();
         await harness.Provider.GetRequiredService<DownloadFileService>().ApplyAsync(oldId, 0,
-                 new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 12, EpisodeEnd : 13));
+            new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 12, EpisodeEnd : 13));
 
         await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语")), "mikan");
 
@@ -168,7 +170,7 @@ public sealed partial class DownloadServiceTests
         var       id      = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("繁日双语")), "mikan");
         await harness.ReconcileAsync();
         await harness.Provider.GetRequiredService<DownloadFileService>().ApplyAsync(id, 0,
-                 new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 12, EpisodeEnd : 13));
+            new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 12, EpisodeEnd : 13));
 
         CompleteTorrent(harness, (await harness.GetTaskAsync(id)).InfoHash);
         await harness.ReconcileAsync();
@@ -185,7 +187,7 @@ public sealed partial class DownloadServiceTests
         var oldId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("繁日双语")), "mikan");
         await harness.ReconcileAsync();
         await harness.Provider.GetRequiredService<DownloadFileService>().ApplyAsync(oldId, 0,
-                 new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 14));
+            new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 14));
 
         await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语")), "mikan");
 
@@ -201,8 +203,7 @@ public sealed partial class DownloadServiceTests
     {
         using var harness = await CreateHarnessAsync(enableFileArchive : true);
         await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
-        var id = await harness.CreateUploadAsync(BatchTorrent(
-                                                              NekoTitle("简日双语", episode : 12),
+        var id = await harness.CreateUploadAsync(BatchTorrent(NekoTitle("简日双语", episode : 12),
                                                               NekoTitle("简日双语", episode : 13)), "mikan");
         await harness.ReconcileAsync();
         await harness.ReconcileAsync();
@@ -215,7 +216,7 @@ public sealed partial class DownloadServiceTests
         }
 
         await harness.Provider.GetRequiredService<DownloadFileService>().ApplyAsync(id, 1,
-                 new DownloadFileEditRequest(DownloadFileKind.Seed));
+            new DownloadFileEditRequest(DownloadFileKind.Seed));
 
         var task = await harness.GetTaskAsync(id);
         Assert.Equal("/downloads", task.SavePath);
@@ -229,18 +230,16 @@ public sealed partial class DownloadServiceTests
     public async Task Reconcile_BatchIncumbentVersion_IsNotDowngradedByDefaultTaskVersion()
     {
         using var harness = await CreateHarnessAsync();
-        var       v3      = NekoTitle("简日双语", episode : 12).Replace("[12]", "[12v3]", StringComparison.Ordinal);
-        var incumbentId = await harness.CreateUploadAsync(BatchTorrent(v3,
-                                                                       NekoTitle("简日双语", episode : 13)), "mikan");
+        var v3 = NekoTitle("简日双语", episode : 12).Replace("[12]", "[12v3]", StringComparison.Ordinal);
+        var incumbentId = await harness.CreateUploadAsync(BatchTorrent(v3, NekoTitle("简日双语", episode : 13)), "mikan");
         await harness.ReconcileAsync();
         CompleteTorrent(harness, (await harness.GetTaskAsync(incumbentId)).InfoHash);
         await harness.ReconcileAsync();
         Assert.Equal(1, (await harness.GetTaskAsync(incumbentId)).Version);
         var incumbentFile = await FindAnimeFileIdAsync(harness, incumbentId);
 
-        var v2 = NekoTitle("简日双语", episode : 12).Replace("[12]", "[12v2]", StringComparison.Ordinal);
-        var challengerId = await harness.CreateUploadAsync(BatchTorrent(v2,
-                                                                        NekoTitle("简日双语", episode : 14)), "byrbt");
+        var v2           = NekoTitle("简日双语", episode : 12).Replace("[12]", "[12v2]", StringComparison.Ordinal);
+        var challengerId = await harness.CreateUploadAsync(BatchTorrent(v2, NekoTitle("简日双语", episode : 14)), "byrbt");
         Assert.Null((await FindEpisodeVersionAsync(harness, 12))!.PendingVideoFileId);
         await harness.ReconcileAsync();
         CompleteTorrent(harness, (await harness.GetTaskAsync(challengerId)).InfoHash);

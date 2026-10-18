@@ -359,6 +359,9 @@ public sealed class DownloadTaskFilesTests
             return ListGate?.Task ?? Task.FromResult(Details);
         }
 
+        public Task RetryArchiveAsync(Guid id, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("该替身不承担归档确认用例。");
+
         public Task<DownloadFilePreview> PreviewAsync(Guid              id, int index, DownloadFileEditRequest request,
                                                       CancellationToken cancellationToken = default)
         {

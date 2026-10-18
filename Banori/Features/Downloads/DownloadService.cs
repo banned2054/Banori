@@ -51,9 +51,15 @@ public sealed class DownloadService(
     /// <summary>所有下载登记的前置门禁：解析 Bangumi 绑定，未绑定返回 null（调用方拒绝下载并要求补 ID）。</summary>
     private const string SubjectUnboundMessage = "未能绑定 Bangumi Subject，请在表单补充 Bangumi ID 后重试。";
 
+    private const int MaxRecheckIssues             = 2;
+    private const int MaxVerificationPauseAttempts = 3;
+
     /// <summary>能解析出集数的内容文件扩展名：视频与字幕；其余一律视为附属文件。</summary>
     private static readonly string[] ContentFileExtensions =
         [".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".wmv", ".mov", ".flv", ".ass", ".ssa", ".srt", ".sup"];
+
+    /// <summary>等待观察到 Checking 的时间窗与有界重发上限；时间戳本身不是证据，超时按未确认处理。</summary>
+    private static readonly TimeSpan RecheckObservationWindow = TimeSpan.FromMinutes(10);
 
     private readonly DownloadEpisodeResolver episodeResolver =
         episodeResolver ?? new DownloadEpisodeResolver(aniParser, episodeCorrectionPolicy);
@@ -85,8 +91,10 @@ public sealed class DownloadService(
             pendingFileTasks = downloadFileService is null
                 ? []
                 : await db.DownloadTasks.AsNoTracking()
-                          .Where(task => task.PendingSavePath != null ||
-                                         task.Files.Any(file => file.PendingRenameTo != null))
+                          .Where(task => task.IsolationState     == DownloadIsolationState.None &&
+                                         task.VerificationIntent == null                        &&
+                                         (task.PendingSavePath != null ||
+                                          task.Files.Any(file => file.PendingRenameTo != null)))
                           .Select(task => new ValueTuple<Guid, string>(task.Id, task.InfoHash))
                           .ToListAsync(cancellationToken);
         }
@@ -119,6 +127,11 @@ public sealed class DownloadService(
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (DownloadFileIdentityException exception)
+            {
+                var current = await LoadTaskAsync(taskId, cancellationToken);
+                await MarkFailedAsync(taskId, current.Status, "文件整理", exception.Message, cancellationToken);
             }
             catch (Exception exception)
             {
@@ -188,6 +201,10 @@ public sealed class DownloadService(
             {
                 throw;
             }
+            catch (DownloadFileIdentityException exception)
+            {
+                await MarkFailedAsync(task.Id, task.Status, "文件整理", exception.Message, cancellationToken);
+            }
             catch (Exception exception)
             {
                 logger.LogError(exception, "对账下载任务 {TaskId} 失败，下一轮重试。", task.Id);
@@ -213,7 +230,8 @@ public sealed class DownloadService(
 
     public async Task PauseAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
-        var task = await LoadTaskAsync(taskId, cancellationToken);
+        using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
+        var       task              = await LoadTaskAsync(taskId, cancellationToken);
         if (task.Status != DownloadTaskStatus.Downloading) throw new InvalidOperationException("只有下载中的任务可以暂停。");
 
         await using var session = await sessionFactory.CreateAsync(cancellationToken);
@@ -227,7 +245,8 @@ public sealed class DownloadService(
 
     public async Task ResumeAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
-        var task = await LoadTaskAsync(taskId, cancellationToken);
+        using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
+        var       task              = await LoadTaskAsync(taskId, cancellationToken);
         if (task.Status != DownloadTaskStatus.Paused || !task.IsUserPaused)
             throw new InvalidOperationException("只有人工暂停的任务可以恢复。");
 
@@ -255,9 +274,13 @@ public sealed class DownloadService(
     /// <summary>人工重试：失败或丢失的任务重新进入待提交队列，沿用原决策与命名快照。</summary>
     public async Task RetryAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
-        var task = await LoadTaskAsync(taskId, cancellationToken);
+        using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
+        var       task              = await LoadTaskAsync(taskId, cancellationToken);
         if (task.Status is not (DownloadTaskStatus.Failed or DownloadTaskStatus.Lost))
             throw new InvalidOperationException("只有失败或丢失的任务可以重试。");
+
+        if (DownloadVerificationIntent.FromJson(task.VerificationIntent) is { } intent)
+            await EnterIsolationAsync(task, intent, "人工重试校验失败的任务，废弃旧证据并转为独立下载。", cancellationToken);
 
         await UpdateTaskAsync(taskId, task.Status, update =>
         {
@@ -495,8 +518,10 @@ public sealed class DownloadService(
             if (parent.Status is not (DownloadTaskStatus.PendingSubmit or DownloadTaskStatus.Submitting or
                                       DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused)) continue;
             file.IsSelectedForDownload = true;
-            file.SelectionReason       = null;
-            file.UpdatedAtUtc          = timeProvider.GetUtcNow();
+            if (file.VerificationOutcome == DownloadFileVerificationOutcomes.ReusedVerified)
+                file.VerificationOutcome = DownloadFileVerificationOutcomes.ReuseUnverified;
+            file.SelectionReason = null;
+            file.UpdatedAtUtc    = timeProvider.GetUtcNow();
             changedParents.Add(parent);
         }
 
@@ -645,6 +670,16 @@ public sealed class DownloadService(
         // 至多一个活动任务，接管不会与自身其他任务互相抢占。
         var existing = (await session.FindTorrentsAsync([task.InfoHash], cancellationToken))
            .FirstOrDefault();
+        // 响应丢失或人工重试仍须恢复原状态机，不能按普通接管改名、移动或完成共享候选。
+        if (task.IsolationState != DownloadIsolationState.None || task.VerificationIntent is not null)
+        {
+            await UpdateTaskAsync(task.Id, task.Status, update => update.Status = DownloadTaskStatus.Downloading,
+                                  cancellationToken);
+            await ReconcileTrackedAsync(session, await LoadTaskAsync(task.Id, cancellationToken), existing,
+                                        cancellationToken);
+            return;
+        }
+
         if (existing is not null)
         {
             await AdoptExistingAsync(task, existing, session, cancellationToken);
@@ -658,7 +693,34 @@ public sealed class DownloadService(
             return;
         }
 
-        if (!string.IsNullOrWhiteSpace(task.DownloadRootPath))
+        // 一个规划流程：已有候选先校验；需要替换旧版时暂存；其余任务直接在正式根下载。
+        (string CandidateRoot, string IntentJson)? verificationAdd;
+        string                                     addRoot;
+        try
+        {
+            verificationAdd = await TryPlanVerificationAddAsync(session, task, cancellationToken);
+            var replacing = task.ReplacesTaskId is not null || (downloadFileService is not null &&
+                                                                await downloadFileService
+                                                                   .HasReplacementAsync(task.Id, cancellationToken));
+            addRoot = verificationAdd?.CandidateRoot ??
+                      (string.IsNullOrWhiteSpace(task.DownloadRootPath) ? task.SavePath :
+                          replacing ? DownloadTaskPlacement.TaskRoot(task.DownloadRootPath, task.Id) :
+                                      task.DownloadRootPath);
+            task.SavePath = addRoot;
+            if (verificationAdd is null                   && !string.IsNullOrWhiteSpace(task.DownloadRootPath) &&
+                !DownloadTaskPlacement.IsTaskScoped(task) && downloadFileService is not null                   &&
+                await InitialLayoutConflictsAsync(session,
+                                                  await LoadTaskWithFilesAsync(task.Id, cancellationToken) ?? task,
+                                                  addRoot, cancellationToken))
+                throw new TargetPathOccupiedException("种子的原始布局被其他任务占用，不能在该目录直接添加，请先处理冲突。");
+        }
+        catch (InvalidOperationException exception)
+        {
+            await MarkFailedAsync(task.Id, task.Status, "提交路径", exception.Message, cancellationToken);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(task.DownloadRootPath) && verificationAdd is null)
             try
             {
                 await (submissionPathValidator ?? new DownloadSubmissionPathValidator(dbContextFactory))
@@ -680,12 +742,18 @@ public sealed class DownloadService(
             update.SubmittedAtUtc   ??= timeProvider.GetUtcNow();
             update.IsSystemPaused   =   true;
             update.PreparationStage =   DownloadPreparationStage.Planned;
+            update.SavePath         =   addRoot;
+            if (verificationAdd is not null)
+            {
+                update.SavePath           = verificationAdd.Value.CandidateRoot;
+                update.VerificationIntent = verificationAdd.Value.IntentJson;
+            }
         }, cancellationToken);
 
         string response;
         try
         {
-            response = await session.AddTorrentAsync(task.TorrentFile, task.SavePath,
+            response = await session.AddTorrentAsync(task.TorrentFile, addRoot,
                                                      TagsFor(task), task.NamingSnapshot,
                                                      true, cancellationToken);
         }
@@ -751,6 +819,622 @@ public sealed class DownloadService(
         // 停止状态，本轮不做文件操作，崩溃或响应丢失都由对账幂等补做。
     }
 
+    /// <summary>
+    ///     提交前统一识别已有数据并生成校验布局；无候选则返回普通下载规划。已有候选与新文件共用下载根，原始布局存在冲突时明确阻止提交。
+    /// </summary>
+    private async Task<(string CandidateRoot, string IntentJson)?> TryPlanVerificationAddAsync(
+        IQbittorrentSession session, DownloadTask task, CancellationToken ct)
+    {
+        if (downloadFileService is null || string.IsNullOrWhiteSpace(task.DownloadRootPath)) return null;
+
+        IReadOnlyList<(int FileIndex, string TargetPath)> targets;
+        try
+        {
+            targets = await downloadFileService.ComputeArchivalTargetsAsync(task.Id, ct);
+        }
+        catch (InvalidOperationException)
+        {
+            // 命名要素缺失等规划错误：候选无从谈起，由普通准备阶段呈现命名错误。
+            return null;
+        }
+
+        if (targets.Count == 0) return null;
+
+        var candidates = await downloadFileService.EnumerateReuseCandidatesAsync(session, task.Id, targets, ct);
+        if (candidates.Count == 0) return null;
+
+        var candidateRoot = DownloadPathNamePolicy.NormalizePath(task.DownloadRootPath ?? task.SavePath);
+
+        var withFiles = await LoadTaskWithFilesAsync(task.Id, ct);
+        if (withFiles is null) return null;
+        if (await InitialLayoutConflictsAsync(session, withFiles, candidateRoot, ct,
+                                              candidates.GroupBy(item => item.AbsolutePath,
+                                                                 StringComparer.OrdinalIgnoreCase)
+                                                        .ToDictionary(group => group.Key, group => group.First().Size,
+                                                                      StringComparer.OrdinalIgnoreCase)))
+            throw new TargetPathOccupiedException("校验任务的原始布局存在非候选占用，无法安全添加。");
+        var replacing = await downloadFileService.HasReplacementAsync(task.Id, ct);
+
+        var files = new List<DownloadVerificationMapping>();
+        foreach (var file in withFiles.Files)
+        {
+            var    target    = targets.FirstOrDefault(pair => pair.FileIndex    == file.FileIndex);
+            var    candidate = candidates.FirstOrDefault(item => item.FileIndex == file.FileIndex);
+            string verificationPath;
+            var    isCandidate = false;
+            if (file.IsSelectedForDownload && candidate != default &&
+                EqualVerificationPath(candidate.AbsolutePath, target.TargetPath))
+            {
+                verificationPath = candidate.AbsolutePath;
+                isCandidate      = true;
+            }
+            else
+            {
+                verificationPath = file.IsSelectedForDownload && !replacing && target != default
+                    ? target.TargetPath
+                    : DownloadPathNamePolicy.JoinSavePath(candidateRoot,
+                                                          $".tasks-{withFiles.Id:N}/{file.OriginalRelativePath}");
+            }
+
+            files.Add(new DownloadVerificationMapping(file.FileIndex,
+                                                      DownloadPathNamePolicy.NormalizePath(verificationPath),
+                                                      file.Size, file.IsSelectedForDownload,
+                                                      target == default ? null : target.TargetPath, isCandidate));
+        }
+
+        var intent = new DownloadVerificationIntent
+        {
+            Round         = 1, Step = DownloadVerificationStep.Mapping, CreatedAtUtc = timeProvider.GetUtcNow(),
+            CandidateRoot = candidateRoot, Files = files
+        };
+        return (candidateRoot, intent.ToJson());
+    }
+
+    private static bool EqualVerificationPath(string left, string right) =>
+        string.Equals(DownloadPathNamePolicy.NormalizePath(left), DownloadPathNamePolicy.NormalizePath(right),
+                      StringComparison.Ordinal);
+
+
+    /// <summary>
+    ///     候选根初始布局冲突检查：按种子实际内容布局推导（单文件为文件名、多文件为元数据相对路径），
+    ///     检查全部文件（含未选中）的真实初始路径及映射后的停靠命名空间，与下载器种子及数据库任务的可见路径
+    ///     做相等与父子重叠比对。候选根本身是共享位置，任何可见冲突都意味着无法证明初始映射安全，整体降级。
+    /// </summary>
+    private async Task<bool> InitialLayoutConflictsAsync(
+        IQbittorrentSession                session, DownloadTask task, string candidateRoot, CancellationToken ct,
+        IReadOnlyDictionary<string, long>? candidates = null)
+    {
+        if (!TorrentDownloadPolicy.TryLoad(task.TorrentFile, out var torrent, out var isMultiFile)) return true;
+        var layout = torrent.Files
+                            .SelectMany(file =>
+                             {
+                                 var relative = TorrentDownloadPolicy.GetRelativePath(torrent, file, isMultiFile);
+                                 return new[]
+                                 {
+                                     DownloadPathNamePolicy.JoinSavePath(candidateRoot, relative),
+                                     DownloadPathNamePolicy.JoinSavePath(candidateRoot,
+                                                                         $".tasks-{task.Id:N}/{relative}")
+                                 };
+                             })
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        List<DownloadTask> others;
+        await using (var db = await dbContextFactory.CreateDbContextAsync(ct))
+        {
+            others = await db.DownloadTasks.Include(value => value.Files).AsNoTracking()
+                             .Where(value => value.Id != task.Id).ToListAsync(ct);
+        }
+
+        foreach (var other in others)
+        {
+            var occupiedPaths = new List<string>();
+            if (other.Files.Count == 0) occupiedPaths.Add(other.SavePath);
+            foreach (var file in other.Files)
+            {
+                occupiedPaths.Add(DownloadPathNamePolicy.JoinSavePath(other.SavePath, file.CurrentRelativePath));
+                foreach (var pending in new[] { file.PendingRenameFrom, file.PendingRenameTo }
+                            .Where(value => value is not null))
+                    occupiedPaths.Add(DownloadPathNamePolicy.JoinSavePath(other.SavePath, pending!));
+                if (other.PendingSavePath is null) continue;
+                occupiedPaths.Add(DownloadPathNamePolicy.JoinSavePath(other.PendingSavePath, file.CurrentRelativePath));
+                occupiedPaths.Add(DownloadPathNamePolicy.JoinSavePath(other.PendingSavePath,
+                                                                      file.OriginalRelativePath));
+            }
+
+            if (occupiedPaths.Any(path => layout.Any(item => PathsOverlapAbsolute(item, path)) &&
+                                          (candidates is null || !candidates.ContainsKey(path)))) return true;
+        }
+
+        foreach (var other in await session.ListTorrentsAsync(null, ct))
+        {
+            if (string.Equals(other.Hash, task.InfoHash, StringComparison.OrdinalIgnoreCase)) continue;
+            try
+            {
+                var root = DownloadPathNamePolicy.NormalizePath(other.SavePath).TrimEnd('/');
+                foreach (var file in await session.ListFilesAsync(other.Hash, ct))
+                {
+                    var occupied = root + "/" + (file.Path ?? string.Empty).Trim().TrimStart('/');
+                    if (layout.Any(item => PathsOverlapAbsolute(item, occupied) &&
+                                           !(EqualVerificationPath(item, occupied)          && candidates is not null &&
+                                             candidates.TryGetValue(occupied, out var size) && size == file.Size)))
+                        return true;
+                }
+            }
+            catch (ArgumentException)
+            {
+                // 无法解析保存根的外部种子跳过。
+            }
+        }
+
+        return false;
+    }
+
+    private static bool PathsOverlapAbsolute(string left, string right)
+    {
+        var l = DownloadPathNamePolicy.NormalizePath(left).TrimEnd('/');
+        var r = DownloadPathNamePolicy.NormalizePath(right).TrimEnd('/');
+        return string.Equals(l, r, StringComparison.OrdinalIgnoreCase)   ||
+               l.StartsWith(r + "/", StringComparison.OrdinalIgnoreCase) ||
+               r.StartsWith(l + "/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task SaveVerificationIntentAsync(
+        Guid taskId, DownloadTaskStatus expectedStatus, DownloadVerificationIntent intent, CancellationToken ct) =>
+        await UpdateTaskAsync(taskId, expectedStatus,
+                              update => update.VerificationIntent = intent.ToJson(), ct);
+
+    /// <summary>
+    ///     活跃校验的推进驱动。快照无法区分「谁启动了运行」，校验期出现无法解释的运行状态一律先暂停；
+    ///     人工暂停意图保留（IsUserPaused 全程不动）。完成证据：当前轮次观察到 Checking 且结束、
+    ///     映射未变、无移动、无错误，并在停止状态读取稳定文件结果。
+    /// </summary>
+    private async Task AdvanceVerificationAsync(IQbittorrentSession session,  DownloadTask               task,
+                                                TorrentSnapshot?    snapshot, DownloadVerificationIntent intent,
+                                                CancellationToken   ct)
+    {
+        var loaded = await LoadTaskWithFilesAsync(task.Id, ct);
+        if (loaded is null ||
+            loaded.Status is not (DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused)) return;
+        task = loaded;
+
+        if (snapshot is null)
+        {
+            await EnterIsolationAsync(task, intent, "校验期间下载器中的任务已消失，转为独立下载。", ct);
+            return;
+        }
+
+        if (!MatchesIsolationPath(snapshot.SavePath, intent.CandidateRoot)                       ||
+            !MatchesIsolationPath(task.SavePath, intent.CandidateRoot)                           ||
+            intent.Files.Count                                             != task.Files.Count   ||
+            intent.Files.Select(file => file.FileIndex).Distinct().Count() != intent.Files.Count ||
+            intent.Files.Any(mapping => task.Files.All(file =>
+                                                           file.FileIndex             != mapping.FileIndex ||
+                                                           file.Size                  != mapping.Size      ||
+                                                           file.IsSelectedForDownload != mapping.Selected)))
+        {
+            await EnterIsolationAsync(task, intent, "校验的保存根、文件身份或选择计划已改变，结果作废。", ct);
+            return;
+        }
+
+        if (snapshot is { Category: QbittorrentTorrentCategory.Checking } or { IsMoving: true })
+        {
+            if (timeProvider.GetUtcNow() >= (intent.DeadlineUtc ?? intent.CreatedAtUtc + RecheckObservationWindow))
+            {
+                await MarkFailedAsync(task.Id, task.Status, "复用校验", "校验或移动持续超时，请人工核对下载器。", ct);
+                return;
+            }
+
+            if (snapshot.IsMoving && intent.ObservedChecking)
+            {
+                await SaveVerificationIntentAsync(task.Id, task.Status,
+                                                  intent with
+                                                  {
+                                                      Step = DownloadVerificationStep.Requested,
+                                                      ObservedChecking = false
+                                                  }, ct);
+                return;
+            }
+
+            // Moving 不是 Checking；请求前观察到的外部校验也不能充当本轮请求的完成证据。
+            if (snapshot is { IsMoving: false, Category: QbittorrentTorrentCategory.Checking } &&
+                intent.Step != DownloadVerificationStep.Mapping                                &&
+                intent is { IssuedCount: > 0, RecheckRequestedAtUtc: not null, ObservedChecking: false })
+                await SaveVerificationIntentAsync(task.Id, task.Status,
+                                                  intent with
+                                                  {
+                                                      ObservedChecking = true,
+                                                      Step = DownloadVerificationStep.Observing
+                                                  }, ct);
+            await UpdateTaskAsync(task.Id, task.Status, update =>
+            {
+                update.Progress        = snapshot.Progress;
+                update.TotalSize       = snapshot.TotalSize;
+                update.LastSyncedAtUtc = timeProvider.GetUtcNow();
+            }, ct);
+            return;
+        }
+
+        // 校验后进入错误状态：结果不可解释，不算通过，转独立下载（先于运行分支处理）。
+        if (snapshot is { Category: QbittorrentTorrentCategory.Error })
+        {
+            await EnterIsolationAsync(task, intent, "校验结束后任务进入错误状态，结果不可用，转为独立下载。", ct);
+            return;
+        }
+
+        if (snapshot is not { Category: QbittorrentTorrentCategory.Stopped })
+        {
+            // 运行中（校验后自动恢复或外部启动，快照无法区分来源）：统一先暂停再观察；
+            // 暂停屡次不生效则转待核对，绝不带着未证实的共享写入继续。
+            if (intent.PauseAttempts >= MaxVerificationPauseAttempts)
+            {
+                await MarkFailedAsync(task.Id, task.Status, "复用校验",
+                                      "校验期间任务持续处于运行状态且暂停不生效，为保护共享数据已停止推进，请人工核对。",
+                                      ct);
+                return;
+            }
+
+            await SaveVerificationIntentAsync(task.Id, task.Status,
+                                              intent with { PauseAttempts = intent.PauseAttempts + 1 }, ct);
+            await session.PauseAsync(task.InfoHash, ct);
+            logger.LogWarning("任务 {TaskId} 校验期间出现无法解释的运行状态，已发出暂停（第 {Attempts} 次）。",
+                              task.Id, intent.PauseAttempts + 1);
+            return;
+        }
+
+        if (intent.PauseAttempts > 0 && intent.Step != DownloadVerificationStep.ReadyToRun)
+        {
+            await EnterIsolationAsync(task, intent, "校验期间曾出现无法解释的运行，原校验证据失效，转为独立下载。", ct);
+            return;
+        }
+
+        if (task.IsUserPaused) return;
+
+        if (intent.Step == DownloadVerificationStep.Mapping)
+        {
+            // 先确认文件选择，再执行受控映射；选择变更发出后当轮返回。
+            if (await TryApplyFileSelectionAsync(session, task, ct)) return;
+            if (downloadFileService is null) return;
+
+            // 辅助条件：候选文件必须零进度——存在已写数据时改名 onto 候选会移动数据，整体降级。
+            var candidateRelatives = CandidateRelativePaths(intent);
+            if (candidateRelatives.Count == 0)
+            {
+                await EnterIsolationAsync(task, intent, "校验意图缺少候选映射，转为独立下载。", ct);
+                return;
+            }
+
+            if (await AnyCandidateHasProgressAsync(session, task, candidateRelatives, ct))
+            {
+                await EnterIsolationAsync(task, intent, "候选文件在映射前已有数据进度，无法安全映射，转为独立下载。",
+                                          ct);
+                return;
+            }
+
+            try
+            {
+                if (!await downloadFileService.ApplyVerificationMappingUnderGateAsync(session, task.Id,
+                        candidateRelatives, ct)) return;
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or QbittorrentBadRequestException)
+            {
+                await EnterIsolationAsync(task, intent, $"受控映射不能安全完成：{exception.Message}", ct);
+                return;
+            }
+
+            // 映射确认完成：先落库本轮请求记录（重置 ObservedChecking），再发出 recheck。
+            var requested = intent with
+            {
+                Step = DownloadVerificationStep.Requested, IssuedCount = intent.IssuedCount + 1,
+                RecheckRequestedAtUtc = timeProvider.GetUtcNow(),
+                DeadlineUtc = timeProvider.GetUtcNow() + RecheckObservationWindow, ObservedChecking = false
+            };
+            await SaveVerificationIntentAsync(task.Id, task.Status, requested, ct);
+            await UpdateTaskAsync(task.Id, task.Status,
+                                  update => update.PreparationStage = DownloadPreparationStage.AwaitingVerification,
+                                  ct);
+            await session.RecheckTorrentAsync(task.InfoHash, ct);
+            return;
+        }
+
+        var now = timeProvider.GetUtcNow();
+        if (!intent.ObservedChecking)
+        {
+            // 尚未观察到 Checking：截止时间内等待；超时有界重发；仍无则按未确认转独立下载。
+            if (intent.DeadlineUtc is { } deadline && now < deadline) return;
+            if (intent.IssuedCount < MaxRecheckIssues)
+            {
+                var reissued = intent with
+                {
+                    Step = DownloadVerificationStep.Requested, IssuedCount = intent.IssuedCount + 1,
+                    RecheckRequestedAtUtc = now, DeadlineUtc = now + RecheckObservationWindow,
+                    ObservedChecking = false
+                };
+                await SaveVerificationIntentAsync(task.Id, task.Status, reissued, ct);
+                await session.RecheckTorrentAsync(task.InfoHash, ct);
+                return;
+            }
+
+            await EnterIsolationAsync(task, intent,
+                                      "多次请求校验后仍未观察到校验阶段，无法确认本次校验已执行，转为独立下载。",
+                                      ct);
+            return;
+        }
+
+        // 本轮已观察到 Checking 且已结束：核对映射未变并读取稳定结果。
+        var remoteFiles = await session.ListFilesAsync(task.InfoHash, ct);
+        if (!TorrentDownloadPolicy.TryLoad(task.TorrentFile, out var torrent, out var isMultiFile))
+            throw new DownloadFileIdentityException("校验任务的种子元数据无法解析。");
+        if (remoteFiles.Count                                         != task.Files.Count ||
+            remoteFiles.Select(file => file.Index).Distinct().Count() != remoteFiles.Count)
+        {
+            await EnterIsolationAsync(task, intent, "校验后的文件清单不完整或身份重复。", ct);
+            return;
+        }
+
+        var indexByPath = TorrentDownloadPolicy.GetQbittorrentFileIndices(task.TorrentFile, torrent, isMultiFile);
+        var remoteByIndex = remoteFiles.GroupBy(file => file.Index)
+                                       .ToDictionary(group => group.Key, group => group.First());
+        var candidatesFailed    = new List<string>();
+        var allSelectedComplete = true;
+        foreach (var mapping in intent.Files)
+        {
+            var file = task.Files.Single(item => item.FileIndex == mapping.FileIndex);
+            if (!indexByPath.TryGetValue(file.OriginalRelativePath, out var qbIndex) ||
+                !remoteByIndex.TryGetValue(qbIndex, out var remote) ||
+                remote.Size != mapping.Size || remote.IsSelectedForDownload != mapping.Selected ||
+                !EqualVerificationPath(JoinAbsolute(task.SavePath, file.CurrentRelativePath),
+                                       mapping.VerificationPath) ||
+                !EqualVerificationPath(JoinAbsolute(intent.CandidateRoot, remote.Path), mapping.VerificationPath))
+            {
+                // 映射在校验期间发生变化：结果作废，转独立下载。
+                await EnterIsolationAsync(task, intent, "映射在校验期间发生变化，校验结果作废，转为独立下载。", ct);
+                return;
+            }
+
+            if (!mapping.Selected) continue;
+            var complete                       = file.Size <= 0 || remote.Progress >= 1.0;
+            if (!complete) allSelectedComplete = false;
+            if (mapping.IsCandidate && !complete)
+                candidatesFailed.Add(mapping.VerificationPath);
+        }
+
+        if (candidatesFailed.Count > 0)
+        {
+            await EnterIsolationAsync(task, intent,
+                                      $"候选路径数据未通过校验（该次映射未通过或不能确认）：{string.Join("、", candidatesFailed)}。",
+                                      ct);
+            return;
+        }
+
+        // 文件结果读取期间下载器也可能被外部移动/启动；必须回读停止态与保存根，不能组合不同时刻的证据。
+        var stable = (await session.FindTorrentsAsync([task.InfoHash], ct)).SingleOrDefault();
+        if (stable is not { Category: QbittorrentTorrentCategory.Stopped, IsMoving: false } ||
+            !MatchesIsolationPath(stable.SavePath, intent.CandidateRoot)) return;
+
+        // 候选全部通过：登记 ReusedVerified（绑定路径）并按完成情况收尾。
+        await using (var db = await dbContextFactory.CreateDbContextAsync(ct))
+        {
+            var tracked = await db.DownloadTasks.Include(value => value.Files)
+                                  .SingleAsync(value => value.Id == task.Id, ct);
+            foreach (var mapping in intent.Files.Where(item => item.IsCandidate))
+            {
+                var file = tracked.Files.FirstOrDefault(item => item.FileIndex == mapping.FileIndex);
+                if (file is null || !file.IsSelectedForDownload) continue;
+                file.VerificationOutcome = DownloadFileVerificationOutcomes.ReusedVerified;
+                file.VerificationPath    = mapping.VerificationPath;
+                file.UpdatedAtUtc        = timeProvider.GetUtcNow();
+            }
+
+            // 启动意图与证据一起落库。Resume 响应丢失时仍走本状态机，不能落回普通提前命名。
+            tracked.VerificationIntent = (intent with { Step = DownloadVerificationStep.ReadyToRun }).ToJson();
+            await db.SaveChangesAsync(ct);
+        }
+
+        // 全部通过：数据已完整，恢复进入做种（用户选定行为）；部分通过：其余文件在命名空间停靠路径
+        // 继续下载补齐（不触碰候选路径）。完成判定与现任切换由后续轮次按统一口径推进。
+        await session.ResumeAsync(task.InfoHash, ct);
+        await UpdateTaskAsync(task.Id, task.Status, update =>
+        {
+            update.IsSystemPaused     = false;
+            update.VerificationIntent = null;
+            update.PreparationStage   = DownloadPreparationStage.ReadyToRun;
+            update.LastSyncedAtUtc    = timeProvider.GetUtcNow();
+        }, ct);
+        logger.LogInformation(allSelectedComplete
+                                  ? "任务 {TaskId} 复用校验全部通过，已确认复用既有数据并进入做种。"
+                                  : "任务 {TaskId} 复用校验候选全部通过，其余文件继续下载。", task.Id);
+    }
+
+    private static IReadOnlyDictionary<int, string> CandidateRelativePaths(DownloadVerificationIntent intent)
+    {
+        var result = new Dictionary<int, string>();
+        var root   = intent.CandidateRoot.TrimEnd('/');
+        foreach (var mapping in intent.Files.Where(item => item.IsCandidate))
+        {
+            var path = DownloadPathNamePolicy.NormalizePath(mapping.VerificationPath);
+            if (!path.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase)) continue;
+            result[mapping.FileIndex] = path[(root.Length + 1)..];
+        }
+
+        return result;
+    }
+
+    private static string JoinAbsolute(string root, string relative) =>
+        DownloadPathNamePolicy.NormalizePath(
+                                             root.TrimEnd('/') + "/" + relative.Replace('\\', '/').TrimStart('/'));
+
+    private async Task<bool> AnyCandidateHasProgressAsync(
+        IQbittorrentSession session, DownloadTask task, IReadOnlyDictionary<int, string> candidateRelatives,
+        CancellationToken   ct)
+    {
+        if (!TorrentDownloadPolicy.TryLoad(task.TorrentFile, out var torrent, out var isMultiFile)) return true;
+        var indexByPath = TorrentDownloadPolicy.GetQbittorrentFileIndices(task.TorrentFile, torrent, isMultiFile);
+        var remoteByIndex = (await session.ListFilesAsync(task.InfoHash, ct))
+                           .GroupBy(file => file.Index)
+                           .ToDictionary(group => group.Key, group => group.First());
+        foreach (var file in task.Files)
+        {
+            if (!candidateRelatives.ContainsKey(file.FileIndex)) continue;
+            if (!indexByPath.TryGetValue(file.OriginalRelativePath, out var qbIndex) ||
+                !remoteByIndex.TryGetValue(qbIndex, out var remote)) return true;
+            if (remote.Progress > 0 && !EqualVerificationPath(JoinAbsolute(task.SavePath, remote.Path),
+                                                              JoinAbsolute(task.SavePath,
+                                                                           candidateRelatives[file.FileIndex])))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    ///     进入隔离（放弃复用、转为任务专属根独立下载）：与关闭校验意图在同一事务原子完成；
+    ///     候选文件登记 ReuseUnverified 并绑定路径——该结果只表示「该次映射未通过或不能确认」，
+    ///     不证明字节内容不同。删除重加适用于任何任务（含已接管、有独有数据者）：旧 extents 的数据
+    ///     保留在磁盘（deleteFiles=false），代价是独有数据需要重下载。
+    /// </summary>
+    private async Task EnterIsolationAsync(
+        DownloadTask task, DownloadVerificationIntent intent, string reason, CancellationToken ct)
+    {
+        logger.LogInformation("任务 {TaskId} 放弃复用校验并转入隔离独立下载：{Reason}", task.Id, reason);
+        await using var db = await dbContextFactory.CreateDbContextAsync(ct);
+        var tracked = await db.DownloadTasks.Include(value => value.Files)
+                              .SingleAsync(value => value.Id == task.Id, ct);
+        foreach (var mapping in intent.Files.Where(item => item.IsCandidate))
+        {
+            var file = tracked.Files.FirstOrDefault(item => item.FileIndex == mapping.FileIndex);
+            if (file is null) continue;
+            file.VerificationOutcome = DownloadFileVerificationOutcomes.ReuseUnverified;
+            file.VerificationPath    = mapping.VerificationPath;
+            file.UpdatedAtUtc        = timeProvider.GetUtcNow();
+        }
+
+        tracked.VerificationIntent = null;
+        tracked.IsolationState     = DownloadIsolationState.Deleting;
+        tracked.IsSystemPaused     = true;
+        tracked.PendingSavePath    = null;
+        foreach (var file in tracked.Files)
+        {
+            file.PendingRenameFrom = null;
+            file.PendingRenameTo   = null;
+        }
+
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    ///     隔离状态机：Deleting（确认停止 → 保留文件删除）→ Readding（确认 hash 已消失 → 任务专属根停止重加）
+    ///     → Confirming（布局与原始身份一致 → 清旧改名日志、重确认选择、回 Planned）。每步以下载器
+    ///     真实状态确认后推进，绝不凭请求成功推进；崩溃后按当前状态与真实状态重导出。
+    /// </summary>
+    private async Task AdvanceIsolationAsync(
+        IQbittorrentSession session, DownloadTask task, TorrentSnapshot? snapshot, CancellationToken ct)
+    {
+        if (task.Status is not (DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused)) return;
+        // 对账入口的任务列表不带 Files；隔离确认需要文件身份，按需加载。
+        task = await LoadTaskWithFilesAsync(task.Id, ct) ?? task;
+        var targetRoot = DownloadTaskPlacement.TaskRoot(task.DownloadRootPath ??
+                                                        throw new InvalidOperationException("隔离任务缺少下载根记录。"), task.Id);
+
+        switch (task.IsolationState)
+        {
+            case DownloadIsolationState.Deleting :
+                if (snapshot is null)
+                {
+                    // 删除已生效（或从未存在）：前进到重加。
+                    await UpdateTaskAsync(task.Id, task.Status,
+                                          update => update.IsolationState = DownloadIsolationState.Readding, ct);
+                    return;
+                }
+
+                if (snapshot.Category != QbittorrentTorrentCategory.Stopped)
+                {
+                    await session.PauseAsync(task.InfoHash, ct);
+                    return;
+                }
+
+                await session.DeleteTorrentAsync(task.InfoHash, false, ct);
+                await UpdateTaskAsync(task.Id, task.Status,
+                                      update => update.IsolationState = DownloadIsolationState.Readding, ct);
+                return;
+
+            case DownloadIsolationState.Readding :
+                if (snapshot is null)
+                {
+                    await session.AddTorrentAsync(task.TorrentFile, targetRoot, TagsFor(task), task.NamingSnapshot,
+                                                  true, ct);
+                    return;
+                }
+
+                if (!MatchesIsolationPath(snapshot.SavePath, targetRoot))
+                {
+                    // 外部在旧根重新出现的同 hash 种子：不是我们的重加，移除后下轮重试。
+                    await session.DeleteTorrentAsync(task.InfoHash, false, ct);
+                    return;
+                }
+
+                await UpdateTaskAsync(task.Id, task.Status,
+                                      update => update.IsolationState = DownloadIsolationState.Confirming, ct);
+                return;
+
+            case DownloadIsolationState.Confirming :
+                if (snapshot is null)
+                {
+                    await UpdateTaskAsync(task.Id, task.Status,
+                                          update => update.IsolationState = DownloadIsolationState.Readding, ct);
+                    return;
+                }
+
+                if (snapshot.IsMoving) return;
+                if (!MatchesIsolationPath(snapshot.SavePath, targetRoot))
+                {
+                    await UpdateTaskAsync(task.Id, task.Status,
+                                          update => update.IsolationState = DownloadIsolationState.Deleting, ct);
+                    return;
+                }
+
+                if (snapshot.Category != QbittorrentTorrentCategory.Stopped)
+                {
+                    await session.PauseAsync(task.InfoHash, ct);
+                    return;
+                }
+
+                var remote = await session.ListFilesAsync(task.InfoHash, ct);
+                if (remote.Count != task.Files.Count ||
+                    task.Files.Any(file => remote.All(item =>
+                                                          !string.Equals(item.Path.Replace('\\', '/'),
+                                                                         file.OriginalRelativePath,
+                                                                         StringComparison.Ordinal) ||
+                                                          item.Size != file.Size)))
+                {
+                    await MarkFailedAsync(task.Id, task.Status, "文件整理", "隔离重加后的布局与原始身份不一致，请人工核对。", ct);
+                    return;
+                }
+
+                await using (var db = await dbContextFactory.CreateDbContextAsync(ct))
+                {
+                    var tracked = await db.DownloadTasks.Include(value => value.Files)
+                                          .SingleAsync(value => value.Id == task.Id, ct);
+                    foreach (var file in tracked.Files)
+                    {
+                        file.CurrentRelativePath = file.OriginalRelativePath;
+                        file.PendingRenameFrom   = null;
+                        file.PendingRenameTo     = null;
+                        file.UpdatedAtUtc        = timeProvider.GetUtcNow();
+                    }
+
+                    tracked.SavePath         = targetRoot;
+                    tracked.PendingSavePath  = null;
+                    tracked.IsolationState   = DownloadIsolationState.None;
+                    tracked.IsSystemPaused   = true;
+                    tracked.PreparationStage = DownloadPreparationStage.Planned;
+                    await db.SaveChangesAsync(ct);
+                }
+
+                logger.LogInformation("任务 {TaskId} 隔离完成，已在任务专属根重新添加并回到准备流程。", task.Id);
+                return;
+        }
+    }
+
     /// <summary>接管下载器中已存在的同 hash 种子：补打来源 tag、把本地隔离路径对齐为种子真实位置，再按快照推进。</summary>
     private async Task AdoptExistingAsync(
         DownloadTask task, TorrentSnapshot snapshot, IQbittorrentSession session, CancellationToken cancellationToken)
@@ -806,6 +1490,47 @@ public sealed class DownloadService(
     private async Task ReconcileTrackedAsync(
         IQbittorrentSession session, DownloadTask task, TorrentSnapshot? snapshot, CancellationToken cancellationToken)
     {
+        // 路由优先级：隔离恢复 → 活跃校验 → 普通缺失/接管/命名/完成处理。
+        // 隔离中 hash 暂时消失是正常中间态，绝不标 Lost；校验意图活跃期间不得进入普通
+        // 命名、完成判定或现任切换——候选路径上的共享数据未经证实不得写入。
+        if (task.IsolationState != DownloadIsolationState.None)
+        {
+            await AdvanceIsolationAsync(session, task, snapshot, cancellationToken);
+            return;
+        }
+
+        if (DownloadVerificationIntent.FromJson(task.VerificationIntent) is { } activeIntent)
+        {
+            await AdvanceVerificationAsync(session, task, snapshot, activeIntent, cancellationToken);
+            return;
+        }
+
+        if (task.VerificationIntent is not null)
+        {
+            await MarkFailedAsync(task.Id, task.Status, "复用校验", "持久化校验意图无法解析，禁止按普通任务推进。", cancellationToken);
+            return;
+        }
+
+        if (task.SelectionSyncPending && !DownloadTaskPlacement.IsTaskScoped(task))
+        {
+            var withFiles = await LoadTaskWithFilesAsync(task.Id, cancellationToken);
+            if (withFiles is not null && withFiles.Files.Any(file => file is
+                                                                     {
+                                                                         IsSelectedForDownload: true,
+                                                                         VerificationOutcome:
+                                                                         DownloadFileVerificationOutcomes
+                                                                            .ReuseUnverified
+                                                                     } &&
+                                                                     EqualVerificationPath(JoinAbsolute(task.SavePath,
+                                                                             file.CurrentRelativePath),
+                                                                         file.VerificationPath ?? string.Empty)))
+            {
+                await EnterIsolationAsync(task, new DownloadVerificationIntent(),
+                                          "文件选择发生变化，旧复用证据失效，重新下载前先隔离共享布局。", cancellationToken);
+                return;
+            }
+        }
+
         if (snapshot is null)
         {
             await UpdateTaskAsync(task.Id, task.Status, update =>
@@ -840,6 +1565,11 @@ public sealed class DownloadService(
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (DownloadFileIdentityException exception)
+            {
+                await MarkFailedAsync(task.Id, task.Status, "文件整理", exception.Message, cancellationToken);
+                return;
             }
             catch (Exception exception)
             {
@@ -878,9 +1608,15 @@ public sealed class DownloadService(
             {
                 throw;
             }
+            catch (DownloadFileIdentityException exception)
+            {
+                await MarkFailedAsync(task.Id, task.Status, "文件整理", exception.Message, cancellationToken);
+                return;
+            }
             catch (Exception exception)
             {
                 logger.LogWarning(exception, "下载任务 {TaskId} 的文件选择同步失败，下一轮重试。", task.Id);
+                return;
             }
 
         // 首轮扫到即改名：下载中（含人工暂停）任务一旦文件仍保持登记原始路径，立即执行命名计划，
@@ -894,6 +1630,11 @@ public sealed class DownloadService(
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (DownloadFileIdentityException exception)
+            {
+                await MarkFailedAsync(task.Id, task.Status, "文件整理", exception.Message, cancellationToken);
+                return;
             }
             catch (Exception exception)
             {
@@ -922,8 +1663,9 @@ public sealed class DownloadService(
     private async Task AdvancePreparationAsync(
         IQbittorrentSession session, DownloadTask task, TorrentSnapshot snapshot, CancellationToken cancellationToken)
     {
-        task = await LoadTaskWithFilesAsync(task.Id, cancellationToken);
-        if (task is not { Status: DownloadTaskStatus.Downloading, IsSystemPaused: true }) return;
+        var loaded = await LoadTaskWithFilesAsync(task.Id, cancellationToken);
+        if (loaded is not { Status: DownloadTaskStatus.Downloading, IsSystemPaused: true }) return;
+        task = loaded;
 
         // 没有任何选中文件的候选不启动：保留可解释的落选或被覆盖结果，等待人工处理。
         if (task.Files.Count > 0 && task.Files.All(file => !file.IsSelectedForDownload))
@@ -943,9 +1685,9 @@ public sealed class DownloadService(
                                   update => update.SelectionSyncPending = false, cancellationToken);
 
         // 2. 命名计划：仍是登记原始路径的文件交由文件服务改名；改名日志由恢复链在后续轮次确认完成。
-        //    只有明确的路径占用可安全回退——以原始命名继续下载，完成链的备份移动（.replaced/）
-        //    保护旧成片并完成替换。身份校验失败、未知路径布局等其他异常必须阻塞启动，
-        //    由外层捕获记录并等待人工或远端恢复，不能带着无法核实的文件布局开始下载。
+        //    目标路径占用不再回退「原始命名继续下载」：原始路径同样未经证实可写，带着未证实布局启动
+        //    会改写未知数据。任务内命名目标位于按构造安全的命名空间，命中该异常说明布局异常或目标
+        //    被占用，保持停止等待下一轮重试；身份校验失败等其他异常向外抛出并阻塞推进。
         try
         {
             await SettleNamingEarlyAsync(task, snapshot, session, cancellationToken);
@@ -956,9 +1698,8 @@ public sealed class DownloadService(
         }
         catch (TargetPathOccupiedException exception)
         {
-            logger.LogWarning(exception,
-                              "任务 {TaskId} 准备阶段命名被目标路径占用拦截，以原始命名继续下载，完成时再替换。",
-                              task.Id);
+            await MarkFailedAsync(task.Id, task.Status, "文件整理", exception.Message, cancellationToken);
+            return;
         }
 
         bool hasPending;
@@ -1010,28 +1751,35 @@ public sealed class DownloadService(
         foreach (var file in task.Files)
         {
             if (!indexByPath.TryGetValue(file.OriginalRelativePath, out var qbIndex) ||
-                !remoteFiles.TryGetValue(qbIndex, out var remote))
+                !remoteFiles.TryGetValue(qbIndex, out var remote)                    || remote.Size != file.Size)
             {
                 // 计划内文件在下载器清单中无法寻址：选择状态无法确认，不得当作已确认推进。
                 unconfirmed++;
                 continue;
             }
 
-            if (file.IsSelectedForDownload       && !remote.IsSelectedForDownload) toDownload.Add(qbIndex);
-            else if (!file.IsSelectedForDownload && remote.IsSelectedForDownload) toSkip.Add(qbIndex);
+            switch (file.IsSelectedForDownload)
+            {
+                case true when !remote.IsSelectedForDownload :
+                    toDownload.Add(qbIndex);
+                    break;
+                case false when remote.IsSelectedForDownload :
+                    toSkip.Add(qbIndex);
+                    break;
+            }
         }
 
-        if (unconfirmed > 0)
+        if (unconfirmed > 0) throw new DownloadFileIdentityException($"有 {unconfirmed} 个计划文件无法在下载器清单中确认身份，请核对后人工重试。");
+
+        switch (toSkip.Count)
         {
-            logger.LogWarning("任务 {TaskId} 有 {Count} 个计划文件无法在下载器文件清单中确认身份，暂缓准备推进。",
-                              task.Id, unconfirmed);
-            return true;
+            case 0 when toDownload.Count == 0 :
+                return false;
+            case > 0 :
+                await session.SetTorrentFileSelectionAsync(task.InfoHash, toSkip, false, cancellationToken);
+                break;
         }
 
-        if (toSkip.Count == 0 && toDownload.Count == 0) return false;
-
-        if (toSkip.Count > 0)
-            await session.SetTorrentFileSelectionAsync(task.InfoHash, toSkip, false, cancellationToken);
         if (toDownload.Count > 0)
             await session.SetTorrentFileSelectionAsync(task.InfoHash, toDownload, true, cancellationToken);
 
@@ -1104,17 +1852,22 @@ public sealed class DownloadService(
     }
 
     /// <summary>任一文件仍是登记原始路径的活动任务视为尚未执行命名计划，交由文件服务改名；已改名或 legacy 布局跳过。</summary>
-    private async Task SettleNamingEarlyAsync(DownloadTask        task,    TorrentSnapshot   snapshot,
-                                              IQbittorrentSession session, CancellationToken cancellationToken)
+    private async Task SettleNamingEarlyAsync(
+        DownloadTask task, TorrentSnapshot snapshot, IQbittorrentSession session, CancellationToken cancellationToken)
     {
         if (downloadFileService is null || string.IsNullOrWhiteSpace(task.DownloadRootPath)) return;
+        if (task.SubmittedAtUtc is null && !DownloadTaskPlacement.IsTaskScoped(task)) return;
         bool untouched;
         await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
-            untouched = await db.DownloadTaskFiles.AsNoTracking()
-                                .AnyAsync(file => file.DownloadTaskId      == task.Id &&
-                                                  file.CurrentRelativePath == file.OriginalRelativePath,
-                                          cancellationToken);
+            // 复用校验已布置过的任务（存在校验结果）不经提前命名：候选文件已在最终路径、
+            // 其余文件停靠在命名空间，命名计划的最终布局只经完成归档链执行。
+            var files = db.DownloadTaskFiles.AsNoTracking().Where(file => file.DownloadTaskId == task.Id);
+            untouched = !await files.AnyAsync(file => file.VerificationOutcome ==
+                                                      DownloadFileVerificationOutcomes.ReusedVerified,
+                                              cancellationToken) &&
+                        await files.AnyAsync(file => file.CurrentRelativePath == file.OriginalRelativePath,
+                                             cancellationToken);
         }
 
         if (!untouched) return;
@@ -1164,7 +1917,7 @@ public sealed class DownloadService(
             case QbittorrentTorrentCategory.Stopped :
                 await UpdateTaskAsync(taskId, currentStatus, update =>
                 {
-                    if (update.IsSystemPaused && !update.IsUserPaused)
+                    if (update is { IsSystemPaused: true, IsUserPaused: false })
                     {
                         // 系统以停止状态添加/接管且准备未完成：保持待准备语义（含提交中断后的接管），
                         // 准备推进由对账的准备分支负责，不得把准备暂停误记为人工暂停。
@@ -1392,8 +2145,7 @@ public sealed class DownloadService(
         if (separatorIndex <= 0) return false;
 
         var candidate = firstPath[..separatorIndex];
-        if (fileNames.Any(name => !name.Replace('\\', '/')
-                                       .StartsWith(candidate + "/", StringComparison.Ordinal)))
+        if (fileNames.Any(name => !name.Replace('\\', '/').StartsWith(candidate + "/", StringComparison.Ordinal)))
             return false;
 
         rootFolder = candidate;
