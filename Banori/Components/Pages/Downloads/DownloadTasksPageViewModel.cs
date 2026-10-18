@@ -458,6 +458,19 @@ public sealed class DownloadTasksPageViewModel(
                                 "任务已重新排队，等待提交。", cancellationToken);
     }
 
+    /// <summary>重新核对：仅作用于已完成但归档受阻的任务；占用或身份异常仍会被拒绝并提示原因。</summary>
+    public async Task RetryArchiveAsync(Guid taskId, CancellationToken cancellationToken = default)
+    {
+        if (fileService is null)
+        {
+            NoteFailure("文件整理服务未启用，无法重新核对归档。");
+            return;
+        }
+
+        await RunOperationAsync(taskId, () => fileService.RetryArchiveAsync(taskId, cancellationToken),
+                                "归档请求已处理，请查看当前归档状态。", cancellationToken);
+    }
+
     private async Task RunOperationAsync(
         Guid taskId, Func<Task> operation, string successMessage, CancellationToken cancellationToken)
     {

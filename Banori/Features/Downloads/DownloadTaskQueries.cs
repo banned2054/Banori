@@ -35,7 +35,8 @@ public sealed class DownloadTaskQueries(IDbContextFactory<ApplicationDbContext> 
 
     private static DownloadTaskView ToView(DownloadTask task, IReadOnlyDictionary<Guid, string> relatedNames)
     {
-        var ingredients = TorrentNamingIngredients.FromJson(task.NamingIngredients);
+        var ingredients   = TorrentNamingIngredients.FromJson(task.NamingIngredients);
+        var archiveReview = DownloadArchiveReview.FromJson(task.ArchiveReview);
         return new DownloadTaskView
         {
             Id          = task.Id,
@@ -67,7 +68,9 @@ public sealed class DownloadTaskQueries(IDbContextFactory<ApplicationDbContext> 
             ReplacedByTaskId = task.ReplacedByTaskId,
             ReplacedByNaming = task.ReplacedByTaskId is { } replacedById
                 ? relatedNames.GetValueOrDefault(replacedById)
-                : null
+                : null,
+            PreparationStage    = task.PreparationStage,
+            ArchiveReviewReason = archiveReview?.Reason
         };
     }
 }

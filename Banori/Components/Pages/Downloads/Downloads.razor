@@ -153,6 +153,10 @@ else
 						{
 							<div class="text-danger">@task.FailedStep：@task.Error</div>
 						}
+						@if (task.ArchiveReviewReason is not null)
+						{
+							<div class="text-warning">归档待核对：@task.ArchiveReviewReason</div>
+						}
 						@if (task.ShowPendingReplacement)
 						{
 							<div class="text-body-secondary">完成后将替换：@task.ReplacesNaming</div>
@@ -176,6 +180,11 @@ else
 								case DownloadTaskStatus.Failed or DownloadTaskStatus.Lost :
 									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RetryAsync(task.Id)">重试</button>
 									break;
+							}
+
+							@if (task.ArchiveReviewReason is not null && task.Status == DownloadTaskStatus.Completed)
+							{
+								<button class="btn btn-sm btn-outline-warning ms-1" disabled="@_vm.Busy" @onclick="() => RetryArchiveAsync(task.Id)">重新核对归档</button>
 							}
 
 							<button class="btn btn-sm btn-outline-danger ms-1" disabled="@_vm.Busy" @onclick="() => OpenDeletePanelAsync(task)">删除</button>
@@ -371,6 +380,11 @@ else
 	private Task RetryAsync(Guid taskId)
 	{
 		return RunOperationAsync(() => _vm.RetryAsync(taskId, _cts.Token));
+	}
+
+	private Task RetryArchiveAsync(Guid taskId)
+	{
+		return RunOperationAsync(() => _vm.RetryArchiveAsync(taskId, _cts.Token));
 	}
 
 	private async Task OpenDeletePanelAsync(DownloadTaskView task)
