@@ -52,8 +52,9 @@ public sealed class NamingIngredientsModelConsistencyTests
         }
 
         var migration = assembly.Migrations.Keys.Last();
-        Assert.Contains(migration, assembly.Migrations.Keys);
-        Assert.Contains("AddDownloadTaskFiles", migration);
+        // 迁移序列里必须同时能看到文件表与其后的准备流程字段迁移；新增迁移后更新这里的最新迁移名。
+        Assert.Contains("AddTorrentPreparationAndFileSelection", migration);
+        Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddDownloadTaskFiles"));
         var fileEntity = db.Model.FindEntityType(typeof(DownloadTaskFile));
         Assert.NotNull(fileEntity);
         Assert.Contains(fileEntity.GetIndexes(),

@@ -50,6 +50,7 @@ public sealed class DownloadTaskQueries(IDbContextFactory<ApplicationDbContext> 
             SubtitleLanguage = ingredients?.Language,
             Status           = task.Status,
             IsUserPaused     = task.IsUserPaused,
+            IsSystemPaused   = task.IsSystemPaused,
             Progress         = task.Progress,
             TotalSize        = task.TotalSize,
             NamingSnapshot   = task.NamingSnapshot,

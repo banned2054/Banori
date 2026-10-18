@@ -1055,20 +1055,35 @@ public sealed class DownloadIntakeService(
             var kind = classification.Kind == Core.Downloads.DownloadFileKind.Seed ? DownloadFileKind.Seed :
                 subtitle ? DownloadFileKind.Subtitle : DownloadFileKind.Anime;
             var reason = classification.Reason;
-            if (kind != DownloadFileKind.Seed && demotedSeedPaths.TryGetValue(path, out var demotedReason))
+
+            // 包内择优落选与 Seed 附件分开记录：落选文件不承担下载（提交后设为不下载），
+            // 普通附件仍默认下载，两者不能共用一个分类语义。
+            var isSelected = true;
+            if (demotedSeedPaths.TryGetValue(path, out var demotedReason))
             {
-                kind   = DownloadFileKind.Seed;
-                reason = demotedReason;
+                kind       = DownloadFileKind.Seed;
+                reason     = demotedReason;
+                isSelected = false;
             }
 
             task.Files.Add(new DownloadTaskFile
             {
-                Id                   = Guid.NewGuid(), DownloadTaskId = task.Id, FileIndex = index,
-                OriginalRelativePath = path, CurrentRelativePath      = path, Size         = file.Length,
-                Kind                 = kind,
-                ClassificationReason = reason, UpdatedAtUtc = timeProvider.GetUtcNow()
+                Id                    = Guid.NewGuid(),
+                DownloadTaskId        = task.Id,
+                FileIndex             = index,
+                OriginalRelativePath  = path,
+                CurrentRelativePath   = path,
+                Size                  = file.Length,
+                Kind                  = kind,
+                ClassificationReason  = reason,
+                IsSelectedForDownload = isSelected,
+                SelectionReason       = isSelected ? null : demotedSeedPaths.GetValueOrDefault(path),
+                UpdatedAtUtc          = timeProvider.GetUtcNow()
             });
         }
+
+        // 所选内容总大小：存在跳过文件时任务进度按所选内容计算。
+        task.SelectedTotalBytes = task.Files.Where(file => file.IsSelectedForDownload).Sum(file => file.Size);
     }
 
     internal static void AssertDownloadable(FeedItem item)

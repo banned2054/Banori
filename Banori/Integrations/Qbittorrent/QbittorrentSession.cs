@@ -12,6 +12,7 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
 
     public async Task<string> AddTorrentAsync(byte[]                torrentBytes, string  savePath,
                                               IReadOnlyList<string> tags,         string? rename,
+                                              bool                  startStopped,
                                               CancellationToken     cancellationToken = default)
     {
         var temporaryPath = Path.Combine(Path.GetTempPath(), $"Banori-{Guid.NewGuid():N}.torrent");
@@ -20,13 +21,14 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
             await File.WriteAllBytesAsync(temporaryPath, torrentBytes, cancellationToken);
             var request = new AddTorrentRequest
             {
-                FilePaths      = [temporaryPath],
-                SavePath       = savePath,
-                ContentLayout  = EnumContentLayout.Original,
-                Tags           = string.Join(',', tags),
-                Rename         = string.IsNullOrWhiteSpace(rename) ? null : rename,
-                PausedEnabled  = false,
-                StoppedEnabled = false
+                FilePaths     = [temporaryPath],
+                SavePath      = savePath,
+                ContentLayout = EnumContentLayout.Original,
+                Tags          = string.Join(',', tags),
+                Rename        = string.IsNullOrWhiteSpace(rename) ? null : rename,
+                // qB 5.x 认 stopped、4.x 认 paused，客户端按服务器版本择一发送，这里同时声明两种开关。
+                PausedEnabled  = startStopped,
+                StoppedEnabled = startStopped
             };
             return await client.Torrent.AddTorrent(request, cancellationToken);
         }
@@ -42,8 +44,8 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
         }
     }
 
-    public async Task<IReadOnlyList<TorrentSnapshot>> FindTorrentsAsync(IReadOnlyCollection<string> infoHashes,
-                                                                        CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<TorrentSnapshot>> FindTorrentsAsync(
+        IReadOnlyCollection<string> infoHashes, CancellationToken cancellationToken = default)
     {
         if (infoHashes.Count == 0) return [];
 
@@ -53,8 +55,8 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
         return infos.Select(ToSnapshot).ToList();
     }
 
-    public async Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(string?           tag,
-                                                                        CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(
+        string? tag, CancellationToken cancellationToken = default)
     {
         var infos = await client.Torrent.GetTorrentInfos(tag : tag, cancellationToken : cancellationToken);
         return infos.Select(ToSnapshot).ToList();
@@ -63,16 +65,16 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
     public Task AddTagAsync(string infoHash, string tag, CancellationToken cancellationToken = default) =>
         client.Torrent.AddTorrentTag(NormalizeHash(infoHash), tag, cancellationToken);
 
-    public async Task<IReadOnlyList<string>> ListFileNamesAsync(string            infoHash,
-                                                                CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<string>> ListFileNamesAsync(
+        string infoHash, CancellationToken cancellationToken = default)
     {
         var files = await client.Torrent.GetTorrentFiles(NormalizeHash(infoHash),
                                                          cancellationToken : cancellationToken);
         return (files ?? []).Select(file => file.Name ?? string.Empty).ToList();
     }
 
-    public async Task<IReadOnlyList<TorrentFileSnapshot>> ListFilesAsync(string            infoHash,
-                                                                         CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<TorrentFileSnapshot>> ListFilesAsync(
+        string infoHash, CancellationToken cancellationToken = default)
     {
         var files = await client.Torrent.GetTorrentFiles(NormalizeHash(infoHash),
                                                          cancellationToken : cancellationToken);
@@ -81,8 +83,24 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
                                                                         InvalidOperationException("下载器没有返回可靠的文件 index。"),
                                                                     file.Name ??
                                                                     throw new InvalidOperationException("下载器没有返回文件路径。"),
-                                                                    file.Size)).ToList();
+                                                                    file.Size,
+                                                                    file.Progress,
+                                                                    file.Priority != EnumTorrentFilePriority
+                                                                       .DoNotDownload))
+                            .ToList();
     }
+
+    public Task SetTorrentFileSelectionAsync(string                   infoHash,
+                                             IReadOnlyCollection<int> fileIndices, bool download,
+                                             CancellationToken        cancellationToken = default) =>
+        client.Torrent.SetFilesPriority(NormalizeHash(infoHash), [.. fileIndices],
+                                        download
+                                            ? EnumTorrentFilePriority.Normal
+                                            : EnumTorrentFilePriority.DoNotDownload,
+                                        cancellationToken);
+
+    public Task RecheckTorrentAsync(string infoHash, CancellationToken cancellationToken = default) =>
+        client.Torrent.RecheckTorrent(NormalizeHash(infoHash), cancellationToken);
 
     public Task SetLocationAsync(string infoHash, string savePath, CancellationToken cancellationToken = default) =>
         client.Torrent.SetTorrentLocation(NormalizeHash(infoHash), savePath, cancellationToken);
@@ -93,23 +111,22 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
     public Task ResumeAsync(string infoHash, CancellationToken cancellationToken = default) =>
         client.Torrent.ResumeTorrent(NormalizeHash(infoHash), cancellationToken);
 
-    public Task RenameTorrentAsync(string            infoHash, string newName,
-                                   CancellationToken cancellationToken = default) =>
+    public Task RenameTorrentAsync(string infoHash, string newName, CancellationToken cancellationToken = default) =>
         client.Torrent.RenameTorrent(NormalizeHash(infoHash), newName, cancellationToken);
 
-    public Task RenameTorrentFileAsync(string            infoHash, string oldPath, string newPath,
-                                       CancellationToken cancellationToken = default) =>
+    public Task RenameTorrentFileAsync(
+        string infoHash, string oldPath, string newPath, CancellationToken cancellationToken = default) =>
         client.Torrent.RenameTorrentFile(NormalizeHash(infoHash), oldPath, newPath, cancellationToken);
 
-    public Task RenameTorrentFolderAsync(string            infoHash, string oldPath, string newPath,
-                                         CancellationToken cancellationToken = default) =>
+    public Task RenameTorrentFolderAsync(
+        string infoHash, string oldPath, string newPath, CancellationToken cancellationToken = default) =>
         client.Torrent.RenameTorrentFolder(NormalizeHash(infoHash), oldPath, newPath, cancellationToken);
 
     public Task DeleteTorrentAsync(string infoHash, bool deleteFiles, CancellationToken cancellationToken = default) =>
         client.Torrent.DeleteTorrent(NormalizeHash(infoHash), deleteFiles, cancellationToken);
 
-    public Task DeleteTorrentsAsync(IReadOnlyCollection<string> infoHashes, bool deleteFiles,
-                                    CancellationToken           cancellationToken = default) =>
+    public Task DeleteTorrentsAsync(
+        IReadOnlyCollection<string> infoHashes, bool deleteFiles, CancellationToken cancellationToken = default) =>
         client.Torrent.DeleteTorrents(infoHashes.Select(NormalizeHash).ToList(), deleteFiles,
                                       cancellationToken);
 

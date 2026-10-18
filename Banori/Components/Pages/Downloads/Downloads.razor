@@ -129,7 +129,7 @@ else
 					<td>
 						@if (task.Progress is { } progress &&
 						     (task.Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused ||
-						      (task.Status == DownloadTaskStatus.Failed && task.FailedStep == "文件整理")))
+						      task is { Status: DownloadTaskStatus.Failed, FailedStep: "文件整理" }))
 						{
 							<div class="progress" style="height: 8px;">
 								<div class="progress-bar" style="width: @(Math.Clamp(progress * 100, 0, 100).ToString("0.#"))%;"></div>
@@ -165,17 +165,17 @@ else
 					<td class="text-end">
 						@if (!_vm.BatchMode)
 						{
-							@if (task.Status == DownloadTaskStatus.Downloading)
+							@switch (task.Status)
 							{
-								<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => PauseAsync(task.Id)">暂停</button>
-							}
-							else if (task.Status == DownloadTaskStatus.Paused && task.IsUserPaused)
-							{
-								<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => ResumeAsync(task.Id)">恢复</button>
-							}
-							else if (task.Status is DownloadTaskStatus.Failed or DownloadTaskStatus.Lost)
-							{
-								<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RetryAsync(task.Id)">重试</button>
+								case DownloadTaskStatus.Downloading :
+									<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => PauseAsync(task.Id)">暂停</button>
+									break;
+								case DownloadTaskStatus.Paused when task.IsUserPaused :
+									<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => ResumeAsync(task.Id)">恢复</button>
+									break;
+								case DownloadTaskStatus.Failed or DownloadTaskStatus.Lost :
+									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RetryAsync(task.Id)">重试</button>
+									break;
 							}
 
 							<button class="btn btn-sm btn-outline-danger ms-1" disabled="@_vm.Busy" @onclick="() => OpenDeletePanelAsync(task)">删除</button>
@@ -461,7 +461,7 @@ else
 		{
 			DownloadTaskStatus.PendingSubmit => "等待提交",
 			DownloadTaskStatus.Submitting    => "提交结果待确认",
-			DownloadTaskStatus.Downloading   => "下载中",
+			DownloadTaskStatus.Downloading   => task.IsSystemPaused ? "准备中（未启动下载）" : "下载中",
 			DownloadTaskStatus.Paused        => task.IsUserPaused ? "已暂停（人工）" : "已暂停",
 			DownloadTaskStatus.Completed     => "已完成",
 			DownloadTaskStatus.Failed        => "失败",

@@ -494,9 +494,9 @@ public sealed class DownloadFileServiceTests
         using (await h.Gate.EnterAsync())
         await using (var session = await h.Sessions.CreateAsync())
         {
-            await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                                                                    h.Service.RecoverPendingUnderGateAsync(session,
-                                                                        h.Task.Id));
+            await Assert.ThrowsAsync<TargetPathOccupiedException>(() =>
+                                                                      h.Service.RecoverPendingUnderGateAsync(session,
+                                                                          h.Task.Id));
         }
 
         Assert.Equal(renameCount, h.Store.RenameFileCalls.Count);
@@ -537,9 +537,9 @@ public sealed class DownloadFileServiceTests
         using (await h.Gate.EnterAsync())
         await using (var session = await h.Sessions.CreateAsync())
         {
-            await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                                                                    h.Service.RecoverPendingUnderGateAsync(session,
-                                                                        h.Task.Id));
+            await Assert.ThrowsAsync<TargetPathOccupiedException>(() =>
+                                                                      h.Service.RecoverPendingUnderGateAsync(session,
+                                                                          h.Task.Id));
         }
 
         Assert.Equal(renameCount, h.Store.RenameFileCalls.Count);
@@ -605,7 +605,7 @@ public sealed class DownloadFileServiceTests
             await db.SaveChangesAsync();
         }
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.ArchiveCompletedAsync(h.Task.Id));
+        await Assert.ThrowsAsync<TargetPathOccupiedException>(() => h.Service.ArchiveCompletedAsync(h.Task.Id));
         Assert.Empty(h.Store.RenameFileCalls);
     }
 
@@ -656,7 +656,7 @@ public sealed class DownloadFileServiceTests
                            ["E01.mkv"], ["another-source"]);
         // 大小与任务文件不同：不是同一资源的交叉做种，而是真实覆盖，必须拦截。
         h.Store.FileIdentities[hash] = [new TorrentFileSnapshot(0, "E01.mkv", 4096)];
-        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.ArchiveCompletedAsync(h.Task.Id));
+        await Assert.ThrowsAsync<TargetPathOccupiedException>(() => h.Service.ArchiveCompletedAsync(h.Task.Id));
         Assert.Empty(h.Store.RenameFileCalls);
     }
 
@@ -743,7 +743,7 @@ public sealed class DownloadFileServiceTests
         var client = await QBittorrentClient.Create("http://protocol.test", "admin", "password",
                                                     new QBittorrentClientOptions { HttpClient = http, MaxRetries = 1 });
         await using var session = new QbittorrentSession(client);
-        Assert.Equal("Ok.", await session.AddTorrentAsync(TestTorrentBytes.Create(), "/downloads", [], null));
+        Assert.Equal("Ok.", await session.AddTorrentAsync(TestTorrentBytes.Create(), "/downloads", [], null, false));
         Assert.Matches("name=\"?contentLayout\"?(?:\\r\\n|;)", handler.AddBody);
         Assert.Contains("Original", handler.AddBody);
         var files = await session.ListFilesAsync(new string('A', 40));

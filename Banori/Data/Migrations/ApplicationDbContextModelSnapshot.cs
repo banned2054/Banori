@@ -3,6 +3,7 @@ using System;
 using Banori.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -12,7 +13,6 @@ namespace Banori.Data.Migrations
     [DbContext(typeof(ApplicationDbContext))]
     partial class ApplicationDbContextModelSnapshot : ModelSnapshot
     {
-        /// <inheritdoc />
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
@@ -202,6 +202,9 @@ namespace Banori.Data.Migrations
                         .HasMaxLength(40)
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("IsSystemPaused")
+                        .HasColumnType("INTEGER");
+
                     b.Property<bool>("IsUserPaused")
                         .HasColumnType("INTEGER");
 
@@ -224,6 +227,13 @@ namespace Banori.Data.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("PreparationStage")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("None");
+
                     b.Property<double?>("Progress")
                         .HasColumnType("REAL");
 
@@ -241,6 +251,9 @@ namespace Banori.Data.Migrations
                     b.Property<string>("SeedDirectory")
                         .HasMaxLength(1000)
                         .HasColumnType("TEXT");
+
+                    b.Property<long?>("SelectedTotalBytes")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("SiteSource")
                         .HasMaxLength(50)
@@ -318,6 +331,11 @@ namespace Banori.Data.Migrations
                     b.Property<bool>("IsManualOverride")
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("IsSelectedForDownload")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(true);
+
                     b.Property<string>("Kind")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -331,6 +349,10 @@ namespace Banori.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("PendingRenameTo")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SelectionReason")
+                        .HasMaxLength(1000)
                         .HasColumnType("TEXT");
 
                     b.Property<long>("Size")

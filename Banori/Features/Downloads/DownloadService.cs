@@ -75,7 +75,7 @@ public sealed class DownloadService(
         // SQLite 不支持 DateTimeOffset 服务端排序；先创建先处理，在内存中排序。
         tasks = tasks.OrderBy(task => task.CreatedAtUtc).ToList();
 
-        List<Guid> pendingFileTasks;
+        List<(Guid Id, string InfoHash)> pendingFileTasks;
         await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
             pendingFileTasks = downloadFileService is null
@@ -83,15 +83,33 @@ public sealed class DownloadService(
                 : await db.DownloadTasks.AsNoTracking()
                           .Where(task => task.PendingSavePath != null ||
                                          task.Files.Any(file => file.PendingRenameTo != null))
-                          .Select(task => task.Id).ToListAsync(cancellationToken);
+                          .Select(task => new ValueTuple<Guid, string>(task.Id, task.InfoHash))
+                          .ToListAsync(cancellationToken);
         }
 
         if (tasks.Count == 0 && pendingFileTasks.Count == 0) return;
 
         await using var session = await sessionFactory.CreateAsync(cancellationToken);
-        foreach (var taskId in pendingFileTasks)
+
+        // 校验或移动中的种子不得执行冲突计划（改名/移动）：恢复链先看快照状态，
+        // 处于 Checking 或 IsMoving 的任务本轮跳过，待其稳定后再恢复。
+        Dictionary<string, TorrentSnapshot> pendingSnapshots;
+        if (pendingFileTasks.Count == 0)
+            pendingSnapshots = new Dictionary<string, TorrentSnapshot>(StringComparer.OrdinalIgnoreCase);
+        else
+            pendingSnapshots = (await session.FindTorrentsAsync(pendingFileTasks.Select(task => task.InfoHash).ToList(),
+                                                                cancellationToken))
+                              .GroupBy(snapshot => snapshot.Hash, StringComparer.OrdinalIgnoreCase)
+                              .ToDictionary(group => group.Key, group => group.First(),
+                                            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (taskId, infoHash) in pendingFileTasks)
             try
             {
+                if (pendingSnapshots.GetValueOrDefault(infoHash) is
+                    { Category: QbittorrentTorrentCategory.Checking } or { IsMoving: true })
+                    continue;
+
                 await downloadFileService!.RecoverPendingUnderGateAsync(session, taskId, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -106,7 +124,8 @@ public sealed class DownloadService(
         if (pendingFileTasks.Count > 0)
         {
             await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-            var refreshed = await db.DownloadTasks.AsNoTracking().Where(task => pendingFileTasks.Contains(task.Id))
+            var refreshed = await db.DownloadTasks.AsNoTracking()
+                                    .Where(task => pendingFileTasks.Select(task => task.Id).Contains(task.Id))
                                     .ToDictionaryAsync(task => task.Id, cancellationToken);
             tasks = tasks.Select(task => refreshed.GetValueOrDefault(task.Id) ?? task).ToList();
         }
@@ -202,6 +221,18 @@ public sealed class DownloadService(
         var task = await LoadTaskAsync(taskId, cancellationToken);
         if (task.Status != DownloadTaskStatus.Paused || !task.IsUserPaused)
             throw new InvalidOperationException("只有人工暂停的任务可以恢复。");
+
+        // 准备流程未完成时，恢复只解除人工暂停：不直接启动下载器——否则落选文件会绕过
+        // 文件选择计划直接开始下载。任务回到待准备状态，由对账继续推进并在准备完成后启动。
+        if (task.IsSystemPaused)
+        {
+            await UpdateTaskAsync(taskId, task.Status, update =>
+            {
+                update.Status       = DownloadTaskStatus.Downloading;
+                update.IsUserPaused = false;
+            }, cancellationToken);
+            return;
+        }
 
         await using var session = await sessionFactory.CreateAsync(cancellationToken);
         await session.ResumeAsync(task.InfoHash, cancellationToken);
@@ -433,18 +464,23 @@ public sealed class DownloadService(
             }
 
         // 请求发出前先落库 Submitting：下载器已接收而应用在保存结果前退出时，重启按 Hash 对账而不是重复提交。
+        // 同时保存准备意图：种子将以停止状态添加，文件选择与命名确认完成前不得开始网络下载；
+        // 崩溃恢复按“Submitting + IsSystemPaused”识别这是本应用发起的准备暂停，不会误判为人工暂停。
         await UpdateTaskAsync(task.Id, task.Status, update =>
         {
-            update.Status         =   DownloadTaskStatus.Submitting;
-            update.AttemptCount   +=  1;
-            update.SubmittedAtUtc ??= timeProvider.GetUtcNow();
+            update.Status           =   DownloadTaskStatus.Submitting;
+            update.AttemptCount     +=  1;
+            update.SubmittedAtUtc   ??= timeProvider.GetUtcNow();
+            update.IsSystemPaused   =   true;
+            update.PreparationStage =   DownloadPreparationStage.Planned;
         }, cancellationToken);
 
         string response;
         try
         {
             response = await session.AddTorrentAsync(task.TorrentFile, task.SavePath,
-                                                     TagsFor(task), task.NamingSnapshot, cancellationToken);
+                                                     TagsFor(task), task.NamingSnapshot,
+                                                     true, cancellationToken);
         }
         catch (Exception exception) when (exception is QbittorrentLoginFailedException
                                                     or QbittorrentUnauthorizedException
@@ -496,12 +532,16 @@ public sealed class DownloadService(
         }
 
         await UpdateTaskAsync(task.Id, DownloadTaskStatus.Submitting,
-                              update => { update.Status = DownloadTaskStatus.Downloading; }, cancellationToken,
+                              update => { update.Status = DownloadTaskStatus.Downloading; },
+                              cancellationToken,
                               (db, updated) =>
                                   notificationEnqueuer.TryEnqueueAsync(db, NotificationEventType.DownloadStarted,
                                                                        "下载开始",
                                                                        $"{DescribeTask(updated)}：已提交到下载器开始下载。命名：{updated.NamingSnapshot}",
                                                                        cancellationToken));
+
+        // 准备推进（文件选择 → 命名 → 启动）由下一轮对账按下载器真实状态驱动：种子此刻处于
+        // 停止状态，本轮不做文件操作，崩溃或响应丢失都由对账幂等补做。
     }
 
     /// <summary>接管下载器中已存在的同 hash 种子：补打来源 tag、把本地隔离路径对齐为种子真实位置，再按快照推进。</summary>
@@ -523,6 +563,14 @@ public sealed class DownloadService(
                                   },
                                   cancellationToken);
 
+        if (snapshot.Category == QbittorrentTorrentCategory.Stopped && task.IsSystemPaused)
+            // 接管的停止种子无法区分是“本应用停止添加后响应丢失”还是“用户/外部工具添加并暂停”：
+            // 按人工暂停呈现，对账绝不自动启动；系统准备意图保留——用户显式恢复时
+            // 由准备流程先补齐文件选择再启动，而不是绕过计划直接下载。
+            await UpdateTaskAsync(task.Id, task.Status,
+                                  update => { update.IsUserPaused = true; },
+                                  cancellationToken);
+
         if (downloadFileService is not null && !string.IsNullOrWhiteSpace(task.DownloadRootPath) &&
             snapshot.Category is QbittorrentTorrentCategory.Downloading or QbittorrentTorrentCategory.Stopped or
                                  QbittorrentTorrentCategory.Seeding)
@@ -538,6 +586,9 @@ public sealed class DownloadService(
                 return;
             }
 
+        // 与普通对账共用完成判定：接管的快照同样要经过所选文件进度核验——
+        // 总进度按下载器当前选择加权，远端取消选择会让计划文件从分母里消失，不能直接据此判定完成。
+        snapshot = await WithSelectedContentProgressAsync(session, task, snapshot, cancellationToken);
         await ApplySnapshotAsync(task.Id, task.Status, snapshot, session, cancellationToken);
     }
 
@@ -569,6 +620,30 @@ public sealed class DownloadService(
             return;
         }
 
+        // 系统准备暂停中的任务优先推进准备流程（文件选择 → 命名 → 启动），每轮至多发出一批副作用；
+        // 正常推进（含部分完成）后由下一轮以新快照同步，推进失败（如目标路径占用）时本轮仍同步进度。
+        if (task is { Status      : DownloadTaskStatus.Downloading, IsSystemPaused: true } &&
+            snapshot is { Category: QbittorrentTorrentCategory.Stopped, IsMoving  : false })
+        {
+            try
+            {
+                await AdvancePreparationAsync(session, task, snapshot, cancellationToken);
+                return;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "下载任务 {TaskId} 准备流程推进失败，本轮仍同步进度，下一轮重试。",
+                                  task.Id);
+            }
+
+            await ApplySnapshotAsync(task.Id, task.Status, snapshot, session, cancellationToken);
+            return;
+        }
+
         // 首轮扫到即改名：下载中（含人工暂停）任务一旦文件仍保持登记原始路径，立即执行命名计划，
         // 不等下载完成；失败只留待下一轮重试，不阻塞本轮进度推进。已完成快照走完成链的归档校验。
         if (snapshot is
@@ -588,7 +663,196 @@ public sealed class DownloadService(
                                   task.Id);
             }
 
+        // 存在跳过文件的任务按所选内容计算进度：选中文件全部完成即满足本次下载目标，
+        // 不为整包进度强制下载落选文件。整包 100% 时同样必须核对——总进度是按下载器当前
+        // 选择加权的，远端取消选择会使未下载的计划文件不出现在分母里。
+        if (snapshot is
+            {
+                Category: QbittorrentTorrentCategory.Downloading or QbittorrentTorrentCategory.Stopped
+                                                                 or QbittorrentTorrentCategory.Seeding
+            })
+            snapshot = await WithSelectedContentProgressAsync(session, task, snapshot, cancellationToken);
+
         await ApplySnapshotAsync(task.Id, task.Status, snapshot, session, cancellationToken);
+    }
+
+    /// <summary>
+    ///     推进停止添加任务的准备流程：先核对文件下载选择与计划一致（不一致只发出变更，下一轮确认），
+    ///     再应用提前命名计划，全部确认且用户未暂停后恢复下载。每一步都幂等，按下载器真实状态比对补做缺项。
+    /// </summary>
+    private async Task AdvancePreparationAsync(
+        IQbittorrentSession session, DownloadTask task, TorrentSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        task = await LoadTaskWithFilesAsync(task.Id, cancellationToken);
+        if (task is not { Status: DownloadTaskStatus.Downloading, IsSystemPaused: true }) return;
+
+        // 没有任何选中文件的候选不启动：保留可解释的落选或被覆盖结果，等待人工处理。
+        if (task.Files.Count > 0 && task.Files.All(file => !file.IsSelectedForDownload))
+        {
+            logger.LogInformation("任务 {TaskId} 的全部文件均已落选，保持停止不启动下载。", task.Id);
+            return;
+        }
+
+        // 1. 文件下载选择与计划比对；不一致时发出变更即返回，请求成功不代表已生效，下一轮核对后再继续。
+        //    无法在下载器文件清单中确认身份的文件同样阻塞推进：缺项不代表选择已确认。
+        if (await TryApplyFileSelectionAsync(session, task, cancellationToken)) return;
+
+        // 2. 命名计划：仍是登记原始路径的文件交由文件服务改名；改名日志由恢复链在后续轮次确认完成。
+        //    只有明确的路径占用可安全回退——以原始命名继续下载，完成链的备份移动（.replaced/）
+        //    保护旧成片并完成替换。身份校验失败、未知路径布局等其他异常必须阻塞启动，
+        //    由外层捕获记录并等待人工或远端恢复，不能带着无法核实的文件布局开始下载。
+        try
+        {
+            await SettleNamingEarlyAsync(task, snapshot, session, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TargetPathOccupiedException exception)
+        {
+            logger.LogWarning(exception,
+                              "任务 {TaskId} 准备阶段命名被目标路径占用拦截，以原始命名继续下载，完成时再替换。",
+                              task.Id);
+        }
+
+        bool hasPending;
+        await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
+        {
+            hasPending = await db.DownloadTasks.AsNoTracking()
+                                 .AnyAsync(value => value.Id == task.Id &&
+                                                    (value.PendingSavePath != null ||
+                                                     value.Files.Any(file => file.PendingRenameTo != null)),
+                                           cancellationToken);
+        }
+
+        if (hasPending) return;
+
+        // 3. 准备完成：恢复下载并清除系统暂停意图。启动前重读任务状态，
+        // 准备推进期间用户可能已暂停（或任务被替换）——人工意图优先，绝不带着过期意图启动。
+        var latest = await LoadTaskAsync(task.Id, cancellationToken);
+        if (latest is not { Status: DownloadTaskStatus.Downloading, IsUserPaused: false, IsSystemPaused: true })
+            return;
+
+        await session.ResumeAsync(task.InfoHash, cancellationToken);
+        await UpdateTaskAsync(task.Id, DownloadTaskStatus.Downloading, update =>
+        {
+            update.IsSystemPaused   = false;
+            update.PreparationStage = DownloadPreparationStage.ReadyToRun;
+            update.LastSyncedAtUtc  = timeProvider.GetUtcNow();
+        }, cancellationToken);
+        logger.LogInformation("任务 {TaskId} 准备完成（文件选择与命名已确认），已恢复下载。", task.Id);
+    }
+
+    /// <summary>
+    ///     核对下载器实际文件选择与计划的一致性，不一致时发出补做请求。返回 true 表示本轮不应推进
+    ///     后续步骤（已发出变更等待确认，或有文件身份无法确认——缺项不代表选择已确认）。
+    /// </summary>
+    private async Task<bool> TryApplyFileSelectionAsync(
+        IQbittorrentSession session, DownloadTask task, CancellationToken cancellationToken)
+    {
+        if (!TorrentDownloadPolicy.TryLoad(task.TorrentFile, out var torrent, out var isMultiFile)) return false;
+
+        var indexByPath = TorrentDownloadPolicy.GetQbittorrentFileIndices(task.TorrentFile, torrent, isMultiFile);
+        var remoteFiles = (await session.ListFilesAsync(task.InfoHash, cancellationToken))
+                         .GroupBy(file => file.Index)
+                         .ToDictionary(group => group.Key, group => group.First());
+
+        var toSkip      = new List<int>();
+        var toDownload  = new List<int>();
+        var unconfirmed = 0;
+        foreach (var file in task.Files)
+        {
+            if (!indexByPath.TryGetValue(file.OriginalRelativePath, out var qbIndex) ||
+                !remoteFiles.TryGetValue(qbIndex, out var remote))
+            {
+                // 计划内文件在下载器清单中无法寻址：选择状态无法确认，不得当作已确认推进。
+                unconfirmed++;
+                continue;
+            }
+
+            if (file.IsSelectedForDownload       && !remote.IsSelectedForDownload) toDownload.Add(qbIndex);
+            else if (!file.IsSelectedForDownload && remote.IsSelectedForDownload) toSkip.Add(qbIndex);
+        }
+
+        if (unconfirmed > 0)
+        {
+            logger.LogWarning("任务 {TaskId} 有 {Count} 个计划文件无法在下载器文件清单中确认身份，暂缓准备推进。",
+                              task.Id, unconfirmed);
+            return true;
+        }
+
+        if (toSkip.Count == 0 && toDownload.Count == 0) return false;
+
+        if (toSkip.Count > 0)
+            await session.SetTorrentFileSelectionAsync(task.InfoHash, toSkip, false, cancellationToken);
+        if (toDownload.Count > 0)
+            await session.SetTorrentFileSelectionAsync(task.InfoHash, toDownload, true, cancellationToken);
+
+        await UpdateTaskAsync(task.Id, DownloadTaskStatus.Downloading,
+                              update => update.PreparationStage = DownloadPreparationStage.Applying, cancellationToken);
+        logger.LogInformation("任务 {TaskId} 已发出文件选择变更（跳过 {SkipCount} 个、恢复下载 {DownloadCount} 个），等待下载器确认。",
+                              task.Id, toSkip.Count, toDownload.Count);
+        return true;
+    }
+
+    /// <summary>
+    ///     计算所选内容进度：把整包进度替换为选中文件的加权进度；选中文件全部完成时返回进度 1，
+    ///     由调用方沿用统一完成判定。没有跳过文件或无法取得文件级信息时原样返回整包进度。
+    /// </summary>
+    private async Task<TorrentSnapshot> WithSelectedContentProgressAsync(
+        IQbittorrentSession session, DownloadTask task, TorrentSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        List<DownloadTaskFile> files;
+        await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
+        {
+            files = await db.DownloadTaskFiles.AsNoTracking()
+                            .Where(file => file.DownloadTaskId == task.Id)
+                            .ToListAsync(cancellationToken);
+        }
+
+        if (files.Count == 0) return snapshot;
+
+        // 本地计划有跳过文件，或整包进度已报告完成时，都必须核对文件级进度：
+        // qB 的总进度按下载器当前选择加权，远端取消选择会让未下载的计划文件从分母里消失。
+        if (files.All(file => file.IsSelectedForDownload) && snapshot.Progress < 1.0) return snapshot;
+
+        if (!TorrentDownloadPolicy.TryLoad(task.TorrentFile, out var torrent, out var isMultiFile)) return snapshot;
+
+        var indexByPath = TorrentDownloadPolicy.GetQbittorrentFileIndices(task.TorrentFile, torrent, isMultiFile);
+        var remoteFiles = (await session.ListFilesAsync(task.InfoHash, cancellationToken))
+                         .GroupBy(file => file.Index)
+                         .ToDictionary(group => group.Key, group => group.First());
+
+        long selectedTotal = 0, selectedDone = 0;
+        var  allComplete   = true;
+        foreach (var file in files.Where(file => file.IsSelectedForDownload))
+        {
+            // 零字节文件不参与除法：能取得下载器确认即视为满足，拿不到也按完成口径保守放行其存在性。
+            if (file.Size > 0) selectedTotal += file.Size;
+            if (file.Size <= 0) continue;
+
+            if (indexByPath.TryGetValue(file.OriginalRelativePath, out var qbIndex) &&
+                remoteFiles.TryGetValue(qbIndex, out var remote))
+            {
+                selectedDone += (long)(remote.Progress * file.Size);
+                if (remote.Progress < 1.0) allComplete = false;
+            }
+            else
+            {
+                // 无法确认该文件的下载器进度：保守视为未完成，不用整包进度冒充所选进度。
+                allComplete = false;
+            }
+        }
+
+        if (allComplete) return snapshot with { Progress = 1.0 };
+        if (snapshot.Progress >= 1.0)
+            // 整包进度 100% 但计划选中文件未全部完成：通常是下载器端选择与本地计划不一致
+            // （如远端取消了计划要求下载的文件），如实保留所选进度，不宣称完成。
+            logger.LogWarning("任务 {TaskId} 整包进度已完成，但计划选中的文件未全部完成（所选进度 {Progress:P1}），不判定完成。",
+                              task.Id, selectedTotal > 0 ? (double)selectedDone / selectedTotal : 0);
+        if (selectedTotal <= 0) return snapshot;
+        return snapshot with { Progress = (double)selectedDone / selectedTotal };
     }
 
     /// <summary>任一文件仍是登记原始路径的活动任务视为尚未执行命名计划，交由文件服务改名；已改名或 legacy 布局跳过。</summary>
@@ -610,7 +874,7 @@ public sealed class DownloadService(
         await downloadFileService.SettleNamingUnderGateAsync(session, task.Id, snapshot, cancellationToken);
     }
 
-    /// <summary>按下载器快照推进本地状态：完成改名、识别人工暂停、记录进度。</summary>
+    /// <summary>按下载器快照推进本地状态：完成改名、区分人工暂停与系统准备暂停、记录进度。</summary>
     private async Task ApplySnapshotAsync(Guid taskId, DownloadTaskStatus currentStatus, TorrentSnapshot snapshot,
                                           IQbittorrentSession session, CancellationToken cancellationToken)
     {
@@ -622,6 +886,17 @@ public sealed class DownloadService(
                     update.Status     = DownloadTaskStatus.Failed;
                     update.FailedStep = "下载器";
                     update.Error      = "下载器报告该任务出错或文件缺失，请检查下载器。";
+                }, cancellationToken);
+                return;
+
+            case QbittorrentTorrentCategory.Checking :
+                // 校验是异步阶段，进度可能临时波动：只同步进度，不推进完成、暂停或准备流程，
+                // 待校验结束回到稳定状态后再继续。
+                await UpdateTaskAsync(taskId, currentStatus, update =>
+                {
+                    update.Progress        = snapshot.Progress;
+                    update.TotalSize       = snapshot.TotalSize;
+                    update.LastSyncedAtUtc = timeProvider.GetUtcNow();
                 }, cancellationToken);
                 return;
 
@@ -639,22 +914,38 @@ public sealed class DownloadService(
                 return;
 
             case QbittorrentTorrentCategory.Stopped :
-                // 人工在下载器或页面暂停的任务必须保留暂停状态，对账绝不自动恢复。
                 await UpdateTaskAsync(taskId, currentStatus, update =>
                 {
-                    update.Status          = DownloadTaskStatus.Paused;
-                    update.IsUserPaused    = true;
+                    if (update.IsSystemPaused && !update.IsUserPaused)
+                    {
+                        // 系统以停止状态添加/接管且准备未完成：保持待准备语义（含提交中断后的接管），
+                        // 准备推进由对账的准备分支负责，不得把准备暂停误记为人工暂停。
+                        update.Status = DownloadTaskStatus.Downloading;
+                    }
+                    else
+                    {
+                        // 人工在下载器或页面暂停的任务必须保留暂停状态，对账绝不自动恢复；
+                        // 外部停止且系统未声明准备时同样按人工暂停保守处理。
+                        update.Status       = DownloadTaskStatus.Paused;
+                        update.IsUserPaused = true;
+                    }
+
                     update.Progress        = snapshot.Progress;
                     update.TotalSize       = snapshot.TotalSize;
                     update.LastSyncedAtUtc = timeProvider.GetUtcNow();
                 }, cancellationToken);
                 return;
 
-            case QbittorrentTorrentCategory.Downloading :
+            case QbittorrentTorrentCategory.Downloading or QbittorrentTorrentCategory.Seeding :
+                // 进度未满的做种快照（接管/校验后确认内容不完整）与下载中同等处理：保持等待，不判完成。
                 await UpdateTaskAsync(taskId, currentStatus, update =>
                 {
-                    update.Status          = DownloadTaskStatus.Downloading;
-                    update.IsUserPaused    = false;
+                    update.Status       = DownloadTaskStatus.Downloading;
+                    update.IsUserPaused = false;
+
+                    // 下载已实际发生（可能是准备完成后恢复，也可能是用户在下载器内手动启动）：
+                    // 系统准备暂停语义结束，用户手动启动优先。
+                    update.IsSystemPaused  = false;
                     update.Progress        = snapshot.Progress;
                     update.TotalSize       = snapshot.TotalSize;
                     update.LastSyncedAtUtc = timeProvider.GetUtcNow();
@@ -1027,6 +1318,15 @@ public sealed class DownloadService(
         return await db.DownloadTasks.AsNoTracking()
                        .SingleOrDefaultAsync(value => value.Id == taskId, cancellationToken)
             ?? throw new KeyNotFoundException("找不到指定下载任务。");
+    }
+
+    /// <summary>加载任务及其文件计划（准备流程需要文件选择与命名状态）。</summary>
+    private async Task<DownloadTask?> LoadTaskWithFilesAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        return await db.DownloadTasks.AsNoTracking()
+                       .Include(task => task.Files)
+                       .SingleOrDefaultAsync(value => value.Id == taskId, cancellationToken);
     }
 
     /// <summary>

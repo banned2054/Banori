@@ -11,6 +11,12 @@ using System.Text.RegularExpressions;
 
 namespace Banori.Features.Downloads;
 
+/// <summary>
+///     目标路径被其他任务、下载器种子或同种子内其他文件占用。这类失败可以安全回退——
+///     推迟命名、以原始命名继续下载，完成时再替换；与身份校验失败（必须阻塞推进）区分开。
+/// </summary>
+public sealed class TargetPathOccupiedException(string message) : InvalidOperationException(message);
+
 /// <summary>文件身份、人工覆盖与可恢复归档。所有远端操作通过会话执行，不访问下载器文件系统。</summary>
 public sealed class DownloadFileService(
     IDbContextFactory<ApplicationDbContext> dbContextFactory,
@@ -516,7 +522,7 @@ public sealed class DownloadFileService(
             var target = plan.Paths[file.FileIndex];
             // Conservative: reject swaps/chains rather than rename into another file's current path.
             if (matched.Any(other => other.Key != file.FileIndex && EqualPath(other.Value.Path, target)))
-                throw new InvalidOperationException("目标路径占用另一文件当前路径，不能安全执行改名。");
+                throw new TargetPathOccupiedException("目标路径占用另一文件当前路径，不能安全执行改名。");
         }
 
         await ValidateTargetOccupancyAsync(db, session, task, plan, remote, ct, allowCompletedReplacementCollision);
@@ -534,7 +540,7 @@ public sealed class DownloadFileService(
             RelativeDownloadPathPolicy.Normalize(path);
             if (entries.Any(other => other.Key != index && PathsOverlap(path, other.Value)) ||
                 matched.Any(other => other.Key != index && PathsOverlap(path, other.Value.Path)))
-                throw new InvalidOperationException("目标路径与同种子另一文件目标/当前路径相同或互为父子，不能安全执行。");
+                throw new TargetPathOccupiedException("目标路径与同种子另一文件目标/当前路径相同或互为父子，不能安全执行。");
         }
 
         var targets = plan.Paths.Values.Select(path => Join(plan.Root, path))
@@ -566,7 +572,7 @@ public sealed class DownloadFileService(
                 continue;
 
             if (other.Files.Count == 0 && targets.Any(path => IsWithin(path, other.SavePath)))
-                throw new InvalidOperationException("目标目录可能被其他尚未初始化的任务占用。");
+                throw new TargetPathOccupiedException("目标目录可能被其他尚未初始化的任务占用。");
             foreach (var file in other.Files)
             {
                 var occupied = new List<string> { Join(other.SavePath, file.CurrentRelativePath) };
@@ -596,7 +602,7 @@ public sealed class DownloadFileService(
                         ? other.Id.ToString()
                         : other.NamingSnapshot;
                     throw new
-                        InvalidOperationException($"目标文件路径“{target}”被下载任务“{owner}”（任务 ID {other.Id}，状态 {other.Status}）占用；该任务记录的文件路径为“{path}”。");
+                        TargetPathOccupiedException($"目标文件路径“{target}”被下载任务“{owner}”（任务 ID {other.Id}，状态 {other.Status}）占用；该任务记录的文件路径为“{path}”。");
                 }
             }
         }
@@ -628,14 +634,14 @@ public sealed class DownloadFileService(
                                 continue;
                             case null :
                                 throw new
-                                    InvalidOperationException($"目标文件路径“{target}”被下载器中的其他种子占用，种子文件路径为“{occupied}”。");
+                                    TargetPathOccupiedException($"目标文件路径“{target}”被下载器中的其他种子占用，种子文件路径为“{occupied}”。");
                             default :
                             {
                                 var owner = string.IsNullOrWhiteSpace(managedTask.NamingSnapshot)
                                     ? managedTask.Id.ToString()
                                     : managedTask.NamingSnapshot;
                                 throw new
-                                    InvalidOperationException($"目标文件路径“{target}”被下载任务“{owner}”（任务 ID {managedTask.Id}，状态 {managedTask.Status}）占用；该种子的文件路径为“{occupied}”。");
+                                    TargetPathOccupiedException($"目标文件路径“{target}”被下载任务“{owner}”（任务 ID {managedTask.Id}，状态 {managedTask.Status}）占用；该种子的文件路径为“{occupied}”。");
                             }
                         }
                     }

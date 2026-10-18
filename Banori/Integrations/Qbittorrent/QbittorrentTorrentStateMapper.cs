@@ -9,20 +9,32 @@ public static class QbittorrentTorrentStateMapper
     {
         return state switch
         {
-            EnumTorrentState.Downloading or EnumTorrentState.MetaDownload or EnumTorrentState.StalledDownload or
-                EnumTorrentState.QueuedDownload or EnumTorrentState.CheckingDownload or
-                EnumTorrentState.ForcedDownload or EnumTorrentState.Allocating or EnumTorrentState.Moving or
-                EnumTorrentState.CheckingResumeData
+            EnumTorrentState.CheckingDownload
+             or EnumTorrentState.CheckingResumeData
+             or EnumTorrentState.CheckingUpload
+                => QbittorrentTorrentCategory.Checking,
+
+            EnumTorrentState.Downloading
+             or EnumTorrentState.MetaDownload
+             or EnumTorrentState.StalledDownload
+             or EnumTorrentState.QueuedDownload
+             or EnumTorrentState.ForcedDownload
+             or EnumTorrentState.Allocating
+             or EnumTorrentState.Moving
                 => QbittorrentTorrentCategory.Downloading,
 
             EnumTorrentState.StoppedDownload
                 => QbittorrentTorrentCategory.Stopped,
 
-            EnumTorrentState.Uploading or EnumTorrentState.StalledUpload or EnumTorrentState.ForcedUpload or
-                EnumTorrentState.QueuedUpload or EnumTorrentState.CheckingUpload or EnumTorrentState.StoppedUpload
+            EnumTorrentState.Uploading
+             or EnumTorrentState.StalledUpload
+             or EnumTorrentState.ForcedUpload
+             or EnumTorrentState.QueuedUpload
+             or EnumTorrentState.StoppedUpload
                 => QbittorrentTorrentCategory.Seeding,
 
-            EnumTorrentState.Error or EnumTorrentState.MissingFiles
+            EnumTorrentState.Error
+             or EnumTorrentState.MissingFiles
                 => QbittorrentTorrentCategory.Error,
 
             _ => QbittorrentTorrentCategory.Unknown

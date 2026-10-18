@@ -54,10 +54,21 @@ public sealed class DownloadTask
     public int                Version { get; set; } = 1;
     public DownloadTaskStatus Status  { get; set; }
 
-    public bool    IsUserPaused { get; set; }
+    /// <summary>人工暂停（页面或下载器内暂停），对账绝不自动恢复；与系统准备暂停分开保存。</summary>
+    public bool IsUserPaused { get; set; }
+
+    /// <summary>系统以停止状态添加且准备流程（文件选择、命名）未完成；只有系统能在准备完成后清除并恢复下载。</summary>
+    public bool IsSystemPaused { get; set; }
+
+    /// <summary>停止添加后的准备阶段；用于解释当前推进位置，实际推进以下载器真实状态比对为准。</summary>
+    public DownloadPreparationStage PreparationStage { get; set; }
+
     public int     AttemptCount { get; set; }
     public double? Progress     { get; set; }
     public long?   TotalSize    { get; set; }
+
+    /// <summary>文件选择计划中选中文件的总大小；存在跳过文件时 Progress 记录的是所选内容进度。</summary>
+    public long? SelectedTotalBytes { get; set; }
 
     /// <summary>本任务完成后应标记为被替换的旧任务；无外键，仅记录替换关系。</summary>
     public Guid? ReplacesTaskId { get; set; }

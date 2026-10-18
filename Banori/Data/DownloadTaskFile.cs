@@ -24,6 +24,12 @@ public sealed class DownloadTaskFile
 
     public string ClassificationReason { get; set; } = string.Empty;
 
+    /// <summary>该文件是否承担下载：包内择优落选的文件不下载；与内容角色分类分开记录，Seed 附件默认仍下载。</summary>
+    public bool IsSelectedForDownload { get; set; } = true;
+
+    /// <summary>不承担下载的原因（如“同集包内择优落选”）；null 表示默认选中，人工覆盖的选择另行标记。</summary>
+    public string? SelectionReason { get; set; }
+
     // Journal is committed before the remote request. Recovery matches normalized from/to paths plus Size, never indices.
     public string?        PendingRenameFrom { get; set; }
     public string?        PendingRenameTo   { get; set; }

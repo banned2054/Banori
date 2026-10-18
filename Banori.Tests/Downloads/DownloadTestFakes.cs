@@ -55,6 +55,9 @@ public sealed class FakeTorrentStore
     public Dictionary<string, List<string>>    Files    { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string>                     Paused   { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>以停止状态添加的种子：在 Resume 前一直报告 Stopped，模拟 qB 的停止添加语义。</summary>
+    public HashSet<string> StoppedAdds { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public Dictionary<string, List<TorrentFileSnapshot>> FileIdentities { get; } =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -71,6 +74,8 @@ public sealed class FakeTorrentStore
     public List<string> ResumeCalls { get; } = [];
     public List<string> PauseCalls { get; } = [];
     public List<(string Hash, bool DeleteFiles)> DeleteCalls { get; } = [];
+    public List<(string Hash, IReadOnlyCollection<int> Indices, bool Download)> SelectionCalls { get; } = [];
+    public List<string> RecheckCalls { get; } = [];
 
     public void CompleteMoves()
     {
@@ -122,24 +127,50 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
 
     public async Task<string> AddTorrentAsync(
         byte[]            torrentBytes, string savePath, IReadOnlyList<string> tags, string? rename,
+        bool              startStopped,
         CancellationToken cancellationToken = default)
     {
         if (BeforeAddTorrentAsync is not null) await BeforeAddTorrentAsync();
 
         if (AddException is not null) throw AddException;
 
-        var hash = TorrentDownloadPolicy.TryLoad(torrentBytes, out var torrent, out _)
-            ? torrent.InfoHashes.V1!.ToHex().ToLowerInvariant()
-            : throw new InvalidOperationException("测试种子字节无效。");
+        if (!TorrentDownloadPolicy.TryLoad(torrentBytes, out var torrent, out var isMultiFile))
+            throw new InvalidOperationException("测试种子字节无效。");
+        var hash = torrent.InfoHashes.V1!.ToHex().ToLowerInvariant();
 
         if (FailOnDuplicate && store.Torrents.ContainsKey(hash)) return "Fails.";
+
+        void RegisterCore()
+        {
+            store.Torrents[hash] = new TorrentSnapshot(hash, rename ?? $"torrent-{hash[..8]}",
+                                                       QbittorrentTorrentCategory.Downloading, 0, 1024, savePath,
+                                                       tags.ToList());
+            store.Files.TryAdd(hash, ["原文件名.mkv"]);
+
+            // 同时登记真实文件身份（qB index / 原始相对路径），默认全部选中、零进度；
+            // 测试播种 FileIdentities 时以直接赋值覆盖。
+            if (!store.FileIdentities.ContainsKey(hash))
+            {
+                var indexByPath = TorrentDownloadPolicy.GetQbittorrentFileIndices(torrentBytes, torrent, isMultiFile);
+                store.FileIdentities[hash] = torrent.Files
+                                                    .Select(file =>
+                                                     {
+                                                         var path = TorrentDownloadPolicy.GetRelativePath(
+                                                              torrent, file, isMultiFile);
+                                                         return new TorrentFileSnapshot(
+                                                              indexByPath.GetValueOrDefault(path, -1), path,
+                                                              file.Length);
+                                                     })
+                                                    .ToList();
+            }
+
+            if (startStopped) store.StoppedAdds.Add(hash);
+        }
 
         if (RegisterThenThrowTransport)
         {
             store.AddCalls.Add((torrentBytes, savePath, tags, rename));
-            store.Torrents[hash] = new TorrentSnapshot(hash, $"torrent-{hash[..8]}",
-                                                       QbittorrentTorrentCategory.Downloading, 0, 1024, savePath, []);
-            store.Files.TryAdd(hash, ["原文件名.mkv"]);
+            RegisterCore();
             throw new QbittorrentException("模拟响应丢失");
         }
 
@@ -148,10 +179,7 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
 
         if (AddResponse is not null) return AddResponse;
 
-        store.Torrents[hash] = new TorrentSnapshot(hash, rename ?? $"torrent-{hash[..8]}",
-                                                   QbittorrentTorrentCategory.Downloading, 0, 1024, savePath,
-                                                   tags.ToList());
-        store.Files.TryAdd(hash, ["原文件名.mkv"]);
+        RegisterCore();
         if (AfterAddTorrentAsync is not null) await AfterAddTorrentAsync();
         return "Ok.";
     }
@@ -208,6 +236,25 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
                                                                        : []);
     }
 
+    public Task SetTorrentFileSelectionAsync(string                   infoHash,
+                                             IReadOnlyCollection<int> fileIndices, bool download,
+                                             CancellationToken        cancellationToken = default)
+    {
+        store.SelectionCalls.Add((infoHash, fileIndices.ToList(), download));
+        if (store.FileIdentities.TryGetValue(infoHash, out var files))
+            store.FileIdentities[infoHash] = files.Select(file => fileIndices.Contains(file.Index)
+                                                              ? file with { IsSelectedForDownload = download }
+                                                              : file)
+                                                  .ToList();
+        return Task.CompletedTask;
+    }
+
+    public Task RecheckTorrentAsync(string infoHash, CancellationToken cancellationToken = default)
+    {
+        store.RecheckCalls.Add(infoHash);
+        return Task.CompletedTask;
+    }
+
     public Task SetLocationAsync(string infoHash, string savePath, CancellationToken cancellationToken = default)
     {
         store.SetLocationCalls.Add((infoHash, savePath));
@@ -235,6 +282,7 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     {
         store.ResumeCalls.Add(infoHash);
         store.Paused.Remove(infoHash);
+        store.StoppedAdds.Remove(infoHash);
         return Task.CompletedTask;
     }
 
@@ -247,8 +295,8 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         return Task.CompletedTask;
     }
 
-    public Task RenameTorrentFileAsync(string            infoHash, string oldPath, string newPath,
-                                       CancellationToken cancellationToken = default)
+    public Task RenameTorrentFileAsync(
+        string infoHash, string oldPath, string newPath, CancellationToken cancellationToken = default)
     {
         store.RenameFileCalls.Add((infoHash, oldPath, newPath));
         if (store.Files.TryGetValue(infoHash, out var fileNames))
@@ -282,11 +330,12 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         store.Torrents.Remove(infoHash);
         store.Files.Remove(infoHash);
         store.Paused.Remove(infoHash);
+        store.StoppedAdds.Remove(infoHash);
         return Task.CompletedTask;
     }
 
-    public Task DeleteTorrentsAsync(IReadOnlyCollection<string> infoHashes, bool deleteFiles,
-                                    CancellationToken           cancellationToken = default)
+    public Task DeleteTorrentsAsync(
+        IReadOnlyCollection<string> infoHashes, bool deleteFiles, CancellationToken cancellationToken = default)
     {
         foreach (var infoHash in infoHashes) DeleteTorrentAsync(infoHash, deleteFiles, cancellationToken);
         return Task.CompletedTask;
@@ -297,9 +346,10 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     private TorrentSnapshot SnapshotFor(string hash)
     {
         var snapshot = store.Torrents[hash];
-        var category = store.Paused.Contains(hash) && snapshot.Category == QbittorrentTorrentCategory.Downloading
-            ? QbittorrentTorrentCategory.Stopped
-            : snapshot.Category;
+        var category = snapshot.Category;
+        if (store.StoppedAdds.Contains(hash) && category == QbittorrentTorrentCategory.Downloading ||
+            store.Paused.Contains(hash)      && category == QbittorrentTorrentCategory.Downloading)
+            category = QbittorrentTorrentCategory.Stopped;
         return snapshot with { Category = category };
     }
 }
@@ -319,8 +369,8 @@ public sealed class FakeQbittorrentSessionFactory(FakeTorrentStore store) : IQbi
         CreateAsync(new QbittorrentSettings("http://qb.test", "admin", "/downloads", true), "secret",
                     cancellationToken);
 
-    public Task<IQbittorrentSession> CreateAsync(QbittorrentSettings settings, string? password,
-                                                 CancellationToken   cancellationToken = default)
+    public Task<IQbittorrentSession> CreateAsync(
+        QbittorrentSettings settings, string? password, CancellationToken cancellationToken = default)
     {
         if (ThrowOnCreate) throw new QbittorrentException("模拟下载器不可达");
 
@@ -406,8 +456,8 @@ public sealed class NullSubjectLinkResolver : ISubjectLinkResolver
 {
     public static readonly NullSubjectLinkResolver Instance = new();
 
-    public Task<int?> ResolveSubjectIdAsync(Uri               episodeUri, Guid? proxyId = null,
-                                            CancellationToken cancellationToken = default) =>
+    public Task<int?> ResolveSubjectIdAsync(
+        Uri episodeUri, Guid? proxyId = null, CancellationToken cancellationToken = default) =>
         throw new InvalidOperationException("该测试不应解析条目链接。");
 }
 

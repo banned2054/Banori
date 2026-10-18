@@ -36,6 +36,25 @@ public static class DownloadTaskStatusExtensions
                or DownloadTaskStatus.Failed or DownloadTaskStatus.Lost or DownloadTaskStatus.Replaced;
 }
 
+/// <summary>
+///     新增任务的准备阶段：种子以停止状态添加后，逐步应用文件选择与命名计划，全部确认后才允许启动下载。
+///     阶段只用于解释推进位置与恢复边界，实际推进始终以下载器真实状态与计划比对为准。
+/// </summary>
+public enum DownloadPreparationStage
+{
+    /// <summary>无需准备：存量任务或接管时已处于可运行状态的种子。</summary>
+    None,
+
+    /// <summary>计划已保存（意图先于请求落库），等待应用文件选择与命名。</summary>
+    Planned,
+
+    /// <summary>文件选择或命名变更已部分发出，等待与下载器实际状态核对一致。</summary>
+    Applying,
+
+    /// <summary>准备完成：选中文件与路径已确认，允许启动下载。</summary>
+    ReadyToRun
+}
+
 /// <summary>下载任务列表投影。</summary>
 public sealed record DownloadTaskView
 {
@@ -50,19 +69,23 @@ public sealed record DownloadTaskView
     public          string?            SubtitleLanguage { get; init; }
     public required DownloadTaskStatus Status           { get; init; }
     public          bool               IsUserPaused     { get; init; }
-    public          double?            Progress         { get; init; }
-    public          long?              TotalSize        { get; init; }
-    public          string?            NamingSnapshot   { get; init; }
-    public          string?            SiteSource       { get; init; }
-    public          string?            FailedStep       { get; init; }
-    public          string?            Error            { get; init; }
-    public required DateTimeOffset     CreatedAtUtc     { get; init; }
-    public          DateTimeOffset?    SubmittedAtUtc   { get; init; }
-    public          DateTimeOffset?    CompletedAtUtc   { get; init; }
-    public          Guid?              ReplacesTaskId   { get; init; }
-    public          string?            ReplacesNaming   { get; init; }
-    public          Guid?              ReplacedByTaskId { get; init; }
-    public          string?            ReplacedByNaming { get; init; }
+
+    /// <summary>系统准备暂停：停止添加后文件选择与命名尚未确认，下载还未启动。</summary>
+    public bool IsSystemPaused { get; init; }
+
+    public          double?         Progress         { get; init; }
+    public          long?           TotalSize        { get; init; }
+    public          string?         NamingSnapshot   { get; init; }
+    public          string?         SiteSource       { get; init; }
+    public          string?         FailedStep       { get; init; }
+    public          string?         Error            { get; init; }
+    public required DateTimeOffset  CreatedAtUtc     { get; init; }
+    public          DateTimeOffset? SubmittedAtUtc   { get; init; }
+    public          DateTimeOffset? CompletedAtUtc   { get; init; }
+    public          Guid?           ReplacesTaskId   { get; init; }
+    public          string?         ReplacesNaming   { get; init; }
+    public          Guid?           ReplacedByTaskId { get; init; }
+    public          string?         ReplacedByNaming { get; init; }
 
     public bool ShowPendingReplacement => ReplacesNaming is not null &&
                                           Status is not (DownloadTaskStatus.Completed or DownloadTaskStatus.Replaced);

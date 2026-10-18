@@ -207,6 +207,9 @@ namespace Banori.Data.Migrations.MySql
                         .HasMaxLength(40)
                         .HasColumnType("varchar(40)");
 
+                    b.Property<bool>("IsSystemPaused")
+                        .HasColumnType("tinyint(1)");
+
                     b.Property<bool>("IsUserPaused")
                         .HasColumnType("tinyint(1)");
 
@@ -229,6 +232,13 @@ namespace Banori.Data.Migrations.MySql
                         .HasMaxLength(1000)
                         .HasColumnType("varchar(1000)");
 
+                    b.Property<string>("PreparationStage")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasDefaultValue("None");
+
                     b.Property<double?>("Progress")
                         .HasColumnType("double");
 
@@ -246,6 +256,9 @@ namespace Banori.Data.Migrations.MySql
                     b.Property<string>("SeedDirectory")
                         .HasMaxLength(1000)
                         .HasColumnType("varchar(1000)");
+
+                    b.Property<long?>("SelectedTotalBytes")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("SiteSource")
                         .HasMaxLength(50)
@@ -323,6 +336,11 @@ namespace Banori.Data.Migrations.MySql
                     b.Property<bool>("IsManualOverride")
                         .HasColumnType("tinyint(1)");
 
+                    b.Property<bool>("IsSelectedForDownload")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(true);
+
                     b.Property<string>("Kind")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -337,6 +355,10 @@ namespace Banori.Data.Migrations.MySql
 
                     b.Property<string>("PendingRenameTo")
                         .HasColumnType("longtext");
+
+                    b.Property<string>("SelectionReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
 
                     b.Property<long>("Size")
                         .HasColumnType("bigint");
