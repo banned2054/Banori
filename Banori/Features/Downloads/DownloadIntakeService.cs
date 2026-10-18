@@ -44,13 +44,14 @@ public sealed class DownloadIntakeService(
     DownloadFileClassificationPolicy?       fileClassificationPolicy = null,
     DownloadEpisodeResolver?                episodeResolver          = null)
 {
-    private readonly DownloadEpisodeResolver episodeResolver =
-        episodeResolver ?? new DownloadEpisodeResolver(aniParser, episodeCorrectionPolicy);
     /// <summary>所有下载登记的前置门禁：解析 Bangumi 绑定，未绑定返回 null（调用方拒绝下载并要求补 ID）。</summary>
     private const string SubjectUnboundMessage = "未能绑定 Bangumi Subject，请在表单补充 Bangumi ID 后重试。";
 
     /// <summary>上传种子的大小上限：.torrent 通常远小于该值，超限基本说明选错了文件。服务端入口始终校验。</summary>
     public const long MaxTorrentUploadBytes = 10 * 1024 * 1024;
+
+    private readonly DownloadEpisodeResolver episodeResolver =
+        episodeResolver ?? new DownloadEpisodeResolver(aniParser, episodeCorrectionPolicy);
 
     public async Task<Guid> CreateForFeedItemAsync(Guid itemId, CancellationToken cancellationToken = default)
     {
@@ -181,16 +182,16 @@ public sealed class DownloadIntakeService(
         if (AllContentLost(task, verdicts))
         {
             // 与 RSS 路径同口径：落选留终止记录承担同 hash 查重，顶替者被删时回退重新排队。
-            task.Status          = DownloadTaskStatus.Replaced;
+            task.Status           = DownloadTaskStatus.Replaced;
             task.ReplacedByTaskId = DominantIncumbentId(verdicts);
-            task.FailedStep      = "择优";
-            task.Error           = "同集候选落选，保留终止记录供查重。";
+            task.FailedStep       = "择优";
+            task.Error            = "同集候选落选，保留终止记录供查重。";
             db.DownloadTasks.Add(task);
             await db.SaveChangesAsync(cancellationToken);
             logger.LogInformation("上传种子同集落选，已登记终止记录 {TaskId}（hash {InfoHash}）。",
                                   task.Id, infoHash);
             throw new InvalidOperationException(
-                $"本次上传未登记：{ComposeLossReason(verdicts)}。（已保留终止记录供查重）");
+                                                $"本次上传未登记：{ComposeLossReason(verdicts)}。（已保留终止记录供查重）");
         }
 
         await ApplyWinningEpisodesAsync(db, task, scopes, verdicts, cancellationToken);
@@ -475,9 +476,8 @@ public sealed class DownloadIntakeService(
     ///     成功渲染的那次解析随要素一并返回，供同集裁决复用同一解析口径。
     /// </summary>
     private async Task<(string Snapshot, string? IngredientsJson, ParseResult? Parsed)> BuildNamingAsync(
-        string?        primaryTitle, ParseResult?      fallbackParse, string?      fallbackTitle,
-        string?        siteSource,   string            lastResort,    ParseResult? primaryParsed,
-        SubjectBinding subject,      CancellationToken cancellationToken)
+        string? primaryTitle, ParseResult? fallbackParse, string? fallbackTitle, string? siteSource, string lastResort,
+        ParseResult? primaryParsed, SubjectBinding subject, CancellationToken cancellationToken)
     {
         var template     = await namingTemplateStore.GetAsync(cancellationToken);
         var fileTemplate = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
@@ -526,7 +526,7 @@ public sealed class DownloadIntakeService(
     {
         var byEpisode = new Dictionary<decimal, List<DownloadTaskFile>>();
         foreach (var file in task.Files.Where(file => file.Kind == DownloadFileKind.Anime)
-                     .OrderBy(file => file.FileIndex))
+                                 .OrderBy(file => file.FileIndex))
         {
             if (episodeResolver.EpisodeOf(task, file) is not { } episode) continue;
             if (!byEpisode.TryGetValue(episode, out var files)) byEpisode[episode] = files = [];
@@ -538,33 +538,36 @@ public sealed class DownloadIntakeService(
         {
             if (identityCandidate is not null && identityEpisode == episode)
             {
-                scopes.Add(new EpisodeScope(episode, identityCandidate, files));
+                var version = DownloadTaskLookups.EpisodeFileVersion(aniParser, task, files[0], episode);
+                scopes.Add(new EpisodeScope(episode, identityCandidate with { Version = version }, files));
                 continue;
             }
 
-            var parse = aniParser.Parse(FileName(files[0].OriginalRelativePath));
+            var parse = aniParser.Parse(DownloadEpisodeResolver.FileName(files[0].OriginalRelativePath));
             if (parse is null) continue;
-            scopes.Add(new EpisodeScope(
-                           episode,
-                           BuildAdhocCandidate($"{task.InfoHash}:{episode:0.###}:{files[0].FileIndex}",
-                                               task.CreatedAtUtc, parse, task.SubjectId ?? 0),
-                           files));
+            scopes.Add(new EpisodeScope(episode,
+                                        BuildAdhocCandidate($"{task.InfoHash}:{episode:0.###}:{files[0].FileIndex}",
+                                                            task.CreatedAtUtc, parse, task.SubjectId ?? 0), files));
         }
 
-        if (identityCandidate is not null && identityEpisode is { } episodeKey &&
-            scopes.All(scope => scope.Episode != episodeKey))
-        {
-            // 文件归不进该集时以内容文件承载；文件全部不可解析的单文件种子退回唯一文件——
-            // 任务级身份已断言该文件属于此集，分类缺失不阻止承接（与旧任务级裁决同覆盖）。
-            var fallbackFiles = task.Files.Where(file => file.Kind == DownloadFileKind.Anime)
-                                  .OrderBy(file => file.FileIndex).ToList();
-            if (fallbackFiles.Count == 0)
-                fallbackFiles = task.Files.Where(file => file.Kind != DownloadFileKind.Seed)
-                                    .OrderBy(file => file.FileIndex).ToList();
-            if (fallbackFiles.Count == 0 && task.Files.Count == 1)
-                fallbackFiles = task.Files.ToList();
-            if (fallbackFiles.Count > 0) scopes.Add(new EpisodeScope(episodeKey, identityCandidate, fallbackFiles));
-        }
+        if (identityCandidate is null             ||
+            identityEpisode is not { } episodeKey ||
+            scopes.Any(scope => scope.Episode == episodeKey))
+            return scopes;
+
+        // 文件归不进该集时以内容文件承载；文件全部不可解析的单文件种子退回唯一文件——
+        // 任务级身份已断言该文件属于此集，分类缺失不阻止承接（与旧任务级裁决同覆盖）。
+        var fallbackFiles = task.Files.Where(file => file.Kind == DownloadFileKind.Anime)
+                                .OrderBy(file => file.FileIndex).ToList();
+        if (fallbackFiles.Count == 0)
+            fallbackFiles = task.Files.Where(file => file.Kind != DownloadFileKind.Seed)
+                                .OrderBy(file => file.FileIndex).ToList();
+        if (fallbackFiles.Count == 0 && task.Files.Count == 1)
+            fallbackFiles = task.Files.ToList();
+        fallbackFiles = fallbackFiles.Where(file => DownloadTaskLookups.CanUseTaskEpisodeFallback(aniParser, file))
+                                     .ToList();
+        if (fallbackFiles.Count > 0) scopes.Add(new EpisodeScope(episodeKey, identityCandidate, fallbackFiles));
+
 
         return scopes;
     }
@@ -576,9 +579,9 @@ public sealed class DownloadIntakeService(
     ///     覆盖该集；跨路径互认与订阅豁免口径沿用既有任务级裁决。纯决策无副作用，结论由调用方应用。
     /// </summary>
     private async Task<List<EpisodeVerdict>> ArbitrateEpisodesAsync(
-        ApplicationDbContext db, SelectionRuleConfig config, IReadOnlyList<EpisodeScope> scopes,
-        int? subjectId, string seriesKey, string? siteSource, string infoHash, int? exemptSubjectId,
-        CancellationToken cancellationToken)
+        ApplicationDbContext db,        SelectionRuleConfig config, IReadOnlyList<EpisodeScope> scopes,
+        int?                 subjectId, string seriesKey, string? siteSource, string infoHash, int? exemptSubjectId,
+        CancellationToken    cancellationToken)
     {
         if (scopes.Count == 0) return [];
 
@@ -593,8 +596,8 @@ public sealed class DownloadIntakeService(
 
         var occupants = await db.DownloadTasks.AsNoTracking()
                                 .Include(task => task.Files)
-                                .Where(task => task.SubjectId        == subjectId                &&
-                                               task.ReplacedByTaskId == null                     &&
+                                .Where(task => task.SubjectId        == subjectId                 &&
+                                               task.ReplacedByTaskId == null                      &&
                                                task.Status           != DownloadTaskStatus.Failed &&
                                                task.Status           != DownloadTaskStatus.Lost   &&
                                                task.Status           != DownloadTaskStatus.Replaced)
@@ -614,26 +617,27 @@ public sealed class DownloadIntakeService(
             {
                 if (occupant.InfoHash == infoHash) continue;
 
-                if (occupant.SubjectId == subjectId &&
-                    occupant.Status   == DownloadTaskStatus.Completed &&
-                    scope.Incoming.Version >= occupant.Version)
-                {
-                    var covered  = CoveringFiles(occupant, scope.Episode);
-                    var carrier  = covered.FirstOrDefault(file => file.Kind == DownloadFileKind.Anime) ??
-                                   covered.FirstOrDefault();
+                var covered = CoveringFiles(occupant, scope.Episode);
+                var carrier = covered.FirstOrDefault(file => file.Kind == DownloadFileKind.Anime) ??
+                              covered.FirstOrDefault();
+                var incumbentVersion = carrier is null
+                    ? occupant.Version
+                    : DownloadTaskLookups.EpisodeFileVersion(aniParser, occupant, carrier, scope.Episode);
+                if (DownloadTaskLookups.IsTakeoverEligibleIncumbent(occupant.Status, occupant.ReplacedByTaskId,
+                                                                    incumbentVersion, scope.Incoming.Version))
                     if (carrier is not null)
-                        registryIncumbents.Add((occupant.Id, occupant.NamingSnapshot, occupant.Version,
+                        registryIncumbents.Add((occupant.Id, occupant.NamingSnapshot, incumbentVersion,
                                                 occupant.CreatedAtUtc, carrier.Id));
-                }
 
                 // 同 Subject 豁免只覆盖订阅条目任务（其替换由评估/择优/版本守卫链治理）；
                 // RSS/上传任务（无 FeedItem）即使同 Subject 也参与跨路径裁决。
                 if (exemptSubjectId is not null && occupant.FeedItemId != null &&
-                    occupant.SubjectId == exemptSubjectId) continue;
+                    occupant.SubjectId                                 == exemptSubjectId) continue;
                 if (!string.Equals(occupant.SiteSource, siteSource, StringComparison.Ordinal)) continue;
                 if (occupant.SubjectId is null)
                 {
-                    var taskSeriesKey = TorrentNamingIngredients.FromJson(occupant.NamingIngredients) is { } occupantIngredients
+                    var taskSeriesKey = TorrentNamingIngredients.FromJson(occupant.NamingIngredients) is
+                        { } occupantIngredients
                         ? TitleNormalizer.Normalize(occupantIngredients.Title)
                         : string.Empty;
                     if (taskSeriesKey.Length == 0 || taskSeriesKey != seriesKey) continue;
@@ -643,10 +647,13 @@ public sealed class DownloadIntakeService(
                 if (covered2.Count == 0) continue;
 
                 var video = covered2.FirstOrDefault(file => file.Kind == DownloadFileKind.Anime);
-                var parse = video is null ? null : aniParser.Parse(FileName(video.OriginalRelativePath));
+                var parse = video is null
+                    ? null
+                    : aniParser.Parse(DownloadEpisodeResolver.FileName(video.OriginalRelativePath));
                 candidates.Add((occupant.Id, occupant.NamingSnapshot,
                                 OccupantCandidate(occupant, parse, scope, video?.Id),
-                                occupant.Status == DownloadTaskStatus.Completed, video?.Id ?? covered2.FirstOrDefault()?.Id));
+                                occupant.Status == DownloadTaskStatus.Completed,
+                                video?.Id ?? covered2.FirstOrDefault()?.Id));
             }
 
             if (candidates.Count == 0)
@@ -655,7 +662,7 @@ public sealed class DownloadIntakeService(
                 var guardIncumbent = registryIncumbents.OrderByDescending(item => item.Version)
                                                        .ThenByDescending(item => item.CreatedAtUtc)
                                                        .FirstOrDefault();
-                verdicts.Add(guardIncumbent.TaskId != default
+                verdicts.Add(guardIncumbent.TaskId != Guid.Empty
                                  ? new EpisodeVerdict(scope.Episode, true, guardIncumbent.TaskId,
                                                       guardIncumbent.Naming, true, guardIncumbent.VideoFileId)
                                  : new EpisodeVerdict(scope.Episode, true, null, null, false, null));
@@ -666,9 +673,9 @@ public sealed class DownloadIntakeService(
             var incumbent = candidates.Count == 1
                 ? candidates[0]
                 : candidates.First(value => value.TaskId == (rankingPolicy
-                                                              .Select(candidates.Select(item => item.Candidate).ToList(),
-                                                                      config).Winner ?? candidates[0].Candidate)
-                                                             .FeedItemId);
+                                                            .Select(candidates.Select(item => item.Candidate).ToList(),
+                                                                    config).Winner ?? candidates[0].Candidate)
+                                      .FeedItemId);
             var verdict = rankingPolicy.Select([incumbent.Candidate, scope.Incoming], config, incumbent.TaskId);
             verdicts.Add(verdict.Winner?.FeedItemId == scope.Incoming.FeedItemId
                              ? new EpisodeVerdict(scope.Episode, true, incumbent.TaskId, incumbent.Naming,
@@ -687,19 +694,21 @@ public sealed class DownloadIntakeService(
     /// </summary>
     private List<DownloadTaskFile> CoveringFiles(DownloadTask task, decimal episode)
     {
-        if (task.Episode == episode)
-        {
-            var covered = task.Files.Where(file => file.IsSelectedForDownload && file.Kind != DownloadFileKind.Seed)
-                             .ToList();
-            if (covered.Count == 0 && task.Files.Count(file => file.IsSelectedForDownload) == 1)
-                covered = task.Files.Where(file => file.IsSelectedForDownload).ToList();
-            return covered;
-        }
+        if (task.Episode != episode)
+            return task.Files.Where(file => file.IsSelectedForDownload && file.Kind != DownloadFileKind.Seed &&
+                                            episodeResolver.EpisodeOf(task, file)   == episode).ToList();
 
-        return task.Files.Where(file => file.IsSelectedForDownload                        &&
-                                        file.Kind     != DownloadFileKind.Seed             &&
-                                        episodeResolver.EpisodeOf(task, file) == episode)
-                     .ToList();
+        var covered = task.Files.Where(file => file.IsSelectedForDownload && file.Kind != DownloadFileKind.Seed &&
+                                               (episodeResolver.EpisodeOf(task, file) == episode ||
+                                                (episodeResolver.EpisodeOf(task, file) is null &&
+                                                 DownloadTaskLookups.IsSingleEpisodeCarrier(aniParser, task, file,
+                                                     episode)))).ToList();
+        if (covered.Count == 0 && task.Files.Count(file => file.IsSelectedForDownload) == 1 &&
+            task.Files.Single(file => file.IsSelectedForDownload) is { } onlySelected &&
+            episodeResolver.EpisodeOf(task, onlySelected) is null &&
+            DownloadTaskLookups.IsSingleEpisodeCarrier(aniParser, task, onlySelected, episode))
+            covered = [onlySelected];
+        return covered;
     }
 
     /// <summary>
@@ -718,16 +727,18 @@ public sealed class DownloadIntakeService(
             : EnumResolution.Unknown;
         return new EpisodeCandidate
         {
-            FeedItemId     = task.Id,
-            SubjectId      = task.SubjectId ?? 0,
-            MediaType      = parse?.MediaType.ToString() ?? scope.Incoming.MediaType,
-            Episode        = scope.Episode,
-            Group          = parse is null
+            FeedItemId = task.Id,
+            SubjectId  = task.SubjectId              ?? 0,
+            MediaType  = parse?.MediaType.ToString() ?? scope.Incoming.MediaType,
+            Episode    = scope.Episode,
+            Group = parse is null
                 ? ingredients?.Group ?? string.Empty
-                : string.IsNullOrWhiteSpace(parse.Group) ? parse.Language.ToString() : parse.Group,
-            Language       = parse?.Language ?? language,
+                : string.IsNullOrWhiteSpace(parse.Group)
+                    ? parse.Language.ToString()
+                    : parse.Group,
+            Language       = parse?.Language   ?? language,
             Resolution     = parse?.Resolution ?? resolution,
-            Version        = parse?.Version ?? task.Version,
+            Version        = parse?.Version    ?? task.Version,
             PublishedAtUtc = task.CreatedAtUtc,
             StableId       = videoFileId is { } fileId ? $"{task.InfoHash}:{fileId}" : task.InfoHash
         };
@@ -749,7 +760,7 @@ public sealed class DownloadIntakeService(
                 : $"同集已有更优任务：{verdict.IncumbentNaming}";
         }
 
-        RefreshSelectedTotals(task);
+        DownloadTaskLookups.RefreshSelectedTotals(task);
     }
 
     /// <summary>
@@ -759,7 +770,7 @@ public sealed class DownloadIntakeService(
     ///     展示摘要）。已完成占用者不动：新版本完成前旧成片仍是现任，保留做种与展示。
     /// </summary>
     private async Task ApplyWinningEpisodesAsync(
-        ApplicationDbContext db, DownloadTask task, IReadOnlyList<EpisodeScope> scopes,
+        ApplicationDbContext          db,       DownloadTask      task, IReadOnlyList<EpisodeScope> scopes,
         IReadOnlyList<EpisodeVerdict> verdicts, CancellationToken cancellationToken)
     {
         if (task.SubjectId is not { } subjectId) return;
@@ -783,7 +794,7 @@ public sealed class DownloadIntakeService(
                 db.EpisodeVersions.Add(row);
             }
 
-            if (verdict.IncumbentCompleted && verdict.IncumbentVideoFileId is { } incumbentVideoFileId)
+            if (verdict is { IncumbentCompleted: true, IncumbentVideoFileId: { } incumbentVideoFileId })
                 row.IncumbentVideoFileId = incumbentVideoFileId;
             row.PendingVideoFileId = winnerFile.Id;
             row.MediaType          = scope!.Incoming.MediaType;
@@ -795,7 +806,7 @@ public sealed class DownloadIntakeService(
                                     .SingleOrDefaultAsync(value => value.Id == incumbentTaskId, cancellationToken);
             if (incumbent is null ||
                 incumbent.Status is DownloadTaskStatus.Replaced or DownloadTaskStatus.Failed
-                    or DownloadTaskStatus.Lost) continue;
+                                                                or DownloadTaskStatus.Lost) continue;
 
             foreach (var file in CoveringFiles(incumbent, verdict.Episode))
             {
@@ -805,14 +816,14 @@ public sealed class DownloadIntakeService(
                 file.UpdatedAtUtc          = timeProvider.GetUtcNow();
             }
 
-            RefreshSelectedTotals(incumbent);
+            DownloadTaskLookups.RefreshSelectedTotals(incumbent);
             incumbent.SelectionSyncPending = true;
             if (incumbent.Files.Any(file => file.IsSelectedForDownload && file.Kind != DownloadFileKind.Seed))
                 continue;
 
-            incumbent.Status           = DownloadTaskStatus.Replaced;
-            incumbent.ReplacedByTaskId = task.Id;
-            task.ReplacesTaskId      ??= incumbent.Id;
+            incumbent.Status           =   DownloadTaskStatus.Replaced;
+            incumbent.ReplacedByTaskId =   task.Id;
+            task.ReplacesTaskId        ??= incumbent.Id;
             logger.LogInformation("任务 {TaskId} 的全部内容职责已被更高优先级任务 {NewTaskId} 承接，整任务翻转被替换。",
                                   incumbent.Id, task.Id);
         }
@@ -826,13 +837,13 @@ public sealed class DownloadIntakeService(
     {
         if (verdicts.Count == 0) return false;
         var carriers = task.Files.Where(file => file.Kind != DownloadFileKind.Seed).ToList();
-        if (carriers.Count == 0 && task.Files.Count == 1) carriers = task.Files.ToList();
-        return carriers.Count > 0 && carriers.All(file => !file.IsSelectedForDownload);
+        if (carriers.Count    == 0 && task.Files.Count == 1) carriers = task.Files.ToList();
+        return carriers.Count > 0  && carriers.All(file => !file.IsSelectedForDownload);
     }
 
     /// <summary>整包落选时的优势占用者：承担最多落选集的任务，用于墓碑回退与展示摘要。</summary>
     private static Guid? DominantIncumbentId(IReadOnlyList<EpisodeVerdict> verdicts) =>
-        verdicts.Where(verdict => !verdict.Winner && verdict.IncumbentTaskId is not null)
+        verdicts.Where(verdict => verdict is { Winner: false, IncumbentTaskId: not null })
                 .GroupBy(verdict => verdict.IncumbentTaskId)
                 .OrderByDescending(group => group.Count())
                 .Select(group => group.Key)
@@ -842,14 +853,10 @@ public sealed class DownloadIntakeService(
     private static string ComposeLossReason(IReadOnlyList<EpisodeVerdict> verdicts)
     {
         var detail = string.Join("；", verdicts.Where(verdict => !verdict.Winner)
-                                               .Select(verdict => $"第{verdict.Episode:0.###}集：{verdict.IncumbentNaming}"));
+                                              .Select(verdict =>
+                                                          $"第{verdict.Episode:0.###}集：{verdict.IncumbentNaming}"));
         if (detail.Length > 900) detail = detail[..900];
         return $"同集已有更优任务（{detail}）";
-    }
-
-    private static void RefreshSelectedTotals(DownloadTask task)
-    {
-        task.SelectedTotalBytes = task.Files.Where(file => file.IsSelectedForDownload).Sum(file => file.Size);
     }
 
     /// <summary>
@@ -858,14 +865,16 @@ public sealed class DownloadIntakeService(
     ///     优先，否则调 Bangumi API），用显式 ID 或链接解析成功且能解析出系列标题时回写标题映射，
     ///     后续同系列条目直接命中缓存。
     /// </summary>
-    private async Task<SubjectBinding?> ResolveSubjectBindingAsync(
-        ParseResult?      parsed, Uri? itemLink, int? requestedSubjectId, int? sourceSubjectId, Guid? proxyId,
-        CancellationToken cancellationToken)
+    private async Task<SubjectBinding?> ResolveSubjectBindingAsync(ParseResult? parsed, Uri? itemLink,
+                                                                   int? requestedSubjectId, int? sourceSubjectId,
+                                                                   Guid? proxyId, CancellationToken cancellationToken)
     {
         var seriesKey = parsed is null ? string.Empty : TitleNormalizer.Normalize(parsed.Title);
+
+        SubjectBinding? binding;
         if (requestedSubjectId is { } explicitId)
         {
-            var binding = await EnsureSubjectAsync(explicitId, cancellationToken);
+            binding = await EnsureSubjectAsync(explicitId, cancellationToken);
             await subjectCache.SaveTitleMappingAsync(seriesKey, binding.SubjectId, cancellationToken);
             return binding;
         }
@@ -885,22 +894,18 @@ public sealed class DownloadIntakeService(
 
         if (sourceSubjectId is { } feedId)
         {
-            var binding = await EnsureSubjectAsync(feedId, cancellationToken);
+            binding = await EnsureSubjectAsync(feedId, cancellationToken);
             await subjectCache.SaveTitleMappingAsync(seriesKey, binding.SubjectId, cancellationToken);
             return binding;
         }
 
-        if (itemLink is not null)
-        {
-            var linkedSubjectId = await subjectLinkResolver.ResolveSubjectIdAsync(itemLink, proxyId,
-                cancellationToken);
-            if (linkedSubjectId is null) return null;
-            var binding = await EnsureSubjectAsync(linkedSubjectId.Value, cancellationToken);
-            await subjectCache.SaveTitleMappingAsync(seriesKey, binding.SubjectId, cancellationToken);
-            return binding;
-        }
+        if (itemLink is null) return null;
 
-        return null;
+        var linkedSubjectId = await subjectLinkResolver.ResolveSubjectIdAsync(itemLink, proxyId, cancellationToken);
+        if (linkedSubjectId is null) return null;
+        binding = await EnsureSubjectAsync(linkedSubjectId.Value, cancellationToken);
+        await subjectCache.SaveTitleMappingAsync(seriesKey, binding.SubjectId, cancellationToken);
+        return binding;
     }
 
     /// <summary>
@@ -1000,11 +1005,17 @@ public sealed class DownloadIntakeService(
             group.Add((path, parsed));
         }
 
-        if (byEpisode.Count > 1) multiScope = true;
-        if (byEpisode.Count == 0) return new TorrentFileAnalysis(demoted, null, []);
+        switch (byEpisode.Count)
+        {
+            case > 1 :
+                multiScope = true;
+                break;
+            case 0 :
+                return new TorrentFileAnalysis(demoted, null, []);
+        }
 
-        ParseResult?            identity          = null;
-        var                     episodeIdentities = new List<(decimal Episode, ParseResult Parse)>();
+        ParseResult? identity          = null;
+        var          episodeIdentities = new List<(decimal Episode, ParseResult Parse)>();
         foreach (var (episode, files) in byEpisode)
         {
             var variants =
@@ -1018,11 +1029,11 @@ public sealed class DownloadIntakeService(
                 continue;
             }
 
-            var ranked = variants.Select((variant, index) => (Variant : variant,
-                                                              Candidate : BuildAdhocCandidate(
-                                                               $"{infoHash}:{episode:0.###}:{index}", null,
-                                                               variant.First().Parsed, 0)))
-                                 .ToList();
+            var ranked = variants.Select((variant, index) => (
+                                             Variant : variant,
+                                             Candidate : BuildAdhocCandidate($"{infoHash}:{episode:0.###}:{index}",
+                                                                             null, variant.First().Parsed,
+                                                                             0))).ToList();
             var winnerStableId = (rankingPolicy.Select(ranked.Select(value => value.Candidate).ToList(), config)
                                                .Winner ?? ranked[0].Candidate).StableId;
             foreach (var (variant, candidate) in ranked)
@@ -1086,11 +1097,11 @@ public sealed class DownloadIntakeService(
         // 同源同集逐集统一裁决：订阅条目身份（单集/剧场版）与文件级集数（含合集条目）并入同一
         // 口径跨路径对决，现行任保留、更优层才顶替；落选抛出带说明的异常，提交链会把它记入
         // IntentFailedReason 等待人工处理。
-        var   resolvedSource = ResolveSiteSource(torrent, item.TorrentUrl, item.Subscription.FeedUrlProtected, null);
-        var   config = await ruleProvider.GetAsync(cancellationToken);
-        var   fileAnalysis = AnalyzeTorrentFiles(infoHash, torrent, isMultiFile, config);
-        var   settings          = await qbittorrentSettings.GetAsync(cancellationToken);
-        var   directorySettings = await GetDirectoriesAsync(cancellationToken);
+        var resolvedSource    = ResolveSiteSource(torrent, item.TorrentUrl, item.Subscription.FeedUrlProtected, null);
+        var config            = await ruleProvider.GetAsync(cancellationToken);
+        var fileAnalysis      = AnalyzeTorrentFiles(infoHash, torrent, isMultiFile, config);
+        var settings          = await qbittorrentSettings.GetAsync(cancellationToken);
+        var directorySettings = await GetDirectoriesAsync(cancellationToken);
         var task = new DownloadTask
         {
             Id          = Guid.NewGuid(),
@@ -1196,8 +1207,6 @@ public sealed class DownloadIntakeService(
     /// <summary>由稳定标识派生确定性 Guid：合成候选的决胜输入在同批次与重试之间保持稳定。</summary>
     private static Guid StableIdGuid(string stableId) => new(SHA256.HashData(Encoding.UTF8.GetBytes(stableId))[..16]);
 
-    private static string FileName(string path) => path[(path.LastIndexOf('/') + 1)..];
-
     /// <summary>
     ///     来源站点判定：优先读 .torrent 内 tracker（ByrTorrent 同源映射，上传种子也能自动识别），
     ///     依次回退下载地址域名、订阅 feed 主机名、用户手填标注。
@@ -1274,7 +1283,7 @@ public sealed class DownloadIntakeService(
         }
 
         // 所选内容总大小：存在跳过文件时任务进度按所选内容计算。
-        task.SelectedTotalBytes = task.Files.Where(file => file.IsSelectedForDownload).Sum(file => file.Size);
+        DownloadTaskLookups.RefreshSelectedTotals(task);
     }
 
     internal static void AssertDownloadable(FeedItem item)
@@ -1297,9 +1306,9 @@ public sealed class DownloadIntakeService(
 
     /// <summary>逐集入擂范围：该集在新任务中的承载正片（包内择优后的胜者）与入擂候选身份。</summary>
     private sealed record EpisodeScope(
-        decimal                             Episode,
-        EpisodeCandidate                    Incoming,
-        IReadOnlyList<DownloadTaskFile>     VideoFiles);
+        decimal                         Episode,
+        EpisodeCandidate                Incoming,
+        IReadOnlyList<DownloadTaskFile> VideoFiles);
 
     /// <summary>
     ///     逐集裁决结论：胜出（含无占用者的缺集）或落选。占用者信息供落选原因、未完成占用者的
@@ -1315,7 +1324,7 @@ public sealed class DownloadIntakeService(
 
     /// <summary>包内文件集分析结果：择优落选文件的路径到原因映射、标题解析失败时可充当任务身份的胜者解析，与每集包内胜者的解析。</summary>
     private sealed record TorrentFileAnalysis(
-        IReadOnlyDictionary<string, string>          DemotedSeedPaths,
-        ParseResult?                                 IdentityParse,
+        IReadOnlyDictionary<string, string>                 DemotedSeedPaths,
+        ParseResult?                                        IdentityParse,
         IReadOnlyList<(decimal Episode, ParseResult Parse)> EpisodeIdentities);
 }

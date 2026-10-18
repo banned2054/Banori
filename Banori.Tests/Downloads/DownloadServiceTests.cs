@@ -28,7 +28,7 @@ namespace Banori.Tests.Downloads;
 ///     P3 下载闭环验收：响应丢失、提交后重启、重复触发、人工暂停与安全替换。
 ///     全部使用假下载器会话与真实 SQLite 临时库，不触发真实下载。
 /// </summary>
-public sealed class DownloadServiceTests
+public sealed partial class DownloadServiceTests
 {
     private const string NamingV1 = "测试作品 E01 [Sc]";
     private const string NamingV2 = "测试作品 E01 v2 [Sc]";
@@ -1574,8 +1574,8 @@ public sealed class DownloadServiceTests
     }
 
     /// <summary>读取每集登记表行：逐集现任切换断言的共用入口。</summary>
-    private static async Task<EpisodeVersion?> FindEpisodeVersionAsync(TestHarness harness, decimal episode = 1,
-                                                                       int subjectId = 42)
+    private static async Task<EpisodeVersion?> FindEpisodeVersionAsync(
+        TestHarness harness, decimal episode = 1, int subjectId = 42)
     {
         await using var db = await harness.CreateDbContextAsync();
         return await db.EpisodeVersions.AsNoTracking()
@@ -1589,8 +1589,8 @@ public sealed class DownloadServiceTests
         var query = db.DownloadTaskFiles.AsNoTracking()
                       .Where(file => file.DownloadTaskId == taskId);
         var file = await query.Where(file => file.Kind == DownloadFileKind.Anime)
-                          .OrderBy(file => file.FileIndex)
-                          .FirstOrDefaultAsync();
+                              .OrderBy(file => file.FileIndex)
+                              .FirstOrDefaultAsync();
         if (file is null)
             file = await query.OrderBy(file => file.FileIndex).FirstOrDefaultAsync();
         return file?.Id;
@@ -3059,15 +3059,15 @@ public sealed class DownloadServiceTests
     /// <summary>多文件合集种子：文件名即发布名（Neko 式，可解析集数），info.name 不解析以保持合集语义。</summary>
     private static byte[] BatchTorrent(params string[] filePaths)
     {
-        static string B(string text) => Encoding.UTF8.GetByteCount(text) + ":" + text;
-
         var files = string.Concat(filePaths.Select(path =>
-                                      "d6:lengthi1024e4:pathl" +
-                                      string.Concat(path.Split('/').Select(B)) + "ee"));
+                                                       "d6:lengthi1024e4:pathl"                 +
+                                                       string.Concat(path.Split('/').Select(B)) + "ee"));
         var pieceCount = (filePaths.Length * 1024 + 16383) / 16384;
-        var pieces     = new string('0', checked((int)pieceCount * 20));
+        var pieces     = new string('0', checked(pieceCount * 20));
         return Encoding.UTF8.GetBytes("d4:infod5:filesl"                                + files     +
                                       "e4:name8:Original12:piece lengthi16384e6:pieces" + B(pieces) + "ee");
+
+        static string B(string text) => Encoding.UTF8.GetByteCount(text) + ":" + text;
     }
 
     private static string NekoSubtitleName(string language, int episode) =>
@@ -3090,13 +3090,11 @@ public sealed class DownloadServiceTests
 
         // 新合集：第 12 集（同组同版本，现任保留）落选，第 13 集缺集胜出；
         // 落选集的随行字幕一并取消选择，无法解析集数的附件保持默认下载。
-        var batchId = await harness.CreateUploadAsync(BatchTorrent(
-                                                         NekoTitle("简日双语", episode : 12),
-                                                         NekoSubtitleName("简日双语", 12),
-                                                         NekoTitle("简日双语", episode : 13),
-                                                         NekoSubtitleName("简日双语", 13),
-                                                         "NCOP.mp4"),
-                                                     "mikan");
+        var batchId = await harness.CreateUploadAsync(BatchTorrent(NekoTitle("简日双语", episode : 12),
+                                                                   NekoSubtitleName("简日双语", 12),
+                                                                   NekoTitle("简日双语", episode : 13),
+                                                                   NekoSubtitleName("简日双语", 13), "NCOP.mp4"),
+                                                      "mikan");
 
         await using var db = await harness.CreateDbContextAsync();
         var files = await db.DownloadTaskFiles.AsNoTracking()

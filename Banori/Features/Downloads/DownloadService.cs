@@ -45,9 +45,6 @@ public sealed class DownloadService(
     DownloadSubmissionPathValidator?        submissionPathValidator = null,
     DownloadEpisodeResolver?                episodeResolver         = null)
 {
-    private readonly DownloadEpisodeResolver episodeResolver =
-        episodeResolver ?? new DownloadEpisodeResolver(aniParser, episodeCorrectionPolicy);
-
     /// <summary>响应丢失后的自动重新提交上限；达到上限视为提交失败，等待人工重试。</summary>
     public const int MaxAutoSubmitAttempts = 5;
 
@@ -57,6 +54,9 @@ public sealed class DownloadService(
     /// <summary>能解析出集数的内容文件扩展名：视频与字幕；其余一律视为附属文件。</summary>
     private static readonly string[] ContentFileExtensions =
         [".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".wmv", ".mov", ".flv", ".ass", ".ssa", ".srt", ".sup"];
+
+    private readonly DownloadEpisodeResolver episodeResolver =
+        episodeResolver ?? new DownloadEpisodeResolver(aniParser, episodeCorrectionPolicy);
 
 
     /// <summary>一轮对账：提交待提交任务、核对未确认与下载中任务。下载器未启用或未配置时静默跳过。</summary>
@@ -506,19 +506,17 @@ public sealed class DownloadService(
         ApplicationDbContext db, DownloadTask task, CancellationToken cancellationToken)
     {
         if (task.SubjectId is not { } subjectId) return;
-        var videos = await db.DownloadTaskFiles.AsNoTracking()
-                             .Where(file => file.DownloadTaskId      == task.Id &&
-                                            file.Kind                == DownloadFileKind.Anime &&
-                                            file.IsSelectedForDownload)
-                             .ToListAsync(cancellationToken);
+        var taskFiles = await db.DownloadTaskFiles.AsNoTracking()
+                                .Where(file => file.DownloadTaskId == task.Id)
+                                .ToListAsync(cancellationToken);
+        var videos = taskFiles.Where(file => file is { Kind: DownloadFileKind.Anime, IsSelectedForDownload: true })
+                              .ToList();
         if (videos.Count == 0 && task.Episode is not null)
         {
             // 文件全部不可解析（无内容分类）的单文件任务：任务级集数身份承载唯一文件。
-            var selected = await db.DownloadTaskFiles.AsNoTracking()
-                                   .Where(file => file.DownloadTaskId      == task.Id &&
-                                                  file.IsSelectedForDownload)
-                                   .ToListAsync(cancellationToken);
-            if (selected.Count == 1) videos = selected;
+            var selected = taskFiles.Where(file => file.IsSelectedForDownload).ToList();
+            if (selected.Count == 1 &&
+                DownloadTaskLookups.CanUseTaskEpisodeFallback(aniParser, selected[0])) videos = selected;
         }
 
         if (videos.Count == 0) return;
@@ -527,10 +525,14 @@ public sealed class DownloadService(
         foreach (var video in videos)
         {
             var episode = episodeResolver.EpisodeOf(task, video) ??
-                          (task.Episode is { } taskEpisode && videos.Count == 1 ? taskEpisode : null);
+                          (task.Episode is { } taskEpisode &&
+                           DownloadTaskLookups.IsSingleEpisodeCarrier(aniParser, task, video, taskEpisode, taskFiles)
+                              ? taskEpisode
+                              : null);
             if (episode is not { } key || byEpisode.ContainsKey(key)) continue;
             byEpisode[key] = video;
         }
+
         if (byEpisode.Count == 0) return;
 
         var fileIds = videos.Select(file => file.Id).ToHashSet();
@@ -540,18 +542,22 @@ public sealed class DownloadService(
         var incumbentFileIds = rows.Where(row => row.IncumbentVideoFileId is not null)
                                    .Select(row => row.IncumbentVideoFileId!.Value)
                                    .ToList();
-        var incumbentTaskVersions = incumbentFileIds.Count == 0
-            ? new Dictionary<Guid, (int Version, bool Replaceable)>()
-            : await db.DownloadTaskFiles.AsNoTracking()
-                      .Where(file => incumbentFileIds.Contains(file.Id))
-                      .Join(db.DownloadTasks.AsNoTracking(),
-                            file => file.DownloadTaskId, owner => owner.Id,
-                            (file, owner) => new { file.Id, owner.Version, owner.Status, owner.ReplacedByTaskId })
-                      .ToDictionaryAsync(item => item.Id,
-                                         item => (Version    : item.Version,
-                                                  Replaceable: item.Status         == DownloadTaskStatus.Completed &&
-                                                               item.ReplacedByTaskId == null),
-                                         cancellationToken);
+        var incumbentOwners = incumbentFileIds.Count == 0
+            ? []
+            : await db.DownloadTasks.Include(owner => owner.Files)
+                      .Where(owner => owner.Files.Any(file => incumbentFileIds.Contains(file.Id)))
+                      .ToListAsync(cancellationToken);
+        var incumbentGuards = new Dictionary<Guid, (int Version, DownloadTaskStatus Status, Guid? ReplacedByTaskId)>();
+        foreach (var row in rows.Where(row => row.IncumbentVideoFileId is not null))
+        {
+            var fileId = row.IncumbentVideoFileId!.Value;
+            var owner  = incumbentOwners.FirstOrDefault(candidate => candidate.Files.Any(file => file.Id == fileId));
+            var file   = owner?.Files.FirstOrDefault(candidate => candidate.Id == fileId);
+            if (owner is null || file is null) continue;
+            incumbentGuards[fileId] = (DownloadTaskLookups.EpisodeFileVersion(aniParser, owner, file, row.Episode),
+                                       owner.Status, owner.ReplacedByTaskId);
+        }
+
         foreach (var (episode, video) in byEpisode)
         {
             var row = rows.FirstOrDefault(row => row.Episode == episode);
@@ -565,10 +571,15 @@ public sealed class DownloadService(
                      (row.PendingVideoFileId is not { } pending || !fileIds.Contains(pending)))
             {
                 // 本任务不是登记在案的待完成优胜（未在对决中胜出，或属于不互相竞争的来源）。
-                // 例外沿用条目链完成期替换的版本守卫：现任所属任务已完成且版本不高于本任务时，
-                // 仍允许切换——覆盖两个订阅条目任务先后完成、登记时互相豁免的场景。
-                if (!incumbentTaskVersions.TryGetValue(incumbent, out var guard) ||
-                    !guard.Replaceable || guard.Version > task.Version)
+                // 例外沿用条目链完成期替换的版本守卫（判定集中在 DownloadTaskLookups，与登记期
+                // 同一实现）：现任所属任务已完成且版本不高于本集正片文件时仍允许切换——覆盖两个订阅
+                // 条目任务先后完成、登记时互相豁免的场景。
+                if (!incumbentGuards.TryGetValue(incumbent, out var guard) ||
+                    !DownloadTaskLookups.IsTakeoverEligibleIncumbent(guard.Status, guard.ReplacedByTaskId,
+                                                                     guard.Version,
+                                                                     DownloadTaskLookups.EpisodeFileVersion(aniParser,
+                                                                         task, video,
+                                                                         episode, taskFiles)))
                     continue;
             }
 
