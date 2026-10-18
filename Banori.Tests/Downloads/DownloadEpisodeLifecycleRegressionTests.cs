@@ -81,4 +81,38 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(incumbentFile, (await FindEpisodeVersionAsync(harness, 12))!.IncumbentVideoFileId);
     }
 
+    [Fact]
+    public async Task DeleteIntermediateEpisodeWinner_TransfersAndThenUnwindsPerEpisodeChain()
+    {
+        using var h = await CreateHarnessAsync();
+        await h.SaveSelectionRulesAsync(NekoRules());
+        var a = await h.CreateUploadAsync(
+                                          BatchTorrent(NekoTitle("繁日双语"), NekoTitle("繁日双语", episode : 13)), "mikan");
+        var b = await h.CreateUploadAsync(
+                                          BatchTorrent(NekoTitle("简日双语"), NekoTitle("简日双语", episode : 14)), "mikan");
+        var v2 = NekoTitle("简日双语").Replace("[12]", "[12v2]");
+        var c = await h.CreateUploadAsync(
+                                          BatchTorrent(v2, NekoTitle("简日双语", episode : 15)), "mikan");
+
+        await h.Service.DeleteAsync(b, false, false);
+        await using (var db = await h.CreateDbContextAsync())
+        {
+            var a12 = await db.DownloadTaskFiles.SingleAsync(file => file.DownloadTaskId == a && file.FileIndex == 0);
+            var registry = await db.EpisodeVersions.SingleAsync(row => row.SubjectId == 42 && row.Episode == 12);
+            Assert.False(a12.IsSelectedForDownload);
+            Assert.Equal(c, a12.SupersededByTaskId);
+            Assert.Equal(await FindAnimeFileIdAsync(h, c), registry.PendingVideoFileId);
+            Assert.False(await db.DownloadTaskFiles.AnyAsync(file => file.DownloadTaskId == b && file.FileIndex == 1));
+        }
+
+        await h.Service.DeleteAsync(c, false, false);
+        await using (var db = await h.CreateDbContextAsync())
+        {
+            var a12 = await db.DownloadTaskFiles.SingleAsync(file => file.DownloadTaskId == a && file.FileIndex == 0);
+            Assert.True(a12.IsSelectedForDownload);
+            Assert.Null(a12.SupersededByTaskId);
+            Assert.Null(await db.DownloadTaskFiles.Where(file => file.SupersededByTaskId              != null)
+                                .Select(file => file.SupersededByTaskId).FirstOrDefaultAsync(id => id == c));
+        }
+    }
 }

@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Banori.Features.Downloads;
 
 /// <summary>
-///     下载任务的数据库级查重与跨流程共享判定（已完成现任守卫、选中总量）：
+///     下载任务的数据库级查重与跨流程共享判定（已完成现任守卫、选中总量、承接文件存在性）：
 ///     登记入口与完成链共用同一实现，避免两处语义各自演化漂移。
 /// </summary>
 internal static class DownloadTaskLookups
@@ -57,6 +57,10 @@ internal static class DownloadTaskLookups
     {
         task.SelectedTotalBytes = task.Files.Where(file => file.IsSelectedForDownload).Sum(file => file.Size);
     }
+
+    /// <summary>任务存在被逐集承接的文件时，移除种子必须保留内容（deleteFiles=false）。</summary>
+    internal static bool HasSupersededFiles(DownloadTask task)
+        => task.Files.Any(file => file.SupersededByTaskId != null);
 
     /// <summary>
     ///     活动任务查重：同 hash 一律冲突；因低优先级被替换的终止记录同样挡住重复登记（其存在即查重依据，

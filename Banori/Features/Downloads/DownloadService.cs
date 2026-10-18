@@ -157,7 +157,7 @@ public sealed class DownloadService(
                 var foundOld = await session.FindTorrentsAsync([oldTask.InfoHash], cancellationToken);
                 if (foundOld.Count > 0)
                     await session.DeleteTorrentAsync(oldTask.InfoHash,
-                                                     !oldTask.Files.Any(file => file.SupersededByTaskId != null),
+                                                     !DownloadTaskLookups.HasSupersededFiles(oldTask),
                                                      cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -426,7 +426,7 @@ public sealed class DownloadService(
                 // 替换者已删除：仅确有完成记录的旧资源回退为已完成；未提交落选者保留
                 // Replaced 墓碑，避免一次删除同时复活多个候选造成同集重复下载。
                 other.ReplacedByTaskId = null;
-                if (other.Status == DownloadTaskStatus.Replaced && other.CompletedAtUtc is not null)
+                if (other is { Status: DownloadTaskStatus.Replaced, CompletedAtUtc: not null })
                     other.Status = DownloadTaskStatus.Completed;
             }
 
@@ -434,37 +434,76 @@ public sealed class DownloadService(
                 other.ReplacesTaskId = null;
         }
 
-        // 承接方被删除且被承接文件所属任务仍活动：恢复其下载职责，等待对账把选择下推回下载器。
-        // 已被整任务翻转或进入终态的所属任务不复活，与上面的墓碑规则保持同一口径。
-        var revivedParentIds = await db.DownloadTaskFiles
-                                       .Where(file => file.SupersededByTaskId != null &&
-                                                      deletedIds.Contains(file.SupersededByTaskId.Value))
-                                       .Select(file => file.DownloadTaskId)
-                                       .Distinct()
-                                       .ToListAsync(cancellationToken);
-        foreach (var parentId in revivedParentIds.Where(id => !deletedIds.Contains(id)))
+        // 删除中间承接方时先沿该集的承接链转交后继；没有有效后继才恢复活动任务的文件选择。
+        // 已被整任务翻转或进入终态的所属任务只清理引用，不复活，与上面的墓碑规则保持一致。
+        var referringFiles = await db.DownloadTaskFiles
+                                     .Include(file => file.DownloadTask).ThenInclude(parent => parent!.Files)
+                                     .Where(file => file.SupersededByTaskId != null &&
+                                                    deletedIds.Contains(file.SupersededByTaskId.Value))
+                                     .ToListAsync(cancellationToken);
+        var deletedTasks = await db.DownloadTasks.Include(task => task.Files)
+                                   .Where(task => deletedIds.Contains(task.Id))
+                                   .ToDictionaryAsync(task => task.Id, cancellationToken);
+        var changedParents = new HashSet<DownloadTask>();
+        foreach (var file in referringFiles)
         {
-            var parent = await db.DownloadTasks.Include(task => task.Files)
-                                  .SingleOrDefaultAsync(task => task.Id == parentId, cancellationToken);
-            if (parent is null || parent.Status is not (DownloadTaskStatus.PendingSubmit
-                    or DownloadTaskStatus.Submitting or DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused))
-                continue;
-
-            var revived = false;
-            foreach (var file in parent.Files.Where(file => file.SupersededByTaskId is not null &&
-                                                             deletedIds.Contains(file.SupersededByTaskId.Value)))
+            var parent = file.DownloadTask;
+            if (parent is null) continue;
+            var episode        = episodeResolver.EpisodeOf(parent, file);
+            var originalTarget = file.SupersededByTaskId!.Value;
+            var targetId       = originalTarget;
+            var visited        = new HashSet<Guid>();
+            while (visited.Add(targetId) && deletedTasks.TryGetValue(targetId, out var deletedTask))
             {
-                file.IsSelectedForDownload = true;
-                file.SelectionReason       = null;
-                file.SupersededByTaskId    = null;
-                file.UpdatedAtUtc          = timeProvider.GetUtcNow();
-                revived                    = true;
+                var bridge = episode is { } key
+                    ? deletedTask.Files.FirstOrDefault(candidate =>
+                                                           episodeResolver.EpisodeOf(deletedTask, candidate) == key)
+                    : null;
+                if (bridge is null && deletedTask.Episode is { } taskEpisode &&
+                    taskEpisode == (episode ?? parent.Episode))
+                {
+                    var nonSeedFiles = deletedTask.Files.Where(candidate => candidate.Kind != DownloadFileKind.Seed)
+                                                  .ToList();
+                    if (nonSeedFiles.Count == 1 && episodeResolver.EpisodeOf(deletedTask, nonSeedFiles[0]) is null &&
+                        DownloadTaskLookups.CanUseTaskEpisodeFallback(aniParser, nonSeedFiles[0]))
+                        bridge = nonSeedFiles[0];
+                    else if (deletedTask.Files.Count == 1 &&
+                             DownloadTaskLookups.CanUseTaskEpisodeFallback(aniParser, deletedTask.Files.Single()))
+                        bridge = deletedTask.Files.Single();
+                }
+
+                if (bridge?.SupersededByTaskId is not { } next || next == targetId) break;
+                targetId = next;
             }
 
-            if (!revived) continue;
-            parent.SelectedTotalBytes     = parent.Files.Where(file => file.IsSelectedForDownload)
-                                                      .Sum(file => file.Size);
-            parent.SelectionSyncPending   = true;
+            var successor = targetId == parent.Id
+                ? null
+                : await db.DownloadTasks.AsNoTracking()
+                          .Where(task => task.Id     == targetId                  && !deletedIds.Contains(task.Id) &&
+                                         task.Status != DownloadTaskStatus.Failed &&
+                                         task.Status != DownloadTaskStatus.Lost)
+                          .Select(task => new { task.Id, task.NamingSnapshot }).FirstOrDefaultAsync(cancellationToken);
+            if (targetId != originalTarget && successor is not null)
+            {
+                file.SupersededByTaskId = successor.Id;
+                file.SelectionReason    = $"已被更优任务替代：{successor.NamingSnapshot}";
+                file.UpdatedAtUtc       = timeProvider.GetUtcNow();
+                continue;
+            }
+
+            file.SupersededByTaskId = null;
+            if (parent.Status is not (DownloadTaskStatus.PendingSubmit or DownloadTaskStatus.Submitting or
+                                      DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused)) continue;
+            file.IsSelectedForDownload = true;
+            file.SelectionReason       = null;
+            file.UpdatedAtUtc          = timeProvider.GetUtcNow();
+            changedParents.Add(parent);
+        }
+
+        foreach (var parent in changedParents)
+        {
+            DownloadTaskLookups.RefreshSelectedTotals(parent);
+            parent.SelectionSyncPending = true;
         }
 
         // 每集登记表：待完成优胜随承接方删除而清空；现任被删时回退到它承接的上一任（也删则清空）。
@@ -475,8 +514,8 @@ public sealed class DownloadService(
         if (deletedFileIds.Count > 0)
         {
             var rows = await db.EpisodeVersions
-                               .Where(row => row.PendingVideoFileId   != null ||
-                                             row.IncumbentVideoFileId != null ||
+                               .Where(row => row.PendingVideoFileId    != null ||
+                                             row.IncumbentVideoFileId  != null ||
                                              row.SupersededVideoFileId != null)
                                .ToListAsync(cancellationToken);
             foreach (var row in rows)
@@ -492,7 +531,9 @@ public sealed class DownloadService(
                     row.SupersededVideoFileId = null;
                 }
                 else if (row.SupersededVideoFileId is { } superseded && deletedFileIds.Contains(superseded))
+                {
                     row.SupersededVideoFileId = null;
+                }
             }
         }
     }
@@ -1304,7 +1345,7 @@ public sealed class DownloadService(
                 arbitrationTarget.ReplacedByTaskId = taskId;
                 if (stillDownloading)
                     supersededRemovals.Add((arbitrationTarget.InfoHash,
-                                            !arbitrationTarget.Files.Any(file => file.SupersededByTaskId != null)));
+                                            !DownloadTaskLookups.HasSupersededFiles(arbitrationTarget)));
             }
         }
 
