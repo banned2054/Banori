@@ -151,11 +151,16 @@ public sealed class DownloadFileService(
         var plan = Plan(task);
         if (!await MoveConflictingReplacementFilesAsideAsync(db, session, task, plan, snapshot, cancellationToken))
             return false;
+        // 完成轮的承接放行集合只装载一次并贯穿本轮：迁让已稳定，规划校验与待执行校验之间没有
+        // 影响该集合的变化，各段校验不再重复查询同一批承接对象。下载中（进度 < 1）不涉及放行。
+        var replacementAllowedPaths = snapshot.Progress >= 1
+            ? await LoadReplacementAllowedPathsAsync(db, task, cancellationToken)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         await ValidatePlanAsync(db, session, task, plan, cancellationToken,
-                                snapshot.Progress >= 1);
+                                snapshot.Progress >= 1, replacementAllowedPaths);
         Stage(task, plan);
         await db.SaveChangesAsync(cancellationToken);
-        return await ExecutePendingAsync(db, session, task, cancellationToken);
+        return await ExecutePendingAsync(db, session, task, cancellationToken, replacementAllowedPaths);
     }
 
     /// <summary>
@@ -184,11 +189,12 @@ public sealed class DownloadFileService(
             targetSizes[Join(task.SavePath, pair.Value)] = sizeByIndex[pair.Key];
         }
 
-        foreach (var ownerTaskId in asideCandidates.Select(item => item.Owner.Id).Distinct())
+        var infoHashByOwner = asideCandidates.GroupBy(item => item.OwnerId)
+                                             .ToDictionary(group => group.Key, group => group.First().InfoHash);
+        foreach (var ownerTaskId in infoHashByOwner.Keys)
         {
             // 种子已不在下载器（外部移除或承接清理已执行）：无法借其迁让，占用校验按放行集合处理。
-            var ownerSnapshot = (await session.FindTorrentsAsync([asideCandidates.First(item => item.Owner.Id == ownerTaskId)
-                                                                      .Owner.InfoHash], ct)).SingleOrDefault();
+            var ownerSnapshot = (await session.FindTorrentsAsync([infoHashByOwner[ownerTaskId]], ct)).SingleOrDefault();
             if (ownerSnapshot is null) continue;
             if (ownerSnapshot.IsMoving) return false;
 
@@ -198,8 +204,8 @@ public sealed class DownloadFileService(
             if (owner is null || owner.Files.Count == 0) continue;
             if (HasPending(owner) && !await ExecutePendingAsync(db, session, owner, ct)) return false;
 
-            var candidateIndices = asideCandidates.Where(item => item.Owner.Id == ownerTaskId)
-                                                  .Select(item => item.File.FileIndex)
+            var candidateIndices = asideCandidates.Where(item => item.OwnerId == ownerTaskId)
+                                                  .Select(item => item.FileIndex)
                                                   .ToHashSet();
             var replacementPaths = owner.Files.ToDictionary(file => file.FileIndex, file => file.CurrentRelativePath);
             var filesToMoveAside = new HashSet<int>();
@@ -239,10 +245,10 @@ public sealed class DownloadFileService(
     ///     （现任所属任务须已完成且未被声明替换）；以及被本任务逐集承接取消选择的休眠文件
     ///     （所属任务任意状态——部分承接的合集仍在下载其余集）。
     /// </summary>
-    private async Task<List<(DownloadTask Owner, DownloadTaskFile File)>> LoadReplacementAsideFilesAsync(
+    private async Task<List<ReplacementAsideEntry>> LoadReplacementAsideFilesAsync(
         ApplicationDbContext db, DownloadTask task, CancellationToken ct)
     {
-        var result = new List<(DownloadTask, DownloadTaskFile)>();
+        var result = new List<ReplacementAsideEntry>();
         var myVideoIds = task.Files.Where(file => file.Kind == DownloadFileKind.Anime && file.IsSelectedForDownload)
                              .Select(file => file.Id)
                              .ToList();
@@ -261,12 +267,18 @@ public sealed class DownloadFileService(
             {
                 var owners = await db.DownloadTasks.Include(value => value.Files).AsNoTracking()
                                      .Where(owner => owner.Status           == DownloadTaskStatus.Completed &&
-                                                     owner.ReplacedByTaskId == null                     &&
+                                                     owner.ReplacedByTaskId == null                         &&
                                                      owner.Files.Any(file => wanted.Contains(file.Id)))
                                      .ToListAsync(ct);
                 foreach (var owner in owners)
-                    foreach (var file in owner.Files.Where(file => wanted.Contains(file.Id)))
-                        result.Add((owner, file));
+                foreach (var video in owner.Files.Where(file => wanted.Contains(file.Id)))
+                {
+                    result.Add(new ReplacementAsideEntry(owner.Id, owner.InfoHash, owner.SavePath,
+                                                         video.FileIndex, video.CurrentRelativePath));
+                    foreach (var subtitle in UniquelyAssociatedSubtitles(owner, video))
+                        result.Add(new ReplacementAsideEntry(owner.Id, owner.InfoHash, owner.SavePath,
+                                                             subtitle.FileIndex, subtitle.CurrentRelativePath));
+                }
             }
         }
 
@@ -275,20 +287,59 @@ public sealed class DownloadFileService(
                                                     owner.Files.Any(file => file.SupersededByTaskId == task.Id))
                                     .ToListAsync(ct);
         foreach (var owner in dormantOwners)
-            foreach (var file in owner.Files.Where(file => file.SupersededByTaskId == task.Id &&
-                                                           !file.IsSelectedForDownload))
-                result.Add((owner, file));
+        foreach (var file in owner.Files.Where(file => file.SupersededByTaskId == task.Id &&
+                                                       !file.IsSelectedForDownload))
+            result.Add(new ReplacementAsideEntry(owner.Id, owner.InfoHash, owner.SavePath,
+                                                 file.FileIndex, file.CurrentRelativePath));
 
         return result;
     }
+
+    /// <summary>
+    ///     Sidecar subtitles explicitly named after one video: same original directory and video stem, with only
+    ///     the recognized subtitle language suffix appended. A stem shared by multiple videos is ambiguous and is
+    ///     not associated with either one; episode equality alone is never used here.
+    /// </summary>
+    private static IEnumerable<DownloadTaskFile> UniquelyAssociatedSubtitles(DownloadTask owner, DownloadTaskFile video)
+    {
+        var videoIdentity = OriginalContentIdentity(video);
+        foreach (var subtitle in owner.Files.Where(file => file.Kind == DownloadFileKind.Subtitle))
+        {
+            if (!SameContentIdentity(OriginalContentIdentity(subtitle, true),
+                                     videoIdentity)) continue;
+            if (owner.Files.Count(file => file.Kind == DownloadFileKind.Anime &&
+                                          SameContentIdentity(OriginalContentIdentity(file), videoIdentity)) != 1)
+                continue;
+            yield return subtitle;
+        }
+    }
+
+    private static (string Directory, string Stem) OriginalContentIdentity(
+        DownloadTaskFile file, bool stripSubtitleSuffix = false)
+    {
+        var path     = file.OriginalRelativePath.Replace('\\', '/');
+        var fileName = DownloadEpisodeResolver.FileName(path);
+        var stem     = Path.GetFileNameWithoutExtension(fileName);
+        if
+            (!stripSubtitleSuffix) return (path[..^fileName.Length], stem);
+        var suffix = SubtitleSuffix.Match(stem).Groups["suffix"].Value;
+        stem = stem[..^suffix.Length];
+
+        return (path[..^fileName.Length], stem);
+    }
+
+    private static bool SameContentIdentity(
+        (string Directory, string Stem) left, (string Directory, string Stem) right) =>
+        string.Equals(left.Directory, right.Directory, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(left.Stem, right.Stem, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>逐集承接的等路径放行集合：迁让对象的现行文件绝对路径（迁让由 MoveConflicting 执行，放行覆盖交叉做种与种子已移除的休眠数据）。</summary>
     private async Task<HashSet<string>> LoadReplacementAllowedPathsAsync(
         ApplicationDbContext db, DownloadTask task, CancellationToken ct)
     {
         var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (owner, file) in await LoadReplacementAsideFilesAsync(db, task, ct))
-            allowed.Add(Join(owner.SavePath, file.CurrentRelativePath));
+        foreach (var entry in await LoadReplacementAsideFilesAsync(db, task, ct))
+            allowed.Add(Join(entry.SavePath, entry.CurrentRelativePath));
         return allowed;
     }
 
@@ -474,7 +525,7 @@ public sealed class DownloadFileService(
             throw new InvalidOperationException("缺少可用作品名，不能按人工集数生成动画命名。");
         var episode = task.Episode ?? task.Files.Select(file => file.EpisodeNumberOverride)
                                           .FirstOrDefault(value => value is not null)
-         ?? task.Files.Select(file => aniParser.Parse(FileName(file.OriginalRelativePath)))
+         ?? task.Files.Select(file => aniParser.Parse(DownloadEpisodeResolver.FileName(file.OriginalRelativePath)))
                 .Select(parsed => parsed?.Episode ?? parsed?.StartEpisode).FirstOrDefault(value => value is not null);
         if (episode is null) throw new InvalidOperationException("缺少命名要素和集数，请填写集数或补充任务命名快照。");
         task.NamingIngredients = new TorrentNamingIngredients(await namingTemplateStore.GetAsync(ct), title,
@@ -494,21 +545,27 @@ public sealed class DownloadFileService(
         var media    = RelativeDownloadPathPolicy.Normalize(task.MediaDirectory!);
         var seed     = RelativeDownloadPathPolicy.Normalize(task.SeedDirectory!);
         RelativeDownloadPathPolicy.ValidateDirectories(media, seed);
-        var ingredients = TorrentNamingIngredients.FromJson(task.NamingIngredients);
-        var absolute    = new Dictionary<int, string>();
+        var ingredients        = TorrentNamingIngredients.FromJson(task.NamingIngredients);
+        var cleanPrefix        = media + "/";
+        var currentRootIsMedia = SameRoot(task.SavePath, Join(basePath, media));
+        var clean              = task.Files.All(file => file.Kind != DownloadFileKind.Seed) && currentRootIsMedia;
+        var absolute           = new Dictionary<int, string>();
         foreach (var file in task.Files)
         {
-            // 种子名称模板只命名种子，不产生保存目录层；媒体目录内的子目录结构只由文件模板中的 / 决定。
-            var relative = file.Kind == DownloadFileKind.Seed
-                ? seed  + "/" + file.OriginalRelativePath
-                : media + "/" + (file.AnimeRelativePathOverride ?? ContentName(task, file, ingredients));
+            // Unselected content keeps its confirmed qB path: cross-package losers must not claim a media
+            // incumbent path, while dormant data may already live under .replaced. In-pack losers demoted
+            // to Seed retain the established seed-directory layout.
+            var keepCurrentPath = !file.IsSelectedForDownload &&
+                                  file is not { Kind: DownloadFileKind.Seed, SupersededByTaskId: null };
+            var relative = keepCurrentPath
+                ? currentRootIsMedia ? cleanPrefix + file.CurrentRelativePath : file.CurrentRelativePath
+                : file.Kind == DownloadFileKind.Seed
+                    ? seed  + "/" + file.OriginalRelativePath
+                    : media + "/" + (file.AnimeRelativePathOverride ?? ContentName(task, file, ingredients));
             absolute.Add(file.FileIndex, RelativeDownloadPathPolicy.Normalize(relative));
         }
 
         // Only retain an existing clean base/media root; never move an established mixed root back to clean.
-        var cleanPrefix = media + "/";
-        var clean = task.Files.All(file => file.Kind != DownloadFileKind.Seed) &&
-                    SameRoot(task.SavePath, Join(basePath, media));
         var root = clean ? Join(basePath, media) : basePath;
         var paths = absolute.ToDictionary(pair => pair.Key,
                                           pair => clean ? pair.Value[cleanPrefix.Length..] : pair.Value);
@@ -523,7 +580,7 @@ public sealed class DownloadFileService(
 
     private string ContentName(DownloadTask task, DownloadTaskFile file, TorrentNamingIngredients? ingredients)
     {
-        var parsed = aniParser.Parse(FileName(file.OriginalRelativePath));
+        var parsed = aniParser.Parse(DownloadEpisodeResolver.FileName(file.OriginalRelativePath));
         var (episode, end) = Episodes(task, file, parsed);
         if (episode is null && file.AnimeRelativePathOverride is null)
             throw new InvalidOperationException("正片/字幕没有可用集数，请填写集数或手工动画相对路径。");
@@ -550,7 +607,7 @@ public sealed class DownloadFileService(
             name = namingPolicy.Create(input, true);
         }
 
-        var originalName = FileName(file.OriginalRelativePath);
+        var originalName = DownloadEpisodeResolver.FileName(file.OriginalRelativePath);
         var extension    = Path.GetExtension(originalName);
         var suffix = file.Kind == DownloadFileKind.Subtitle
             ? SubtitleSuffix.Match(Path.GetFileNameWithoutExtension(originalName)).Groups["suffix"].Value
@@ -573,7 +630,8 @@ public sealed class DownloadFileService(
 
     private async Task ValidatePlanAsync(ApplicationDbContext db,   IQbittorrentSession session, DownloadTask task,
                                          FilePlan             plan, CancellationToken   ct,
-                                         bool                 allowCompletedReplacementCollision = false)
+                                         bool                 allowCompletedReplacementCollision = false,
+                                         HashSet<string>?     precomputedAllowedPaths            = null)
     {
         var snapshot = await SnapshotAsync(session, task.InfoHash, ct);
         if (snapshot.IsMoving || !SameRoot(snapshot.SavePath, task.SavePath))
@@ -588,13 +646,15 @@ public sealed class DownloadFileService(
                 throw new TargetPathOccupiedException("目标路径占用另一文件当前路径，不能安全执行改名。");
         }
 
-        await ValidateTargetOccupancyAsync(db, session, task, plan, remote, ct, allowCompletedReplacementCollision);
+        await ValidateTargetOccupancyAsync(db, session, task, plan, remote, ct,
+                                           allowCompletedReplacementCollision, precomputedAllowedPaths);
     }
 
     private async Task ValidateTargetOccupancyAsync(ApplicationDbContext db, IQbittorrentSession session,
                                                     DownloadTask task, FilePlan plan,
                                                     IReadOnlyList<TorrentFileSnapshot> remote, CancellationToken ct,
-                                                    bool allowCompletedReplacementCollision = false)
+                                                    bool allowCompletedReplacementCollision = false,
+                                                    HashSet<string>? precomputedAllowedPaths = null)
     {
         var matched = MatchRemoteFiles(task.Files, remote, true);
         var entries = plan.Paths.ToList();
@@ -621,7 +681,7 @@ public sealed class DownloadFileService(
         // （同大小视为同一资源交叉做种，不同大小先经 MoveConflicting 迁让），以及被本任务承接
         // 取消选择的休眠文件路径（迁让同样由 MoveConflicting 负责，种子已移除时直接放行覆盖）。
         var replacementAllowedPaths = allowCompletedReplacementCollision
-            ? await LoadReplacementAllowedPathsAsync(db, task, ct)
+            ? precomputedAllowedPaths ?? await LoadReplacementAllowedPathsAsync(db, task, ct)
             : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var others = await db.DownloadTasks.Include(value => value.Files).AsNoTracking()
                              .Where(value => value.Id != task.Id).ToListAsync(ct);
@@ -655,9 +715,9 @@ public sealed class DownloadFileService(
                 foreach (var path in occupied)
                 {
                     if (!PathsOverlap(target, path)) continue;
-                    var matchingReplacementFile = allowCompletedReplacementCollision &&
+                    var matchingReplacementFile = allowCompletedReplacementCollision     &&
                                                   replacementAllowedPaths.Contains(path) &&
-                                                  !hasPendingFileOperation             &&
+                                                  !hasPendingFileOperation               &&
                                                   EqualPath(target, path);
                     if (matchingReplacementFile) continue;
                     var owner = string.IsNullOrWhiteSpace(other.NamingSnapshot)
@@ -685,13 +745,13 @@ public sealed class DownloadFileService(
                 foreach (var file in await session.ListFilesAsync(other.Hash, ct))
                 {
                     var occupied = otherRoot + "/" + (file.Path ?? string.Empty).Trim().TrimStart('/');
-                foreach (var target in targets)
-                {
-                    if (!PathsOverlap(target, occupied)) continue;
-                    // 逐集承接放行覆盖等路径的迁让对象（交叉做种或休眠数据），与数据库侧同一集合。
-                    if (allowCompletedReplacementCollision && replacementAllowedPaths.Contains(occupied)) continue;
-                    switch (managedTask)
+                    foreach (var target in targets)
                     {
+                        if (!PathsOverlap(target, occupied)) continue;
+                        // 逐集承接放行覆盖等路径的迁让对象（交叉做种或休眠数据），与数据库侧同一集合。
+                        if (allowCompletedReplacementCollision && replacementAllowedPaths.Contains(occupied)) continue;
+                        switch (managedTask)
+                        {
                             case null when
                                 targetSizes.TryGetValue(target, out var expected) &&
                                 expected == file.Size :
@@ -729,8 +789,9 @@ public sealed class DownloadFileService(
         }
     }
 
-    private async Task<bool> ExecutePendingAsync(
-        ApplicationDbContext db, IQbittorrentSession session, DownloadTask task, CancellationToken ct)
+    private async Task<bool> ExecutePendingAsync(ApplicationDbContext db,   IQbittorrentSession session,
+                                                 DownloadTask         task, CancellationToken   ct,
+                                                 HashSet<string>?     precomputedAllowedPaths = null)
     {
         if (!HasPending(task)) return true;
         var targetRoot = task.PendingSavePath ?? throw new InvalidOperationException("待执行文件操作缺少保存目录。");
@@ -747,7 +808,7 @@ public sealed class DownloadFileService(
         var pendingPlan =
             new FilePlan(targetRoot, task.Files.ToDictionary(file => file.FileIndex, file => file.PendingRenameTo!));
         await ValidateTargetOccupancyAsync(db, session, task, pendingPlan, remote, ct,
-                                           snapshot.Progress >= 1);
+                                           snapshot.Progress >= 1, precomputedAllowedPaths);
         foreach (var file in task.Files.OrderBy(value => value.FileIndex))
         {
             var observed = matched[file.FileIndex];
@@ -762,7 +823,7 @@ public sealed class DownloadFileService(
         if (task.Files.Any(file => matched[file.FileIndex].Path !=
                                    RelativeDownloadPathPolicy.Normalize(file.PendingRenameTo!))) return false;
         await ValidateTargetOccupancyAsync(db, session, task, pendingPlan, remote, ct,
-                                           snapshot.Progress >= 1);
+                                           snapshot.Progress >= 1, precomputedAllowedPaths);
         if (!SameRoot(snapshot.SavePath, targetRoot)) await session.SetLocationAsync(task.InfoHash, targetRoot, ct);
         snapshot = await SnapshotAsync(session, task.InfoHash, ct);
         if (snapshot.IsMoving || !SameRoot(snapshot.SavePath, targetRoot)) return false;
@@ -786,7 +847,7 @@ public sealed class DownloadFileService(
             task.Files.OrderBy(file => file.FileIndex)
                 .Select(file =>
                  {
-                     var parsed = aniParser.Parse(FileName(file.OriginalRelativePath));
+                     var parsed = aniParser.Parse(DownloadEpisodeResolver.FileName(file.OriginalRelativePath));
                      var (episode, end) = Episodes(task, file, parsed);
                      if (file.EpisodeNumberOverride is null &&
                          parsed?.Episode is null            &&
@@ -810,8 +871,6 @@ public sealed class DownloadFileService(
 
     private static bool HasPending(DownloadTask task) => task.PendingSavePath is not null ||
                                                          task.Files.Any(file => file.PendingRenameTo is not null);
-
-    private static string FileName(string path) => path[(path.LastIndexOf('/') + 1)..];
 
     private static string Root(string path)
     {
@@ -852,6 +911,14 @@ public sealed class DownloadFileService(
         await using var db = await dbContextFactory.CreateDbContextAsync(ct);
         return await LoadAsync(db, id, ct);
     }
+
+    /// <summary>迁让/放行候选的轻量键：只携带消费方所需字段，不为取 InfoHash 与路径装载实体再二次查询。</summary>
+    private readonly record struct ReplacementAsideEntry(
+        Guid   OwnerId,
+        string InfoHash,
+        string SavePath,
+        int    FileIndex,
+        string CurrentRelativePath);
 
     private sealed record FilePlan(string Root, IReadOnlyDictionary<int, string> Paths);
 }

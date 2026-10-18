@@ -812,13 +812,13 @@ public sealed class DownloadService(
 
         // 登记侧逐集择优改动了已进入下载（或人工暂停）任务的文件选择：把本地计划与下载器实际
         // 选择比对下推。发出变更或存在无法寻址的文件时本轮到此为止，只同步进度，下一轮确认后再清旗。
-        if (task.SelectionSyncPending &&
+        if (task.SelectionSyncPending            &&
             task is not { IsSystemPaused: true } &&
             snapshot is
             {
                 IsMoving: false,
                 Category: QbittorrentTorrentCategory.Downloading or QbittorrentTorrentCategory.Stopped
-                       or QbittorrentTorrentCategory.Seeding
+                                                                 or QbittorrentTorrentCategory.Seeding
             })
             try
             {
@@ -894,6 +894,12 @@ public sealed class DownloadService(
         // 1. 文件下载选择与计划比对；不一致时发出变更即返回，请求成功不代表已生效，下一轮核对后再继续。
         //    无法在下载器文件清单中确认身份的文件同样阻塞推进：缺项不代表选择已确认。
         if (await TryApplyFileSelectionAsync(session, task, cancellationToken)) return;
+
+        // 选择已确认与计划一致：登记侧承接或删除回退置起的同步旗标在准备路径内一并清掉，
+        // 免得任务启动后再空跑一轮对账；发出变更的轮次仍由下一轮确认后清理。
+        if (task.SelectionSyncPending)
+            await UpdateTaskAsync(task.Id, task.Status,
+                                  update => update.SelectionSyncPending = false, cancellationToken);
 
         // 2. 命名计划：仍是登记原始路径的文件交由文件服务改名；改名日志由恢复链在后续轮次确认完成。
         //    只有明确的路径占用可安全回退——以原始命名继续下载，完成链的备份移动（.replaced/）
