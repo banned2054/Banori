@@ -586,6 +586,34 @@ public sealed class DownloadService(
                 }
             }
         }
+
+        // 逐集引用回退后，仍被现任/待完成引用且确有完成记录的旧 Replaced 任务与恢复后的职责
+        // 重新一致：恢复 Completed 并清除过期的替换声明。不能只看 ReplacedByTaskId 是否指向
+        // 本次删除——最后一位承接者仍在时，被删的中间承接方已使职责提前回退；未完成过的
+        // 落选墓碑永不复活，也不自动重新添加种子。
+        var restoreCandidates = await db.DownloadTasks
+                                        .Include(task => task.Files)
+                                        .Where(task => task.Status         == DownloadTaskStatus.Replaced &&
+                                                       task.CompletedAtUtc != null)
+                                        .ToListAsync(cancellationToken);
+        if (restoreCandidates.Count == 0) return;
+        // 必须以 tracking 实体加载：EF identity resolution 复用同 DbContext 中刚修改的逐集引用；
+        // AsNoTracking + 匿名投影会绕过变更跟踪，从数据库读到 SaveChanges 之前的旧值。
+        var referencedRows = await db.EpisodeVersions
+                                     .Where(row => row.IncumbentVideoFileId != null ||
+                                                   row.PendingVideoFileId   != null)
+                                     .ToListAsync(cancellationToken);
+        var stillReferencedIds = referencedRows
+                                .SelectMany(row => new[] { row.IncumbentVideoFileId, row.PendingVideoFileId })
+                                .OfType<Guid>()
+                                .ToHashSet();
+        foreach (var candidate in restoreCandidates.Where(candidate =>
+                                                              candidate.Files.Any(file =>
+                                                                  stillReferencedIds.Contains(file.Id))))
+        {
+            candidate.Status           = DownloadTaskStatus.Completed;
+            candidate.ReplacedByTaskId = null;
+        }
     }
 
     /// <summary>
@@ -679,9 +707,11 @@ public sealed class DownloadService(
             {
                 row.SupersededVideoFileId = previousIncumbent;
                 var previousOwner = incumbentOwners.FirstOrDefault(owner =>
-                    owner.Files.Any(file => file.Id == previousIncumbent));
+                                                                       owner.Files.Any(file => file.Id ==
+                                                                           previousIncumbent));
                 if (previousOwner is not null) retiredOwnerIds.Add(previousOwner.Id);
             }
+
             row.IncumbentVideoFileId = video.Id;
             if (row.PendingVideoFileId is { } ownPending && fileIds.Contains(ownPending))
                 row.PendingVideoFileId = null;
@@ -708,7 +738,7 @@ public sealed class DownloadService(
                                 .SingleOrDefaultAsync(task => task.Id == ownerId, ct);
             if (owner is null || owner.ReplacedByTaskId is not null ||
                 owner.Status is not (DownloadTaskStatus.Completed or DownloadTaskStatus.Downloading
-                                     or DownloadTaskStatus.Paused))
+                                                                  or DownloadTaskStatus.Paused))
                 continue;
             if (owner.SubjectId is not { } subjectId) continue;
 
@@ -722,7 +752,7 @@ public sealed class DownloadService(
             owner.FailedStep       = null;
             owner.Error            = null;
             var trigger = await db.DownloadTasks.SingleOrDefaultAsync(task => task.Id == triggerTaskId, ct);
-            if (trigger is not null) trigger.ReplacesTaskId ??= owner.Id;
+            trigger?.ReplacesTaskId ??= owner.Id;
             logger.LogInformation("任务 {TaskId} 的全部职责已被承接（触发方 {TriggerTaskId}），翻转为被替换，等待冗余清理移除种子。",
                                   owner.Id, triggerTaskId);
         }
@@ -1307,7 +1337,7 @@ public sealed class DownloadService(
                                              .Select(file => file.Id)
                                              .ToHashSet();
                 var pendingRows = await db.EpisodeVersions
-                                          .Where(row => row.SubjectId == verificationSubjectId &&
+                                          .Where(row => row.SubjectId          == verificationSubjectId &&
                                                         row.PendingVideoFileId != null)
                                           .ToListAsync(ct);
                 var previousIncumbents = new List<Guid>();
@@ -1318,6 +1348,7 @@ public sealed class DownloadService(
                         row.SupersededVideoFileId = previous;
                         previousIncumbents.Add(previous);
                     }
+
                     row.IncumbentVideoFileId = row.PendingVideoFileId;
                     row.PendingVideoFileId   = null;
                     row.UpdatedAtUtc         = timeProvider.GetUtcNow();

@@ -308,4 +308,55 @@ public sealed partial class DownloadVerificationTests
         Assert.Equal("/moved-elsewhere", harness.Store.Torrents[task.InfoHash].SavePath);
     }
 
+    [Theory]
+    [InlineData(true)]  // 先删第 1 集承接方：旧包职责提前回退，ReplacedByTaskId 仍指第 2 集优胜。
+    [InlineData(false)] // 先删第 2 集承接方：ReplacedByTaskId 所指任务即被删。
+    public async Task Delete_CompletedBatchDutiesRestored_AfterWinnerDeletionInAnyOrder(bool deleteEp1WinnerFirst)
+    {
+        using var harness = await VerificationHarness.CreateAsync();
+        await harness.SaveSelectionRulesAsync(NekoRules());
+        var oldId = await CompleteContainmentIncumbentAsync(harness, ContainmentFileName(1, "繁日双语"),
+                                                            ContainmentFileName(2, "繁日双语"));
+        var old = await harness.GetTaskAsync(oldId);
+
+        var ep1WinnerId = await harness.CreateUploadAsync(LargerVariantTorrent(1, "简日双语"));
+        for (var round = 0; round < 3; round++) await harness.ReconcileAsync();
+        CompleteTorrent(harness, (await harness.GetTaskAsync(ep1WinnerId)).InfoHash);
+        await harness.ReconcileAsync();
+
+        var ep2WinnerId = await harness.CreateUploadAsync(LargerVariantTorrent(2, "简日双语"));
+        for (var round = 0; round < 3; round++) await harness.ReconcileAsync();
+        CompleteTorrent(harness, (await harness.GetTaskAsync(ep2WinnerId)).InfoHash);
+        await harness.ReconcileAsync();
+
+        // 旧包职责耗尽翻转为被替换，冗余清理环保留内容移除种子。
+        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(oldId)).Status);
+        await harness.ReconcileAsync();
+        Assert.DoesNotContain(old.InfoHash, harness.Store.Torrents.Keys);
+
+        var service = harness.Provider.GetRequiredService<DownloadService>();
+        var (deletedId, keptId, deletedEpisode, keptEpisode) = deleteEp1WinnerFirst
+            ? (ep1WinnerId, ep2WinnerId, 1, 2)
+            : (ep2WinnerId, ep1WinnerId, 2, 1);
+        var deleteCallsBefore = harness.Store.DeleteCalls.ToArray();
+        await service.DeleteAsync(deletedId, false, false);
+
+        // 旧包重新承担被删承接方的集：确有完成记录即恢复 Completed，过期替换声明清除。
+        var restored = await harness.GetTaskAsync(oldId);
+        Assert.Equal(DownloadTaskStatus.Completed, restored.Status);
+        Assert.Null(restored.ReplacedByTaskId);
+        var restoredRow = (await EpisodeRegistryAsync(harness, deletedEpisode))!;
+        Assert.Equal(await ContainmentFileIdAsync(harness, oldId, deletedEpisode - 1),
+                     restoredRow.IncumbentVideoFileId);
+        Assert.Null(restoredRow.SupersededVideoFileId);
+
+        // 仍在使用的另一承接方不受影响；本次记录式删除不新增任何下载器删除请求。
+        var kept = await harness.GetTaskAsync(keptId);
+        Assert.Equal(DownloadTaskStatus.Completed, kept.Status);
+        Assert.Null(kept.ReplacedByTaskId);
+        Assert.Contains(kept.InfoHash, harness.Store.Torrents.Keys);
+        Assert.Equal(await ContainmentFileIdAsync(harness, keptId, 0),
+                     (await EpisodeRegistryAsync(harness, keptEpisode))!.IncumbentVideoFileId);
+        Assert.Equal(deleteCallsBefore, harness.Store.DeleteCalls);
+    }
 }
