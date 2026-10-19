@@ -40,7 +40,7 @@
 
 ## 🐳 Docker 部署
 
-需要安装 Docker Engine 和 Docker Compose。容器将 Web 服务监听在 `7340` 端口，默认将 Compose 文件所在目录的 `config/` 映射到容器 `/app/config`，持久化数据库与加密密钥。
+需要安装 Docker Engine 和 Docker Compose。容器发布工作流配置为构建 `linux/amd64` 与 `linux/arm64`，使用同一镜像标签；Docker 按主机架构选择镜像。容器将 Web 服务监听在 `7340` 端口，默认将 Compose 文件所在目录的 `config/` 映射到容器 `/app/config`，持久化数据库与加密密钥。
 
 ```bash
 cp .env.example .env
