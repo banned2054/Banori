@@ -86,6 +86,32 @@ public sealed class SecurityIntegrationTests : IAsyncLifetime
                      await PostLoginAsync(client, "/Account/Login/", token, "203.0.113.99"));
     }
 
+    [Theory]
+    [InlineData("127.0.0.1", "https")]
+    [InlineData(null, "http")]
+    [InlineData("192.0.2.1", "http")]
+    public async Task LoginRedirect_OnlyUsesHttpsFromTrustedProxy(string? trustedProxy, string expectedScheme)
+    {
+        var       app     = CreateApplication(trustedProxy);
+        using var client  = await StartAsync(app);
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/");
+        request.Headers.Host = "banori.example.test:11451";
+        request.Headers.Add("X-Forwarded-For", "203.0.113.7");
+        request.Headers.Add("X-Forwarded-Proto", "https");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Found, response.StatusCode);
+        var location = response.Headers.Location;
+        Assert.NotNull(location);
+        Assert.True(location.IsAbsoluteUri);
+        Assert.Equal(expectedScheme, location.Scheme);
+        Assert.Equal("banori.example.test", location.Host);
+        Assert.Equal(11451, location.Port);
+        Assert.Equal("/Account/Login", location.AbsolutePath);
+        Assert.Equal("?ReturnUrl=%2F", location.Query);
+    }
+
     [Fact]
     public async Task CookieAndCircuit_UseSameSecurityStampInterval()
     {
@@ -121,6 +147,8 @@ public sealed class SecurityIntegrationTests : IAsyncLifetime
             ["BANORI_PASSWORD"]                     = $"{Guid.NewGuid():N}-A9!"
         });
         if (trustedProxy is not null) builder.Configuration["ReverseProxy:KnownProxies:0"] = trustedProxy;
+        // 隔离测试中的宿主机代理允许两种回环地址，兼容实际连接来源为 IPv6 的运行环境。
+        if (trustedProxy == "127.0.0.1") builder.Configuration["ReverseProxy:KnownProxies:1"] = "::1";
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
         var program = typeof(ApplicationInitializer).Assembly.GetType("Banori.Program", true)!;

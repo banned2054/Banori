@@ -300,7 +300,7 @@ internal class Program
 
     private static void InitApplication(WebApplication app)
     {
-        // 在 HSTS、HTTPS 重定向和 IP 限流之前恢复可信代理转发的信息。
+        // 在认证、授权、HSTS、HTTPS 重定向和 IP 限流之前恢复可信代理转发的信息。
         app.UseForwardedHeaders();
 
         if (app.Environment.IsDevelopment())
@@ -315,6 +315,9 @@ internal class Program
 
         app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages : true);
         app.UseHttpsRedirection();
+        // 显式指定顺序，避免最小托管模型自动在转发头处理之前执行认证、授权和登录重定向。
+        app.UseAuthentication();
+        app.UseAuthorization();
         app.UseRateLimiter();
         app.UseAntiforgery();
         app.MapStaticAssets();
