@@ -1,20 +1,10 @@
-using System.Text;
-using Banned.AniParser;
-using Banned.AniParser.Models.Enums;
-using Banori.Core.Downloads;
-using Banori.Core.Rules;
-using Banori.Core.Rules.Selection;
-using Banori.Core.Subjects;
+using Banori.Core.Torrents;
 using Banori.Data;
-using Banori.Features.Anime;
 using Banori.Features.Downloads;
-using Banori.Features.Settings;
-using Banori.Features.Subscriptions;
-using Banori.Integrations;
 using Banori.Integrations.Qbittorrent;
-using Banori.Tests.Notifications;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using System.Text;
 
 namespace Banori.Tests.Downloads;
 
@@ -44,8 +34,8 @@ public sealed partial class DownloadVerificationTests
     /// <summary>不同大小的升级变体：大小与现任成片不同，不构成复用候选，走任务根独立下载。</summary>
     private static byte[] LargerVariantTorrent(int episode, string language) =>
         Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(TestTorrentBytes.Create(ContainmentFileName(episode, language)))
-                                                .Replace("6:lengthi1024e", "6:lengthi2048e",
-                                                         StringComparison.Ordinal));
+                                       .Replace("6:lengthi1024e", "6:lengthi2048e",
+                                                StringComparison.Ordinal));
 
     private static async Task<EpisodeVersion?> EpisodeRegistryAsync(VerificationHarness harness, decimal episode)
     {
@@ -63,7 +53,7 @@ public sealed partial class DownloadVerificationTests
     }
 
     private static async Task<Guid> CompleteContainmentIncumbentAsync(VerificationHarness harness,
-                                                                      params string[] filePaths)
+                                                                      params string[]     filePaths)
     {
         var taskId = await harness.CreateUploadAsync(ContainmentBatch(filePaths));
         var task   = await harness.GetTaskAsync(taskId);
@@ -86,7 +76,7 @@ public sealed partial class DownloadVerificationTests
         // 选中并登记待完成优胜，不因同内容平级的现任保留而取消选择。
         var bigId = await harness.CreateUploadAsync(ContainmentBatch(ContainmentFileName(1),
                                                                      ContainmentFileName(2)));
-        var big   = await harness.GetTaskAsync(bigId);
+        var big        = await harness.GetTaskAsync(bigId);
         var registered = await EpisodeRegistryAsync(harness, 1);
         Assert.NotNull(registered);
         Assert.Equal(await ContainmentFileIdAsync(harness, smallId, 0), registered.IncumbentVideoFileId);
@@ -106,7 +96,7 @@ public sealed partial class DownloadVerificationTests
         await using (var db = await harness.CreateDbContextAsync())
         {
             var reused = await db.DownloadTaskFiles.AsNoTracking()
-                                  .SingleAsync(file => file.DownloadTaskId == bigId && file.FileIndex == 0);
+                                 .SingleAsync(file => file.DownloadTaskId == bigId && file.FileIndex == 0);
             Assert.Equal(DownloadFileVerificationOutcomes.ReusedVerified, reused.VerificationOutcome);
         }
 
@@ -139,7 +129,9 @@ public sealed partial class DownloadVerificationTests
         // 沿用现任保留；整包落选留终止记录供查重，不添加到下载器。
         var addsBefore = harness.Store.AddCalls.Count;
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            harness.CreateUploadAsync(ContainmentBatch(ContainmentFileName(1), "readme.txt")));
+                                                                harness
+                                                                   .CreateUploadAsync(ContainmentBatch(ContainmentFileName(1),
+                                                                        "readme.txt")));
 
         Assert.Equal(addsBefore, harness.Store.AddCalls.Count);
         Assert.Empty(harness.Store.DeleteCalls);
@@ -150,7 +142,7 @@ public sealed partial class DownloadVerificationTests
                      (await EpisodeRegistryAsync(harness, 1))!.IncumbentVideoFileId);
         await using var db = await harness.CreateDbContextAsync();
         var tombstone = await db.DownloadTasks.AsNoTracking()
-                                .SingleAsync(task => task.Status == DownloadTaskStatus.Replaced &&
+                                .SingleAsync(task => task.Status           == DownloadTaskStatus.Replaced &&
                                                      task.ReplacedByTaskId == smallId);
         Assert.Equal("择优", tombstone.FailedStep);
     }
@@ -162,7 +154,7 @@ public sealed partial class DownloadVerificationTests
         await harness.SaveSelectionRulesAsync(NekoRules());
         var smallId = await CompleteContainmentIncumbentAsync(harness, ContainmentFileName(1),
                                                               ContainmentSubtitleName(1));
-        var small   = await harness.GetTaskAsync(smallId);
+        var small = await harness.GetTaskAsync(smallId);
 
         // 大包正片覆盖小包第 1 集，但没有小包的独有字幕：职责文件未被全部覆盖，不构成包含承接，
         // 第 1 集回落到现任保留语义取消选择；小包保留全部职责。
@@ -196,7 +188,7 @@ public sealed partial class DownloadVerificationTests
         await harness.SaveSelectionRulesAsync(NekoRules());
         var oldId = await CompleteContainmentIncumbentAsync(harness, ContainmentFileName(1, "繁日双语"),
                                                             ContainmentFileName(2, "繁日双语"));
-        var old   = await harness.GetTaskAsync(oldId);
+        var old = await harness.GetTaskAsync(oldId);
 
         // 第 1 集由更高优先级的简日单集替换：完成切换后旧包仍承担第 2 集，不退出。
         var ep1WinnerId = await harness.CreateUploadAsync(LargerVariantTorrent(1, "简日双语"));
@@ -224,4 +216,96 @@ public sealed partial class DownloadVerificationTests
         Assert.DoesNotContain(old.InfoHash, harness.Store.Torrents.Keys);
         Assert.Equal(2, harness.Store.Torrents.Count);
     }
+
+    [Fact]
+    public async Task Cleanup_PureSelectionLossTombstone_NeverAuthorizesRemoteCleanup()
+    {
+        using var harness = await VerificationHarness.CreateAsync();
+        await harness.SaveSelectionRulesAsync(NekoRules());
+        var incumbentId = await CompleteContainmentIncumbentAsync(harness, ContainmentFileName(1));
+        var incumbent   = await harness.GetTaskAsync(incumbentId);
+
+        // 等价内容包同集落选：留下从未提交/接管的纯择优墓碑（不进入下载器）。
+        var bytes = ContainmentBatch(ContainmentFileName(1), "readme.txt");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => harness.CreateUploadAsync(bytes));
+        Assert.True(TorrentDownloadPolicy.TryLoad(bytes, out var loserTorrent, out _));
+        var loserHash = loserTorrent.InfoHashes.V1!.ToHex().ToLowerInvariant();
+        Assert.DoesNotContain(loserHash, harness.Store.Torrents.Keys);
+
+        // 同 hash 的外部种子：用户/外部工具自添、从未被本应用接管，且实际根与墓碑规划根不同。
+        harness.Store.AddTorrent(loserHash, "external", QbittorrentTorrentCategory.Seeding, 1.0, "/external",
+                                 [ContainmentFileName(1), "readme.txt"]);
+
+        await harness.ReconcileAsync();
+
+        // 纯落选墓碑不构成远端清理授权：外部种子原样保留，绝不发出删除请求（更不允许连文件删除）。
+        Assert.Empty(harness.Store.DeleteCalls);
+        Assert.Contains(loserHash, harness.Store.Torrents.Keys);
+        Assert.Equal("/external", harness.Store.Torrents[loserHash].SavePath);
+        // 现任资源与墓碑终止记录不受影响。
+        Assert.Contains(incumbent.InfoHash, harness.Store.Torrents.Keys);
+        await using var db = await harness.CreateDbContextAsync();
+        Assert.Single(await db.DownloadTasks.AsNoTracking()
+                              .Where(task => task.Status           == DownloadTaskStatus.Replaced &&
+                                             task.ReplacedByTaskId == incumbentId)
+                              .ToListAsync());
+    }
+
+    [Fact]
+    public async Task Cleanup_UnsubmittedReplacedRecord_NeverDeletesSameRootExternalTorrent()
+    {
+        using var harness = await VerificationHarness.CreateAsync();
+        await harness.SaveSelectionRulesAsync(NekoRules());
+        // 待提交任务即被替代（合法持久化历史）：从未发过提交请求，没有任何生命周期证据。
+        var bytes  = ContainmentBatch(ContainmentFileName(1));
+        var taskId = await harness.CreateUploadAsync(bytes);
+        Assert.True(TorrentDownloadPolicy.TryLoad(bytes, out var torrent, out _));
+        var hash = torrent.InfoHashes.V1!.ToHex().ToLowerInvariant();
+        await using (var db = await harness.CreateDbContextAsync())
+        {
+            var tracked = await db.DownloadTasks.SingleAsync(row => row.Id == taskId);
+            tracked.Status           = DownloadTaskStatus.Replaced;
+            tracked.ReplacedByTaskId = Guid.NewGuid();
+            await db.SaveChangesAsync();
+        }
+
+        // 同 hash 外部种子恰位于同一规划根：根一致也不能代替生命周期证据。
+        harness.Store.AddTorrent(hash, "external", QbittorrentTorrentCategory.Seeding, 1.0, "/downloads",
+                                 [ContainmentFileName(1)]);
+
+        await harness.ReconcileAsync();
+
+        Assert.Empty(harness.Store.DeleteCalls);
+        Assert.Contains(hash, harness.Store.Torrents.Keys);
+        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(taskId)).Status);
+    }
+
+    [Fact]
+    public async Task Cleanup_ManagedTorrentRootMovedExternally_ConservativelyRetained()
+    {
+        using var harness = await VerificationHarness.CreateAsync();
+        await harness.SaveSelectionRulesAsync(NekoRules());
+        var taskId = await harness.CreateUploadAsync(ContainmentBatch(ContainmentFileName(1)));
+        await harness.ReconcileAsync(); // 真实提交：AttemptCount/SubmittedAtUtc 证据落库，种子受管。
+        var task = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Downloading, task.Status);
+
+        // 受管种子被外部移动到别的根：实际根与任务确认根不再一致。
+        harness.Store.Torrents[task.InfoHash] =
+            harness.Store.Torrents[task.InfoHash] with { SavePath = "/moved-elsewhere" };
+        await using (var db = await harness.CreateDbContextAsync())
+        {
+            var tracked = await db.DownloadTasks.SingleAsync(row => row.Id == taskId);
+            tracked.Status           = DownloadTaskStatus.Replaced;
+            tracked.ReplacedByTaskId = Guid.NewGuid();
+            await db.SaveChangesAsync();
+        }
+
+        await harness.ReconcileAsync();
+
+        // 有提交证据但根不一致：同样保守保留，绝不按 hash 删除外部移动后的受管种子。
+        Assert.Empty(harness.Store.DeleteCalls);
+        Assert.Equal("/moved-elsewhere", harness.Store.Torrents[task.InfoHash].SavePath);
+    }
+
 }

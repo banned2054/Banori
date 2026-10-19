@@ -54,6 +54,9 @@ public sealed class DownloadService(
     private const int MaxRecheckIssues             = 2;
     private const int MaxVerificationPauseAttempts = 3;
 
+    /// <summary>同集择优落选墓碑的终止步骤标记（与登记入口同口径）；该类记录从未提交或接管过下载器资源。</summary>
+    private const string SelectionLossStep = "择优";
+
     /// <summary>能解析出集数的内容文件扩展名：视频与字幕；其余一律视为附属文件。</summary>
     private static readonly string[] ContentFileExtensions =
         [".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".wmv", ".mov", ".flv", ".ass", ".ssa", ".srt", ".sup"];
@@ -154,9 +157,9 @@ public sealed class DownloadService(
 
         // 登记期替换与冗余退出只落库，不在登记事务内等待 qB；在全局协调门内清理被替换资源。
         // 单项清理失败只记录日志，下一轮按同样的记录继续，不阻塞本轮提交与核对。
-        // 逐集承接或职责耗尽退出的任务保留内容移除种子（deleteFiles=false）：承接方尚未完成时
-        // 旧数据仍是恢复线索，完成后仍是其他种子可复用的数据；已完成旧任务自第四阶段起不再
-        // 豁免清理。只有历史整任务替换（未完成且文件从未被逐集承接）保持连文件删除的既有行为。
+        // 冗余退出一律保留内容移除种子（deleteFiles=false）：承接方尚未完成时旧数据仍是恢复线索，
+        // 完成后仍是其他种子可复用的数据。远端清理需要授权证据：纯落选墓碑（同集择优终止记录）
+        // 从未提交或接管过下载器资源，不构成清理授权；同 hash 的外部种子必须保守保留。
         List<DownloadTask> superseded;
         await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
@@ -170,14 +173,30 @@ public sealed class DownloadService(
         foreach (var oldTask in superseded)
             try
             {
+                if (oldTask.FailedStep == SelectionLossStep) continue;
+                // 未清的执行意图与操作日志是恢复线索：改名日志两端任一非空都视为未收敛，
+                // pending 收敛前不动远端资源，避免丢失恢复信息。
+                if (oldTask.PendingSavePath is not null                   ||
+                    oldTask.VerificationIntent is not null                ||
+                    oldTask.ArchiveReview is not null                     ||
+                    oldTask.IsolationState != DownloadIsolationState.None ||
+                    oldTask.Files.Any(file => file.PendingRenameFrom is not null ||
+                                              file.PendingRenameTo is not null))
+                    continue;
+                // 清理必须有正向生命周期证据（提交、同步接管或完成过）：待提交即被替代的记录
+                // 从未拥有下载器资源，没有证据一律保守跳过，即便同 hash 种子位于确认根也不清理。
+                if (oldTask.SubmittedAtUtc is null &&
+                    oldTask is { AttemptCount: 0, LastSyncedAtUtc: null, CompletedAtUtc: null })
+                    continue;
                 var stillOwned = await IsActiveTaskForHashAsync(oldTask.InfoHash, oldTask.Id, cancellationToken);
                 if (stillOwned) continue;
                 var foundOld = await session.FindTorrentsAsync([oldTask.InfoHash], cancellationToken);
-                if (foundOld.Count > 0)
-                    await session.DeleteTorrentAsync(oldTask.InfoHash,
-                                                     oldTask.CompletedAtUtc == null &&
-                                                     !DownloadTaskLookups.HasSupersededFiles(oldTask),
-                                                     cancellationToken);
+                if (foundOld.Count == 0) continue;
+                // 对所有待清理任务核对实际根与确认根（统一规范化比较）：受管种子被外部移动、
+                // 或同 hash 外部种子位于别处时一律保守保留，路径异常交由人工或后续轮次处理。
+                if (foundOld.Any(snapshot => !MatchesIsolationPath(snapshot.SavePath, oldTask.SavePath)))
+                    continue;
+                await session.DeleteTorrentAsync(oldTask.InfoHash, false, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
