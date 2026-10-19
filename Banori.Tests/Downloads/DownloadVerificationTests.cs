@@ -565,6 +565,8 @@ public sealed partial class DownloadVerificationTests
             var directory = Directory.CreateTempSubdirectory("Banori.P3V.Tests.");
             var services  = new ServiceCollection();
             services.AddLogging();
+            // 登记服务按 Data Protection 解密订阅 RSS 地址后才判定来源；测试用临时密钥即可。
+            services.AddDataProtection();
             services.AddDbContextFactory<ApplicationDbContext>(options =>
                                                                    options.UseSqlite(
                                                                     $"Data Source={Path.Combine(directory.FullName, "p3v.db")};Pooling=False"));

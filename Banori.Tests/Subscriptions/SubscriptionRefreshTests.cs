@@ -2,6 +2,7 @@ using Banned.AniParser;
 using Banori.Core.Rules;
 using Banori.Core.Rules.Selection;
 using Banori.Core.Subjects;
+using Banori.Core.Torrents;
 using Banori.Data;
 using Banori.Data.Migrations;
 using Banori.Features.Anime;
@@ -50,8 +51,8 @@ public sealed class SubscriptionRefreshTests
 
                 var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
                 var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "测试订阅",
-                                                                             "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                             true, 30, 42));
+                                                                                  "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                                  true, 30, 42));
                 var queuedWorkId = await subscriptionService.RequestRefreshAsync(subscriptionId);
                 Assert.Equal(queuedWorkId, await subscriptionService.RequestRefreshAsync(subscriptionId));
                 var refreshService = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
@@ -235,8 +236,8 @@ public sealed class SubscriptionRefreshTests
                 feedReader.SetItems([hintItem]);
                 var hintSubscriptionId =
                     await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "AniBT 提示源",
-                                                            "https://anibt.net/rss/magnets.xml?limit=100",
-                                                            true, 30, null));
+                                                                 "https://anibt.net/rss/magnets.xml?limit=100",
+                                                                 true, 30, null));
                 var result = await refreshService.ProcessNextAsync();
 
                 Assert.NotNull(result);
@@ -300,8 +301,8 @@ public sealed class SubscriptionRefreshTests
                 {
                     await db.Database.EnsureCreatedAsync();
                     var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "恢复测试",
-                                                                                 "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                                 true, 30, null));
+                                                                                      "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                                      true, 30, null));
                     db.FeedItems.Add(new FeedItem
                     {
                         Id             = Guid.NewGuid(),
@@ -328,6 +329,70 @@ public sealed class SubscriptionRefreshTests
                 Assert.Equal(FeedItemStatus.Accepted, item.Status);
                 Assert.Equal(42, item.SubjectId);
                 Assert.Contains("E12", item.NamingPreview);
+            }
+        }
+        finally
+        {
+            testDirectory.Delete(true);
+        }
+    }
+
+    [Fact]
+    public async Task Refresh_NamingSourceComesFromDecryptedFeedHostNeverFromCiphertext()
+    {
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.P2R.Source.Tests.");
+        try
+        {
+            var             timestamp = new DateTimeOffset(2026, 9, 12, 8, 30, 0, TimeSpan.Zero);
+            var             services  = CreateServices(testDirectory, timestamp, () => []);
+            await using var provider  = services.BuildServiceProvider();
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
+                var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
+
+                await using (var db = await factory.CreateDbContextAsync())
+                {
+                    await db.Database.EnsureCreatedAsync();
+                    await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "来源测试",
+                                                                 "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                 true, 30, null));
+                    db.FeedItems.Add(new FeedItem
+                    {
+                        Id             = Guid.NewGuid(),
+                        SubscriptionId = (await subscriptionService.ListAsync()).Single().Id,
+                        StableId       = "guid:source-check",
+                        Title =
+                            "[S1百综字幕组] 死灵子的宇宙恐怖秀 / Necronomico no Cosmic Horror Show[12][1080p][WebRip][AVC_AAC][CHS][简体内嵌]",
+                        Link           = "https://mikanani.me/Home/Episode/source-check",
+                        FirstSeenAtUtc = timestamp.AddHours(-2),
+                        Status         = FeedItemStatus.Pending,
+                        Reason         = "等待处理。"
+                    });
+                    await db.SaveChangesAsync();
+                }
+
+                var subscriptionId = (await subscriptionService.ListAsync()).Single().Id;
+                await subscriptionService.RequestRefreshAsync(subscriptionId);
+                var result = await scope.ServiceProvider.GetRequiredService<MikanRefreshService>()
+                                        .ProcessNextAsync();
+                Assert.NotNull(result);
+
+                await using var verification = await factory.CreateDbContextAsync();
+                var row = await verification.FeedItems.AsNoTracking()
+                                            .SingleAsync(value => value.StableId == "guid:source-check");
+                Assert.Equal(FeedItemStatus.Accepted, row.Status);
+                // 命名来源取解密后 RSS 地址主机（mikanani.me → mikan），密文绝不进入命名。
+                var ingredients = TorrentNamingIngredients.FromJson(row.NamingIngredients);
+                Assert.NotNull(ingredients);
+                Assert.Equal("mikan", ingredients.Source);
+                Assert.EndsWith(" mikan", row.NamingPreview);
+                var protectedUrl = (await verification.MediaSubscriptions.AsNoTracking()
+                                                      .SingleAsync(value => value.Id == subscriptionId))
+                   .FeedUrlProtected;
+                Assert.DoesNotContain(protectedUrl, row.NamingPreview);
+                Assert.All(protectedUrl.Split('.', StringSplitOptions.RemoveEmptyEntries),
+                           segment => Assert.DoesNotContain(segment, row.NamingPreview));
             }
         }
         finally
@@ -558,8 +623,8 @@ public sealed class SubscriptionRefreshTests
                 var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
                 var refreshService      = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
                 var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "缓存测试",
-                                                                             "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                             true, 30, null));
+                                                                                  "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                                  true, 30, null));
 
                 await subscriptionService.RequestRefreshAsync(subscriptionId);
                 var first = await refreshService.ProcessNextAsync();
@@ -625,8 +690,8 @@ public sealed class SubscriptionRefreshTests
                 var refreshService      = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
                 // 订阅未固定 Subject：Subject 只能来自标题映射缓存或 Mikan 页面发现（这里固定返回 467461）。
                 var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "标题映射测试",
-                                                                             "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                             true, 30, null));
+                                                                                  "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                                  true, 30, null));
                 var normalizedTitle = TitleNormalizer.Normalize(
                                                                 scope.ServiceProvider
                                                                      .GetRequiredService<AniParser>()
@@ -716,8 +781,8 @@ public sealed class SubscriptionRefreshTests
                 {
                     await db.Database.EnsureCreatedAsync();
                     subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "抓取失败恢复",
-                                                                             "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                             true, 30, null));
+                                                                                  "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                                  true, 30, null));
                     db.FeedItems.Add(new FeedItem
                     {
                         Id             = Guid.NewGuid(),
@@ -780,8 +845,8 @@ public sealed class SubscriptionRefreshTests
             {
                 var subscriptionService = scope2.ServiceProvider.GetRequiredService<SubscriptionService>();
                 var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "并发入队",
-                                                                             "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                             true, 30, null));
+                                                                                  "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                                  true, 30, null));
 
                 for (var round = 0; round < 3; round++)
                 {
@@ -821,9 +886,9 @@ public sealed class SubscriptionRefreshTests
             var             subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
 
             await Assert.ThrowsAsync<ArgumentException>(() => subscriptionService.SaveAsync(
-                                                         new SaveSubscriptionRequest(null, "临时",
-                                                             "http://example.com/rss.xml",
-                                                             true, 30, null)));
+                                                             new SaveSubscriptionRequest(null, "临时",
+                                                                      "http://example.com/rss.xml",
+                                                                      true, 30, null)));
         }
         finally
         {

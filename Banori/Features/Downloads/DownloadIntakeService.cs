@@ -11,6 +11,7 @@ using Banori.Features.Anime;
 using Banori.Features.Settings;
 using Banori.Features.Subscriptions;
 using Banori.Integrations;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Cryptography;
 using System.Text;
@@ -40,6 +41,7 @@ public sealed class DownloadIntakeService(
     SubjectEpisodeCorrectionPolicy          episodeCorrectionPolicy,
     TimeProvider                            timeProvider,
     ILogger<DownloadIntakeService>          logger,
+    IDataProtectionProvider                 dataProtectionProvider,
     DownloadDirectorySettingsStore?         directorySettingsStore   = null,
     DownloadFileClassificationPolicy?       fileClassificationPolicy = null,
     DownloadEpisodeResolver?                episodeResolver          = null)
@@ -49,6 +51,8 @@ public sealed class DownloadIntakeService(
 
     /// <summary>上传种子的大小上限：.torrent 通常远小于该值，超限基本说明选错了文件。服务端入口始终校验。</summary>
     public const long MaxTorrentUploadBytes = 10 * 1024 * 1024;
+
+    private readonly IDataProtector _feedUrlProtector = FeedUrlProtection.CreateProtector(dataProtectionProvider);
 
     private readonly DownloadEpisodeResolver episodeResolver =
         episodeResolver ?? new DownloadEpisodeResolver(aniParser, episodeCorrectionPolicy);
@@ -96,8 +100,9 @@ public sealed class DownloadIntakeService(
     ///     上传时沿用 ByrTorrent 的做法先解析种子内部文件路径批量提取标题，标题映射优先检查这些文件名，
     ///     再回退到 info.name；显式 ID 会学习首个可解析的文件标题映射。
     ///     命名优先按模板渲染（标题能被解析出集数时），并落命名要素供完成改名；
-    ///     解析失败时回退包内文件集胜者（缺失时按 hash 派生）；来源站点优先按种子内 tracker 自动识别，
-    ///     siteSource 仅在 tracker 无法判定时作为兜底。
+    ///     解析失败时回退包内文件集胜者（缺失时按 hash 派生）；来源站点按种子内 tracker 的
+    ///     PT 分类表判定（u2/byrbt/tjupt），未命中任何分类统一归 bt，命中多个分类时拒绝登记；
+    ///     siteSource 手填参数仅为兼容既有调用方保留，不参与判定。
     ///     解析出集数的正片逐集过统一裁决（合集同样参与）：既有同源同集任务按规则更优则该集不下载，
     ///     全部内容集落选则拒绝登记；新上传更优则逐集顶替（未完成占用者的承接集取消选择，
     ///     ReplacesTaskId 仅在整任务被承接时作为展示摘要指向旧任务）。
@@ -120,7 +125,7 @@ public sealed class DownloadIntakeService(
         var infoHash            = torrent.InfoHashes.V1!.ToHex().ToLowerInvariant();
         var displayName         = torrent.Name;
         var fileTitleCandidates = ParseTorrentFileTitles(torrent, isMultiFile);
-        var resolvedSource      = ResolveSiteSource(torrent, null, null, siteSource);
+        var resolvedSource      = ResolveUploadSiteSource(torrent);
         // 门禁：必须绑定 Bangumi Subject；标题映射未命中且未填 ID 时拒绝登记。
         var uploadedParsed = displayName is null ? null : aniParser.Parse(displayName);
         var binding =
@@ -233,7 +238,8 @@ public sealed class DownloadIntakeService(
         var feedItems = await feedSourceReader.ReadAsync(feedUri, proxyId, cancellationToken);
         if (feedItems.Count == 0) throw new InvalidOperationException("RSS 中没有条目。");
 
-        // 来源站点首选 .torrent 内 tracker 判定；feed 地址域名仅作种子无法判定时的回退。
+        // 来源站点只由 RSS 地址主机判定（mikanani.me → mikan、anibt.net → anibt），
+        // 不支持的主机不推导来源，种子内 tracker 不得覆盖。
         var feedHost = feedUri.Host;
 
         // 解析一次全批标题：择优分组与命名共用同一解析结果。
@@ -389,7 +395,7 @@ public sealed class DownloadIntakeService(
 
         // 命名优先按模板渲染（条目标题能被解析出集数时），其次包内文件集胜者，再次种子内 info.name，
         // 均失败回退原始标题。
-        var resolvedSource = ResolveSiteSource(torrent, item.TorrentUri.AbsoluteUri, feedHost, null);
+        var resolvedSource = TorrentSiteSource.FromFeedHost(feedHost);
         var displayName    = torrent.Name;
         var fileAnalysis   = AnalyzeTorrentFiles(infoHash, torrent, isMultiFile, config);
         var (namingSnapshot, namingIngredients, namingParsed) =
@@ -640,7 +646,8 @@ public sealed class DownloadIntakeService(
                 // RSS/上传任务（无 FeedItem）即使同 Subject 也参与跨路径裁决。
                 if (exemptSubjectId is not null && occupant.FeedItemId != null &&
                     occupant.SubjectId                                 == exemptSubjectId) continue;
-                if (!string.Equals(occupant.SiteSource, siteSource, StringComparison.Ordinal)) continue;
+                // 历史任务保存过 U2，新分类使用 u2；标签大小写不应拆开同站任务。
+                if (!string.Equals(occupant.SiteSource, siteSource, StringComparison.OrdinalIgnoreCase)) continue;
                 if (occupant.SubjectId is null)
                 {
                     var taskSeriesKey = TorrentNamingIngredients.FromJson(occupant.NamingIngredients) is
@@ -1212,7 +1219,12 @@ public sealed class DownloadIntakeService(
         // 同源同集逐集统一裁决：订阅条目身份（单集/剧场版）与文件级集数（含合集条目）并入同一
         // 口径跨路径对决，现行任保留、更优层才顶替；落选抛出带说明的异常，提交链会把它记入
         // IntentFailedReason 等待人工处理。
-        var resolvedSource    = ResolveSiteSource(torrent, item.TorrentUrl, item.Subscription.FeedUrlProtected, null);
+        // 订阅来源只按解密后的实际 RSS 地址主机判定（mikanani.me → mikan、anibt.net → anibt），
+        // 不支持的主机不推导来源，种子内 tracker 不得覆盖。
+        var resolvedSource =
+            TorrentSiteSource.FromFeedUrl(FeedUrlProtection.TryUnprotectUrl(_feedUrlProtector,
+                                                                            item.Subscription.FeedUrlProtected));
+        var (namingSnapshot, namingIngredients) = AlignNamingSource(item, resolvedSource);
         var config            = await ruleProvider.GetAsync(cancellationToken);
         var fileAnalysis      = AnalyzeTorrentFiles(infoHash, torrent, isMultiFile, config);
         var settings          = await qbittorrentSettings.GetAsync(cancellationToken);
@@ -1231,8 +1243,8 @@ public sealed class DownloadIntakeService(
             MediaDirectory    = directorySettings.MediaDirectory,
             SeedDirectory     = directorySettings.SeedDirectory,
             SiteSource        = resolvedSource,
-            NamingSnapshot    = item.NamingPreview!,
-            NamingIngredients = item.NamingIngredients,
+            NamingSnapshot    = namingSnapshot,
+            NamingIngredients = namingIngredients,
             Episode           = item.Episode,
             Version           = item.Version,
             Status            = DownloadTaskStatus.PendingSubmit,
@@ -1323,15 +1335,39 @@ public sealed class DownloadIntakeService(
     private static Guid StableIdGuid(string stableId) => new(SHA256.HashData(Encoding.UTF8.GetBytes(stableId))[..16]);
 
     /// <summary>
-    ///     来源站点判定：优先读 .torrent 内 tracker（ByrTorrent 同源映射，上传种子也能自动识别），
-    ///     依次回退下载地址域名、订阅 feed 主机名、用户手填标注。
+    ///     上传种子的来源判定：只用 .torrent 内全部 tracker 的 PT 分类表（u2/byrbt/tjupt，主机名+路径
+    ///     精确匹配、忽略 query），扫描全部 tracker、同分类多地址只算一个；同时命中多个分类时抛出
+    ///     分类冲突拒绝登记，不按 tracker 顺序取先命中者；未命中任何分类（含仅公共 tracker）统一归 bt。
     /// </summary>
-    private static string? ResolveSiteSource(
-        Torrent torrent, string? torrentUrl, string? fallbackHost, string? manualSource) =>
-        TorrentSiteSource.FromTrackers(torrent.AnnounceUrls.SelectMany(tier => tier)) ??
-        TorrentSiteSource.FromUrl(torrentUrl) ??
-        TorrentSiteSource.FromHost(fallbackHost) ??
-        TorrentSiteSource.Sanitize(manualSource);
+    private static string ResolveUploadSiteSource(Torrent torrent)
+    {
+        var labels = TorrentSiteSource.ClassifyTrackers(torrent.AnnounceUrls.SelectMany(tier => tier));
+        if (labels.Count > 1)
+            throw new InvalidOperationException($"种子内 tracker 同时命中多个站点分类（{string.Join("/", labels)}），无法确定来源，请人工确认。");
+
+        return labels.Count == 1 ? labels[0] : TorrentSiteSource.FallbackLabel;
+    }
+
+    /// <summary>
+    ///     订阅任务的命名来源对齐：条目命名要素可能带着历史错误来源（曾把加密 RSS 地址当主机名写入）。
+    ///     创建任务时只把来源替换为本次判定的 RSS 主机来源并重渲染快照，其余命名要素（模板、集数
+    ///     修正、字幕组、Bangumi 字段等）保持条目评估时的值不动；要素缺失或无法渲染时要求重新
+    ///     评估，不能把无法确认来源的旧快照复制到新任务。有效要素的来源本就一致时保留原快照。
+    /// </summary>
+    private (string Snapshot, string? IngredientsJson) AlignNamingSource(FeedItem item, string? resolvedSource)
+    {
+        var snapshot    = item.NamingPreview!;
+        var ingredients = TorrentNamingIngredients.FromJson(item.NamingIngredients);
+        if (ingredients is null || string.IsNullOrWhiteSpace(ingredients.Title) ||
+            string.IsNullOrWhiteSpace(ingredients.EpisodeText))
+            throw new InvalidOperationException("该条目缺少有效的命名要素，请先重新评估后再创建下载任务。");
+
+        if (string.Equals(ingredients.Source, resolvedSource, StringComparison.Ordinal))
+            return (snapshot, item.NamingIngredients);
+
+        ingredients = ingredients with { Source = resolvedSource };
+        return (namingPolicy.Create(ingredients), ingredients.ToJson());
+    }
 
     private Task<DownloadDirectorySettings> GetDirectoriesAsync(CancellationToken cancellationToken) =>
         directorySettingsStore is null

@@ -209,10 +209,10 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
                                                     .Select(file =>
                                                      {
                                                          var path = TorrentDownloadPolicy.GetRelativePath(
-                                                          torrent, file, isMultiFile);
+                                                              torrent, file, isMultiFile);
                                                          return new TorrentFileSnapshot(
-                                                          indexByPath.GetValueOrDefault(path, -1), path,
-                                                          file.Length);
+                                                              indexByPath.GetValueOrDefault(path, -1), path,
+                                                              file.Length);
                                                      })
                                                     .ToList();
             }
@@ -255,8 +255,8 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
                                                                     .Where(snapshot => tag is null ||
                                                                                SnapshotFor(snapshot.Hash)
                                                                                   .Tags.Contains(tag,
-                                                                                       StringComparer
-                                                                                          .OrdinalIgnoreCase))
+                                                                                            StringComparer
+                                                                                               .OrdinalIgnoreCase))
                                                                     .Select(snapshot => SnapshotFor(snapshot.Hash))
                                                                     .ToList());
     }
@@ -277,15 +277,15 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         Task.FromResult<IReadOnlyList<string>>(store.Files.TryGetValue(infoHash, out var names) ? names : []);
 
 
-    public Task<IReadOnlyList<TorrentFileSnapshot>> ListFilesAsync(string            infoHash,
-                                                                   CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<TorrentFileSnapshot>> ListFilesAsync(
+        string infoHash, CancellationToken cancellationToken = default)
     {
         if (store.FileIdentities.TryGetValue(infoHash, out var files))
             return Task.FromResult<IReadOnlyList<TorrentFileSnapshot>>(files.ToList());
         return Task.FromResult<IReadOnlyList<TorrentFileSnapshot>>(store.Files.TryGetValue(infoHash, out var names)
                                                                        ? names.Select((name, index) =>
-                                                                           new TorrentFileSnapshot(index, name,
-                                                                               1024)).ToList()
+                                                                                    new TorrentFileSnapshot(index, name,
+                                                                                             1024)).ToList()
                                                                        : []);
     }
 
@@ -369,8 +369,7 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
             {
                 if (otherHash.Equals(infoHash, StringComparison.OrdinalIgnoreCase)) continue;
                 if (otherFiles.Any(file => string.Equals(file.Path, newPath, StringComparison.Ordinal)))
-                    throw new InvalidOperationException(
-                                                        $"fake：拒绝改名 onto 已存在路径“{newPath}”（其他种子 {otherHash[..8]} 占用）。");
+                    throw new InvalidOperationException($"fake：拒绝改名 onto 已存在路径“{newPath}”（其他种子 {otherHash[..8]} 占用）。");
             }
 
         store.RenameFileCalls.Add((infoHash, oldPath, newPath));
@@ -470,8 +469,8 @@ public sealed class FakeTorrentFileSource(Func<Uri, byte[]> resolver) : ITorrent
     /// <summary>按绝对 URI 注入的下载异常，模拟个别源站失败。</summary>
     public Dictionary<string, Exception> ThrowOnUri { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-    public Task<byte[]> DownloadAsync(Uri               torrentUri, Guid? proxyId = default,
-                                      CancellationToken cancellationToken = default)
+    public Task<byte[]> DownloadAsync(
+        Uri torrentUri, Guid? proxyId = default, CancellationToken cancellationToken = default)
     {
         CallCount++;
         LastProxyId = proxyId;
@@ -510,6 +509,19 @@ public static class TestTorrentBytes
         var       announceText = announce ?? "http://tracker.example/announce";
         var       pieces       = new string('0', (length + pieceLength - 1) / pieceLength * 20);
         return Encoding.UTF8.GetBytes($"d8:announce{Encode(announceText)}"             +
+                                      $"4:infod6:lengthi{length}e4:name{Encode(name)}" +
+                                      $"12:piece lengthi{pieceLength}e6:pieces{Encode(pieces)}ee");
+    }
+
+    /// <summary>多 tracker 种子：首个地址写入 announce，全部地址按 announce-list 逐层写入，供分类/冲突用例。</summary>
+    public static byte[] CreateMultiTracker(string name, params string[] announces)
+    {
+        const int length      = 1024;
+        const int pieceLength = 16384;
+        var       pieces      = new string('0', (length + pieceLength - 1) / pieceLength * 20);
+        var       tiers       = string.Concat(announces.Select(url => $"l{Encode(url)}e"));
+        return Encoding.UTF8.GetBytes($"d8:announce{Encode(announces[0])}"             +
+                                      $"13:announce-listl{tiers}e"                     +
                                       $"4:infod6:lengthi{length}e4:name{Encode(name)}" +
                                       $"12:piece lengthi{pieceLength}e6:pieces{Encode(pieces)}ee");
     }

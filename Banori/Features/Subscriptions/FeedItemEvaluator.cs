@@ -8,6 +8,7 @@ using Banori.Data;
 using Banori.Features.Anime;
 using Banori.Features.Downloads;
 using Banori.Integrations;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 
 namespace Banori.Features.Subscriptions;
@@ -28,8 +29,11 @@ public sealed class FeedItemEvaluator(
     ReleaseNamePreviewPolicy                namingPolicy,
     NamingTemplateStore                     namingTemplateStore,
     CandidateSelectionService               selectionService,
-    TimeProvider                            timeProvider)
+    TimeProvider                            timeProvider,
+    IDataProtectionProvider                 dataProtectionProvider)
 {
+    private readonly IDataProtector _urlProtector = FeedUrlProtection.CreateProtector(dataProtectionProvider);
+
     /// <summary>
     ///     评估一个已入库条目。Subject 按指定值优先、其次标题映射缓存、再次来源 feed 直接提供的
     ///     Subject（sourceSubjectId，如 AniBT 的 bgmId）、最后 Mikan 页面发现的顺序确定；
@@ -61,8 +65,7 @@ public sealed class FeedItemEvaluator(
         if (subjectId is null && normalizedTitle.Length > 0)
             subjectId = await FindSubjectIdByTitleAsync(normalizedTitle, cancellationToken);
 
-        if (subjectId is null)
-            subjectId = sourceSubjectId;
+        subjectId ??= sourceSubjectId;
 
         if (subjectId is null && Uri.TryCreate(item.Link, UriKind.Absolute, out var link))
             subjectId = await subjectLinkResolver.ResolveSubjectIdAsync(link, item.SubscriptionProxyId,
@@ -75,8 +78,11 @@ public sealed class FeedItemEvaluator(
             return;
         }
 
+        // 订阅来源按解密后的实际 RSS 地址主机判定（mikanani.me/anibt.net），密文绝不能进入命名快照。
+        var feedHost =
+            TorrentSiteSource.FromFeedUrl(FeedUrlProtection.TryUnprotectUrl(_urlProtector, item.FeedUrlProtected));
         await EvaluateWithSubjectAsync(itemId, parsed, subjectId.Value, normalizedTitle,
-                                       item.PublishedAtUtc, item.StableId, item.FeedHost, cancellationToken);
+                                       item.PublishedAtUtc, item.StableId, feedHost, cancellationToken);
     }
 
     /// <summary>
@@ -177,8 +183,8 @@ public sealed class FeedItemEvaluator(
         // 命名后缀优先用字幕组名；同一规则下优胜确定时的命名快照与该预览一致。
         var preference       = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
         var correctionReason = correction.Reason == "未应用集数修正规则。" ? string.Empty : $" {correction.Reason}";
-        // 命名模板的 {source} 令牌取订阅 feed 的来源站点（mikan/anibt 等）。
-        var siteSource     = TorrentSiteSource.FromHost(feedHost);
+        // 命名模板的 {source} 令牌取订阅 RSS 地址判定的来源站点（mikan/anibt）。
+        var siteSource     = feedHost;
         var namingTemplate = await namingTemplateStore.GetAsync(cancellationToken);
         var fileTemplate   = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
         // 预览与命名要素同源生成，且分别快照 AniParser 与 Bangumi 字段。
@@ -273,11 +279,11 @@ public sealed class FeedItemEvaluator(
             EvaluatedAtUtc    = timeProvider.GetUtcNow()
         };
 
-    private Task SaveParsedNeedsReviewAsync(Guid              itemId,            ParseResult parsed, string reason,
-                                            CancellationToken cancellationToken, int?        subjectId = null) =>
+    private Task SaveParsedNeedsReviewAsync(
+        Guid itemId, ParseResult parsed, string reason, CancellationToken cancellationToken, int? subjectId = null) =>
         SaveAnalysisAsync(itemId,
-                          CreateAnalysis(parsed, FeedItemStatus.NeedsReview, subjectId, null, null, null, reason,
-                                         null, parsed.Episode), cancellationToken);
+                          CreateAnalysis(parsed, FeedItemStatus.NeedsReview, subjectId, null, null, null, reason, null,
+                                         parsed.Episode), cancellationToken);
 
     private async Task<int?> FindSubjectIdByTitleAsync(string normalizedTitle, CancellationToken cancellationToken)
     {
@@ -288,8 +294,8 @@ public sealed class FeedItemEvaluator(
                        .SingleOrDefaultAsync(cancellationToken);
     }
 
-    private async Task SaveAnalysisAsync(Guid              itemId, FeedItemAnalysis analysis,
-                                         CancellationToken cancellationToken)
+    private async Task SaveAnalysisAsync(
+        Guid itemId, FeedItemAnalysis analysis, CancellationToken cancellationToken)
     {
         await using var db   = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var             item = await db.FeedItems.SingleAsync(value => value.Id == itemId, cancellationToken);
@@ -335,5 +341,5 @@ public sealed class FeedItemEvaluator(
         DateTimeOffset? PublishedAtUtc,
         string          StableId,
         Guid?           SubscriptionProxyId,
-        string?         FeedHost);
+        string?         FeedUrlProtected);
 }

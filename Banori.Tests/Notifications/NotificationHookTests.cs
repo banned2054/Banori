@@ -2,6 +2,7 @@ using Banned.AniParser;
 using Banori.Core.Rules;
 using Banori.Core.Rules.Selection;
 using Banori.Core.Subjects;
+using Banori.Core.Torrents;
 using Banori.Data;
 using Banori.Features.Anime;
 using Banori.Features.Downloads;
@@ -148,9 +149,9 @@ public sealed class NotificationHookTests
                                                               provider
                                                                  .GetRequiredService<FakeQbittorrentSessionFactory>());
         services.AddSingleton<ITorrentFileSource>(_ => new FakeTorrentFileSource(uri =>
-                                                      TestTorrentBytes
-                                                         .Create(Path.GetFileNameWithoutExtension(uri.Segments
-                                                                     [^1]))));
+                                                               TestTorrentBytes
+                                                                  .Create(Path.GetFileNameWithoutExtension(uri.Segments
+                                                                                       [^1]))));
         services.AddScoped<ManageQbittorrentSettings>();
         services.AddDataProtection();
         services.AddNotificationTestFakes();
@@ -263,7 +264,10 @@ public sealed class NotificationHookTests
                 DecisionStatus = ReleaseDecisionStatus.Accepted, ParsedTitle = "Test Anime - 01",
                 MediaType = "SingleEpisode", Episode = 1, Version = 1, Group = "S1",
                 Language = "Sc", Resolution = "R1080P", SubjectId = 42, Reason = "测试决策。",
-                NamingPreview = NamingV1, EvaluatedAtUtc = Timestamp
+                NamingPreview = NamingV1,
+                NamingIngredients = new TorrentNamingIngredients("{title} E{episode} [{group}]", "测试作品",
+                                                                 "01", 1, "Sc", null).ToJson(),
+                EvaluatedAtUtc = Timestamp
             });
             db.CandidateSelections.Add(new CandidateSelection
             {

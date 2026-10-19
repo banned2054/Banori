@@ -14,6 +14,7 @@ using Banori.Features.Subscriptions;
 using Banori.Integrations;
 using Banori.Integrations.Qbittorrent;
 using Banori.Tests.Notifications;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -73,6 +74,48 @@ public sealed partial class DownloadServiceTests
     }
 
     [Fact]
+    public async Task CreateDownload_EncryptedFeedUrlDrivesSourceTagAndNamingConsistently()
+    {
+        using var harness = await CreateHarnessAsync();
+        var       itemId  = await SeedAcceptedItemAsync(harness, "mikan-src", "Source Anime - 01");
+        // 种子内混入 PT tracker：订阅来源仍只由解密后的 RSS 地址主机决定。
+        harness.TorrentBytes["mikan-src"] =
+            TestTorrentBytes.Create("Source Anime - 01", "https://tracker.byr.pt/announce.php?passkey=pt");
+
+        await using (var db = await harness.CreateDbContextAsync())
+        {
+            // 订阅 RSS 地址按真实用途字符串加密落库；条目携带历史错误来源（密文残留时代的命名）。
+            var protector = harness.Provider.GetRequiredService<IDataProtectionProvider>()
+                                   .CreateProtector("Banori.MediaSubscriptions.FeedUrl.v1");
+            var subscription = await db.MediaSubscriptions.SingleAsync(value => value.Name == "订阅-mikan-src");
+            subscription.FeedUrlProtected = protector.Protect("https://mikanani.me/RSS/MyBangumi?token=secret");
+            var item = await db.FeedItems.SingleAsync(value => value.Id == itemId);
+            item.NamingPreview = "[Anime]测试作品 E01 密文残留";
+            item.NamingIngredients = new TorrentNamingIngredients("[Anime]{title} E{episode} {source}", "测试作品",
+                                                                  "01", 1, "Sc", "密文残留").ToJson();
+            await db.SaveChangesAsync();
+        }
+
+        var taskId = await harness.CreateDownloadAsync(itemId);
+
+        // 任务字段、命名快照/要素与提交 tag 全部使用解密后判定的 mikan 来源（种子内 tracker
+        // 不参与订阅路径来源）；其余命名要素（模板、标题、集数、字幕组）保持条目评估值不动。
+        var task = await harness.GetTaskAsync(taskId);
+        Assert.Equal("mikan", task.SiteSource);
+        Assert.Equal("[Anime]测试作品 E01 mikan", task.NamingSnapshot);
+        var ingredients = TorrentNamingIngredients.FromJson(task.NamingIngredients);
+        Assert.NotNull(ingredients);
+        Assert.Equal("mikan", ingredients.Source);
+        Assert.Equal("测试作品", ingredients.Title);
+        Assert.Equal("01", ingredients.EpisodeText);
+        Assert.Equal("Sc", ingredients.Group);
+
+        await harness.ReconcileAsync();
+        var add = Assert.Single(harness.Store.AddCalls);
+        Assert.Equal(["mikan"], add.Tags);
+    }
+
+    [Fact]
     public async Task CreateUpload_PersistsTaskWithoutFeedItemAndSubmitsThroughExistingPipeline()
     {
         using var harness = await CreateHarnessAsync();
@@ -98,44 +141,83 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(DownloadTaskStatus.Downloading, submitted.Status);
         var add = Assert.Single(harness.Store.AddCalls);
         Assert.Equal(task.SavePath, add.SavePath);
-        Assert.Empty(add.Tags);
+        // 默认替身 tracker 不在 PT 分类表内：未知 tracker 的上传统一归 bt 并作为 tag 提交。
+        Assert.Equal("bt", submitted.SiteSource);
+        Assert.Equal(["bt"], add.Tags);
         Assert.Equal("Uploaded Anime - 01", add.Rename);
     }
 
     [Fact]
-    public async Task CreateUpload_WithSiteSource_PersistsSourceAndSubmitsAsTag()
+    public async Task CreateUpload_UnknownTrackersFallBackToBtAndManualSourceIsIgnored()
     {
         using var harness = await CreateHarnessAsync();
         var       bytes   = TestTorrentBytes.Create("Uploaded Anime - 01");
 
+        // 手填来源参数仅为兼容保留：未知 tracker 的上传归 bt，手填值不再参与判定。
         var taskId = await harness.CreateUploadAsync(bytes, "byrbt");
 
         var task = await harness.GetTaskAsync(taskId);
-        Assert.Equal("byrbt", task.SiteSource);
+        Assert.Equal("bt", task.SiteSource);
 
         await harness.ReconcileAsync();
         var add = Assert.Single(harness.Store.AddCalls);
-        Assert.Equal(["byrbt"], add.Tags);
+        Assert.Equal(["bt"], add.Tags);
     }
 
     [Fact]
-    public async Task CreateUpload_DetectsSiteSourceFromTorrentTracker()
+    public async Task CreateUpload_DetectsPtCategoriesFromTrackers()
     {
         using var harness = await CreateHarnessAsync();
 
-        // 不手填来源：tracker.byr.pt 命中 ByrTorrent 同源映射，自动识别为 byrbt。
-        var byrbtBytes = TestTorrentBytes.Create("Byrbt Anime - 01", "https://tracker.byr.pt:6969/announce");
-        var byrbtTask  = await harness.CreateUploadAsync(byrbtBytes);
+        // 三个 PT 分类按主机名+路径精确匹配；query（passkey 等）不影响结果。
+        var byrbtBytes = TestTorrentBytes.Create("Byrbt Anime - 01",
+                                                 "https://tracker.byr.pt:6969/announce.php?passkey=abc");
+        var byrbtTask = await harness.CreateUploadAsync(byrbtBytes, "whatever");
         Assert.Equal("byrbt", (await harness.GetTaskAsync(byrbtTask)).SiteSource);
 
-        // tracker 无法识别时回退手填值；tracker 判定结果优先于手填。
-        var unknownBytes = TestTorrentBytes.Create("Unknown Anime - 01");
-        var manualTask   = await harness.CreateUploadAsync(unknownBytes, "tjupt");
-        Assert.Equal("tjupt", (await harness.GetTaskAsync(manualTask)).SiteSource);
+        var u2Bytes = TestTorrentBytes.Create("U2 Anime - 01", "https://daydream.dmhy.best/announce?secure=1");
+        var u2Task  = await harness.CreateUploadAsync(u2Bytes);
+        Assert.Equal("u2", (await harness.GetTaskAsync(u2Task)).SiteSource);
 
-        var knownBytes   = TestTorrentBytes.Create("Known Anime - 01", "udp://daydream.dmhy.best:6969/announce");
-        var overrideTask = await harness.CreateUploadAsync(knownBytes, "tjupt");
-        Assert.Equal("U2", (await harness.GetTaskAsync(overrideTask)).SiteSource);
+        // 北洋园两个 tracker 同时存在仍为 tjupt。
+        var tjuptBytes = TestTorrentBytes.CreateMultiTracker("Tjupt Anime - 01",
+                                                             "https://tracker-public.tjupt.org/announce.php?passkey=a",
+                                                             "https://tracker-campus.tjupt.org/announce.php?passkey=b");
+        var tjuptTask = await harness.CreateUploadAsync(tjuptBytes);
+        Assert.Equal("tjupt", (await harness.GetTaskAsync(tjuptTask)).SiteSource);
+    }
+
+    [Fact]
+    public async Task CreateUpload_SimilarHostsDoNotMatchPtCategories()
+    {
+        using var harness = await CreateHarnessAsync();
+
+        // 伪造的相似主机与错误路径不得命中分类，统一归 bt。
+        var fakeBytes = TestTorrentBytes.CreateMultiTracker("Fake Host Anime - 01",
+                                                            "https://evil-tracker.byr.pt/announce.php",
+                                                            "https://tracker.byr.pt.evil.com/announce.php",
+                                                            "https://tracker-public.tjupt.org/announce");
+        var fakeTask = await harness.CreateUploadAsync(fakeBytes);
+        Assert.Equal("bt", (await harness.GetTaskAsync(fakeTask)).SiteSource);
+    }
+
+    [Fact]
+    public async Task CreateUpload_ConflictingTrackerCategoriesRejectsRegistration()
+    {
+        using var harness = await CreateHarnessAsync();
+
+        var conflictBytes = TestTorrentBytes.CreateMultiTracker("Conflict Anime - 01",
+                                                                "http://tracker.example/announce",
+                                                                "https://tracker.byr.pt/announce.php?passkey=x",
+                                                                "https://tracker-campus.tjupt.org/announce.php?passkey=y");
+
+        var exception =
+            await Assert.ThrowsAsync<InvalidOperationException>(() => harness.CreateUploadAsync(conflictBytes));
+        Assert.Contains("多个站点分类", exception.Message);
+
+        // 分类冲突不进入提交：数据库不落任何任务。
+        await using var db = await harness.CreateDbContextAsync();
+        Assert.Empty(await db.DownloadTasks.AsNoTracking().ToListAsync());
     }
 
     [Fact]
@@ -179,10 +261,10 @@ public sealed partial class DownloadServiceTests
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
                                                                 unconfigured
                                                                    .CreateUploadAsync(TestTorrentBytes
-                                                                       .Create("Uploaded Anime - 01")));
+                                                                                .Create("Uploaded Anime - 01")));
 
         using var configured = await CreateHarnessAsync();
-        await Assert.ThrowsAsync<InvalidOperationException>(() => configured.CreateUploadAsync([0x62, 0x61, 0x64]));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => configured.CreateUploadAsync("bad"u8.ToArray()));
     }
 
     [Fact]
@@ -250,7 +332,7 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(1, result.CreatedCount);
         await using var db   = await harness.CreateDbContextAsync();
         var             task = await db.DownloadTasks.AsNoTracking().SingleAsync();
-        // {source} 取种子下载地址域名判定的来源站点，与 SiteSource tag 同源。
+        // {source} 取 RSS 地址主机判定的来源站点（mikanani.me → mikan），与 SiteSource tag 同源。
         Assert.Equal("[Anime]葬送的芙莉莲 E12 mikan", task.NamingSnapshot);
         Assert.Equal("mikan", task.SiteSource);
         Assert.Equal(9001, task.SubjectId);
@@ -260,6 +342,45 @@ public sealed partial class DownloadServiceTests
         Assert.Equal("12", ingredients.EpisodeText);
         Assert.Equal("喵萌奶茶屋", ingredients.Group);
         Assert.Equal("mikan", ingredients.Source);
+    }
+
+    [Fact]
+    public async Task CreateFromRssFeed_FeedHostSourceIsNotOverriddenByTorrentTrackers()
+    {
+        using var harness = await CreateHarnessAsync();
+        // anibt RSS 的种子内混入 PT tracker：一次性 RSS 的来源只由 RSS 地址主机决定。
+        harness.TorrentBytes["anibt-01"] = TestTorrentBytes.Create("Anibt Anime - 01",
+                                                                   "https://tracker.byr.pt/announce.php?passkey=pt");
+        harness.FeedReader.Items.Add(RssItem("anibt-01", "Anibt Anime - 01 [1080p]",
+                                             "https://anibt.net/torrents/anibt-01.torrent"));
+
+        var result = await harness.CreateFromRssFeedAsync("https://anibt.net/rss", subjectId : 9003);
+
+        Assert.Equal(1, result.CreatedCount);
+        var task = await harness.GetTaskAsync(result.Items.Single(item => item.TaskId is not null).TaskId!.Value);
+        Assert.Equal("anibt", task.SiteSource);
+        var ingredients = TorrentNamingIngredients.FromJson(task.NamingIngredients);
+        Assert.NotNull(ingredients);
+        Assert.Equal("anibt", ingredients.Source);
+    }
+
+    [Fact]
+    public async Task CreateFromRssFeed_UnknownFeedHostLeavesSourceUnset()
+    {
+        using var harness = await CreateHarnessAsync();
+        // 不支持的 RSS 主机不取首段域名标签充当来源：任务无来源、提交不带 tag。
+        harness.TorrentNames["self-01"] = "Selfhost Anime - 01";
+        harness.FeedReader.Items.Add(RssItem("self-01", "Selfhost Anime - 01 [1080p]",
+                                             "https://self.example.org/torrents/self-01.torrent"));
+
+        var result = await harness.CreateFromRssFeedAsync("https://self.example.org/rss", subjectId : 42);
+
+        Assert.Equal(1, result.CreatedCount);
+        var task = await harness.GetTaskAsync(result.Items.Single(item => item.TaskId is not null).TaskId!.Value);
+        Assert.Null(task.SiteSource);
+        await harness.ReconcileAsync();
+        var add = Assert.Single(harness.Store.AddCalls);
+        Assert.Empty(add.Tags);
     }
 
     [Fact]
@@ -322,11 +443,10 @@ public sealed partial class DownloadServiceTests
         var subject = await db.MediaSubjects.AsNoTracking().SingleAsync(subject => subject.Id == 7);
         Assert.Equal("Subject 7", subject.Name);
         Assert.Equal("测试作品7", subject.NameCn);
-        Assert.Equal(7,
-                     await db.SubjectTitleMappings.AsNoTracking()
-                             .Where(mapping => mapping.NormalizedTitle ==
-                                               TitleNormalizer.Normalize(NekoParsedTitle()))
-                             .Select(mapping => mapping.SubjectId).SingleAsync());
+        Assert.Equal(7, await db.SubjectTitleMappings.AsNoTracking()
+                                .Where(mapping => mapping.NormalizedTitle ==
+                                                  TitleNormalizer.Normalize(NekoParsedTitle()))
+                                .Select(mapping => mapping.SubjectId).SingleAsync());
 
         // 同系列第二条不再需要表单 ID：直接命中回写的映射。
         harness.FeedReader.Items.Clear();
@@ -356,11 +476,10 @@ public sealed partial class DownloadServiceTests
         await using var db   = await harness.CreateDbContextAsync();
         var             task = await db.DownloadTasks.AsNoTracking().SingleAsync();
         Assert.Equal(9, task.SubjectId);
-        Assert.True(await db.SubjectTitleMappings.AsNoTracking().AnyAsync(mapping =>
-                                                                              mapping.NormalizedTitle ==
-                                                                              TitleNormalizer
-                                                                                 .Normalize(NekoParsedTitle()) &&
-                                                                              mapping.SubjectId == 9));
+        Assert.True(await db.SubjectTitleMappings.AsNoTracking()
+                            .AnyAsync(mapping =>
+                                          mapping.NormalizedTitle == TitleNormalizer.Normalize(NekoParsedTitle()) &&
+                                          mapping.SubjectId       == 9));
     }
 
     [Fact]
@@ -515,7 +634,7 @@ public sealed partial class DownloadServiceTests
         // 创建后全局目录与下载根设置变更不能覆写已登记任务，也不能影响本次提交。
         await directories.SaveAsync("New/Anime", "New/Seed");
         await harness.Provider.GetRequiredService<ManageQbittorrentSettings>().SaveAsync(
-         new QbittorrentSettings("http://qb.test:8080", "admin", "/future-downloads", true), "secret");
+             new QbittorrentSettings("http://qb.test:8080", "admin", "/future-downloads", true), "secret");
         var task = await harness.GetTaskAsync(taskId);
         Assert.Equal("/downloads", task.DownloadRootPath);
         Assert.Equal("Library/Anime", task.MediaDirectory);
@@ -958,9 +1077,11 @@ public sealed partial class DownloadServiceTests
         await harness.SaveNamingTemplateAsync("{title} E{episode}");
         await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
 
-        // 旧版本（简日，1024 字节）先完成并归档，占住目标路径。
-        var oldTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语")), "mikan");
-        var oldTask   = await harness.GetTaskAsync(oldTaskId);
+        // 旧版本（简日，1024 字节）先完成并归档，占住目标路径；其 tracker 命中 byrbt。
+        var oldTaskId =
+            await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语"),
+                                                                    "https://tracker.byr.pt/announce.php?passkey=old"));
+        var oldTask = await harness.GetTaskAsync(oldTaskId);
         await harness.ReconcileAsync();
         CompleteTorrent(harness, oldTask.InfoHash);
         await harness.ReconcileAsync();
@@ -1000,7 +1121,7 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
         Assert.Contains(harness.Store.RenameFileCalls,
                         call => call.Hash == oldTask.InfoHash && call.NewPath.Contains(".replaced/",
-                            StringComparison.Ordinal));
+                                 StringComparison.Ordinal));
     }
 
     /// <summary>整包进度 100% 也不能跳过所选文件核验：远端取消了计划要求下载的文件时不得判定完成。</summary>
@@ -1218,6 +1339,20 @@ public sealed partial class DownloadServiceTests
     }
 
     /// <summary>
+    ///     从 mikan feed 登记一条一次性 RSS 任务并清空 feed，作为与订阅条目/后续 RSS 条目同源（mikan）
+    ///     的现任。旧用例以手填 mikan 来源的上传现任构造同源竞争；上传来源如今只由 tracker 分类决定，
+    ///     不再可能取 mikan，跨路径同源场景改由 RSS 现任承担。
+    /// </summary>
+    private static async Task<Guid> CreateMikanRssIncumbentAsync(TestHarness harness, string stableId, string title)
+    {
+        AddNekoFeedItem(harness, stableId, title);
+        var result = await harness.CreateFromRssFeedAsync("https://mikanani.me/RSS/preview");
+        var taskId = result.Items.Single(item => item.Outcome == RssDownloadItemOutcome.Created).TaskId!.Value;
+        harness.FeedReader.Items.Clear();
+        return taskId;
+    }
+
+    /// <summary>
     ///     简繁两种系列名拼写（与妳/与你）解析标题不同、批内分组不合并的真实场景：
     ///     同 Subject 同集仍须由登记裁决互认，更优的简日后到登记即终止繁日（不等下载完成），
     ///     繁日保留终止记录不再提交，简日正常提交下载。
@@ -1361,28 +1496,27 @@ public sealed partial class DownloadServiceTests
     }
 
     [Fact]
-    public async Task CreateFromRssFeed_BetterVariantAfterUpload_ReplacesUploadedTask()
+    public async Task CreateFromRssFeed_BetterVariantAfterEarlierRssRegistration_ReplacesIncumbentTask()
     {
         using var harness = await CreateHarnessAsync();
         await harness.SaveSelectionRulesAsync(NekoRules());
         await harness.SeedSubjectMappingAsync(42, "Test Subject", "测试作品", NekoParsedTitle());
-        var uploadTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("繁日双语")),
-                                                           "mikan");
+        var incumbentId = await CreateMikanRssIncumbentAsync(harness, "neko-jptc", NekoTitle("繁日双语"));
 
         AddNekoFeedItem(harness, "neko-jpsc", NekoTitle("简日双语"));
         var result = await harness.CreateFromRssFeedAsync("https://mikanani.me/RSS/preview");
 
-        // 同源同集统一裁决：规则更优的简日登记即终止已上传的繁日（PendingSubmit 直接置被替换，不再提交）。
+        // 同源同集统一裁决：规则更优的简日登记即终止先登记的繁日（PendingSubmit 直接置被替换，不再提交）。
         Assert.Equal(1, result.CreatedCount);
         Assert.Equal(0, result.SupersededCount);
         await using var db    = await harness.CreateDbContextAsync();
         var             tasks = await db.DownloadTasks.AsNoTracking().ToListAsync();
         Assert.Equal(2, tasks.Count);
-        var replacement = tasks.Single(task => task.Id != uploadTaskId);
-        Assert.Equal(uploadTaskId, replacement.ReplacesTaskId);
-        var uploaded = tasks.Single(task => task.Id == uploadTaskId);
-        Assert.Equal(DownloadTaskStatus.Replaced, uploaded.Status);
-        Assert.Equal(replacement.Id, uploaded.ReplacedByTaskId);
+        var replacement = tasks.Single(task => task.Id != incumbentId);
+        Assert.Equal(incumbentId, replacement.ReplacesTaskId);
+        var incumbent = tasks.Single(task => task.Id == incumbentId);
+        Assert.Equal(DownloadTaskStatus.Replaced, incumbent.Status);
+        Assert.Equal(replacement.Id, incumbent.ReplacedByTaskId);
     }
 
     /// <summary>现任已在下载器中下载时被高优先任务顶替：登记只翻转状态不触远端，清理由对账承接。</summary>
@@ -1392,11 +1526,11 @@ public sealed partial class DownloadServiceTests
         using var harness = await CreateHarnessAsync();
         await harness.SaveSelectionRulesAsync(NekoRules());
         await harness.SeedSubjectMappingAsync(42, "Test Subject", "测试作品", NekoParsedTitle());
-        var tcTitle      = NekoTitle("繁日双语");
-        var tcHash       = TestTorrentBytes.InfoHashOf(tcTitle);
-        var uploadTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(tcTitle), "mikan");
+        var tcTitle     = NekoTitle("繁日双语");
+        var tcHash      = TestTorrentBytes.InfoHashOf(tcTitle);
+        var incumbentId = await CreateMikanRssIncumbentAsync(harness, "neko-jptc", tcTitle);
         await harness.ReconcileAsync();
-        Assert.Equal(DownloadTaskStatus.Downloading, (await harness.GetTaskAsync(uploadTaskId)).Status);
+        Assert.Equal(DownloadTaskStatus.Downloading, (await harness.GetTaskAsync(incumbentId)).Status);
 
         AddNekoFeedItem(harness, "neko-jpsc", NekoTitle("简日双语"));
         var result = await harness.CreateFromRssFeedAsync("https://mikanani.me/RSS/preview");
@@ -1405,7 +1539,7 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(1, result.CreatedCount);
         Assert.Empty(harness.Store.DeleteCalls);
         Assert.True(harness.Store.Torrents.ContainsKey(tcHash));
-        var incumbent = await harness.GetTaskAsync(uploadTaskId);
+        var incumbent = await harness.GetTaskAsync(incumbentId);
         Assert.Equal(DownloadTaskStatus.Replaced, incumbent.Status);
 
         // 下一轮对账移除被顶替种子；逐集承接退出保留内容（承接方完成前旧数据仍是恢复线索）。
@@ -1415,17 +1549,17 @@ public sealed partial class DownloadServiceTests
     }
 
     [Fact]
-    public async Task CreateFromRssFeed_WorseVariantAfterUpload_SupersededByArbitration()
+    public async Task CreateFromRssFeed_WorseVariantAfterBetterIncumbent_SupersededByArbitration()
     {
         using var harness = await CreateHarnessAsync();
         await harness.SaveSelectionRulesAsync(NekoRules());
         await harness.SeedSubjectMappingAsync(42, "Test Subject", "测试作品", NekoParsedTitle());
-        var uploadTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语")), "mikan");
+        var incumbentId = await CreateMikanRssIncumbentAsync(harness, "neko-jpsc", NekoTitle("简日双语"));
 
         AddNekoFeedItem(harness, "neko-jptc", NekoTitle("繁日双语"));
         var result = await harness.CreateFromRssFeedAsync("https://mikanani.me/RSS/preview");
 
-        // 已上传的简日按规则更优：新来的繁日不进入下载，结果明细说明占用者；
+        // 已登记的简日按规则更优：新来的繁日不进入下载，结果明细说明占用者；
         // 但仍落一条终止记录指向现任，供同 hash 重复添加时直接终止。
         Assert.Equal(0, result.CreatedCount);
         Assert.Equal(1, result.SupersededCount);
@@ -1436,7 +1570,7 @@ public sealed partial class DownloadServiceTests
         var record = await db.DownloadTasks.AsNoTracking()
                              .SingleAsync(task => task.InfoHash == TestTorrentBytes.InfoHashOf(NekoTitle("繁日双语")));
         Assert.Equal(DownloadTaskStatus.Replaced, record.Status);
-        Assert.Equal(uploadTaskId, record.ReplacedByTaskId);
+        Assert.Equal(incumbentId, record.ReplacedByTaskId);
         Assert.Equal(12m, record.Episode);
 
         // 同 hash 重复添加命中终止记录：直接判定重复，不再登记。
@@ -1448,13 +1582,12 @@ public sealed partial class DownloadServiceTests
     }
 
     [Fact]
-    public async Task Create_CrossPathBeatsUploadedVariant_RegistersWithReplacement()
+    public async Task Create_CrossPathBeatsRssVariant_RegistersWithReplacement()
     {
         using var harness = await CreateHarnessAsync();
         await harness.SaveSelectionRulesAsync(NekoRules());
         await harness.SeedSubjectMappingAsync(42, "Test Subject", "测试作品", NekoParsedTitle());
-        var uploadTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("繁日双语")),
-                                                           "mikan");
+        var incumbentId = await CreateMikanRssIncumbentAsync(harness, "rss-jptc", NekoTitle("繁日双语"));
         // ParsedTitle 与评估器同源：用真实解析产出（含原始分隔符），不手写清洗后的标题。
         var parsedTitle = new AniParser().Parse(NekoTitle("简日双语"))!.Title;
         var itemId = await SeedAcceptedItemAsync(harness, "sub-jpsc", NekoTitle("简日双语"), NamingV1, 1, 12m,
@@ -1462,11 +1595,11 @@ public sealed partial class DownloadServiceTests
                                                  "喵萌奶茶屋");
         var taskId = await harness.CreateDownloadAsync(itemId);
 
-        // 订阅优胜与上传任务同 Subject（42）互认，按规则顶替后登记。
+        // 订阅优胜与一次性 RSS 任务同 Subject（42）互认（同源 mikan），按规则顶替后登记。
         var task = await harness.GetTaskAsync(taskId);
-        Assert.Equal(uploadTaskId, task.ReplacesTaskId);
+        Assert.Equal(incumbentId, task.ReplacesTaskId);
         Assert.Equal(12m, task.Episode);
-        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(uploadTaskId)).Status);
+        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(incumbentId)).Status);
 
         // 订阅登记跨路径直接终止未提交现任；下一轮只提交新任务，不会再提交旧 PendingSubmit。
         await harness.ReconcileAsync();
@@ -1475,17 +1608,17 @@ public sealed partial class DownloadServiceTests
                      TorrentDownloadPolicy.TryLoad(harness.Store.AddCalls[0].Bytes, out var torrent, out _)
                          ? torrent.InfoHashes.V1!.ToHex().ToLowerInvariant()
                          : null);
-        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(uploadTaskId)).Status);
+        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(incumbentId)).Status);
         Assert.Equal(DownloadTaskStatus.Downloading, (await harness.GetTaskAsync(task.Id)).Status);
     }
 
     [Fact]
-    public async Task Create_CrossPathLosesToUploadedVariant_BlockedWithReason()
+    public async Task Create_CrossPathLosesToRssVariant_BlockedWithReason()
     {
         using var harness = await CreateHarnessAsync();
         await harness.SaveSelectionRulesAsync(NekoRules());
         await harness.SeedSubjectMappingAsync(42, "Test Subject", "测试作品", NekoParsedTitle());
-        await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语")), "mikan");
+        await CreateMikanRssIncumbentAsync(harness, "rss-jpsc", NekoTitle("简日双语"));
         var parsedTitle = new AniParser().Parse(NekoTitle("繁日双语"))!.Title;
         var itemId = await SeedAcceptedItemAsync(harness, "sub-jptc", NekoTitle("繁日双语"), NamingV1, 1, 12m,
                                                  parsedTitle, "JpTc",
@@ -1493,7 +1626,7 @@ public sealed partial class DownloadServiceTests
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => harness.CreateDownloadAsync(itemId));
 
-        // 上传的简日按规则更优：订阅侧登记被拒并说明占用者，人工可删除旧任务后重试。
+        // 已登记的简日按规则更优：订阅侧登记被拒并说明占用者，人工可删除旧任务后重试。
         Assert.Contains("同集已有更优任务", exception.Message);
         Assert.Equal(1, await CountTasksAsync(harness));
     }
@@ -1504,23 +1637,22 @@ public sealed partial class DownloadServiceTests
         using var harness = await CreateHarnessAsync();
         await harness.SaveSelectionRulesAsync(NekoRules());
         await harness.SeedSubjectMappingAsync(42, "Test Subject", "测试作品", NekoParsedTitle());
-        var uploadTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("繁日双语")), "mikan");
+        var incumbentId = await CreateMikanRssIncumbentAsync(harness, "rss-jptc", NekoTitle("繁日双语"));
         await harness.ReconcileAsync();
-        var uploadHash = Assert.Single(harness.Store.Torrents.Keys);
+        var incumbentHash = Assert.Single(harness.Store.Torrents.Keys);
 
         // 登记期替换不登录下载器：下载器完全不可达时登记仍成功，现任状态照常翻转、种子原样保留。
         // 远端删除无法随本地回滚撤销，因此登记只落库，不产生任何需要撤销的远端副作用。
         harness.Factory.ThrowOnCreate = true;
         var parsedTitle = new AniParser().Parse(NekoTitle("简日双语"))!.Title;
-        var itemId = await SeedAcceptedItemAsync(harness, "sub-jpsc", NekoTitle("简日双语"), NamingV1, 1, 12m,
-                                                 parsedTitle, "JpSc",
-                                                 "喵萌奶茶屋");
+        var itemId = await SeedAcceptedItemAsync(harness, "sub-jpsc", NekoTitle("简日双语"), NamingV1, 1, 12m, parsedTitle,
+                                                 "JpSc", "喵萌奶茶屋");
         var taskId = await harness.CreateDownloadAsync(itemId);
 
         var task = await harness.GetTaskAsync(taskId);
         Assert.Equal(DownloadTaskStatus.PendingSubmit, task.Status);
-        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(uploadTaskId)).Status);
-        Assert.True(harness.Store.Torrents.ContainsKey(uploadHash));
+        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(incumbentId)).Status);
+        Assert.True(harness.Store.Torrents.ContainsKey(incumbentHash));
         Assert.Empty(harness.Store.DeleteCalls);
 
         // 下一轮对账在协调门内清理被顶替资源并提交新任务；逐集承接退出保留内容。
@@ -1528,10 +1660,10 @@ public sealed partial class DownloadServiceTests
         await harness.ReconcileAsync();
         Assert.Equal(2, harness.Store.AddCalls.Count);
         var deletion = Assert.Single(harness.Store.DeleteCalls);
-        Assert.Equal(uploadHash, deletion.Hash);
+        Assert.Equal(incumbentHash, deletion.Hash);
         Assert.False(deletion.DeleteFiles);
-        Assert.False(harness.Store.Torrents.ContainsKey(uploadHash));
-        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(uploadTaskId)).Status);
+        Assert.False(harness.Store.Torrents.ContainsKey(incumbentHash));
+        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(incumbentId)).Status);
         Assert.Equal(DownloadTaskStatus.Downloading, (await harness.GetTaskAsync(taskId)).Status);
     }
 
@@ -1541,14 +1673,13 @@ public sealed partial class DownloadServiceTests
         using var harness = await CreateHarnessAsync();
         await harness.SaveSelectionRulesAsync(NekoRules());
         await harness.SeedSubjectMappingAsync(42, "Test Subject", "测试作品", NekoParsedTitle());
-        var uploadTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("繁日双语")), "mikan");
+        var incumbentId = await CreateMikanRssIncumbentAsync(harness, "rss-jptc", NekoTitle("繁日双语"));
         await harness.ReconcileAsync();
-        var uploadHash = Assert.Single(harness.Store.Torrents.Keys);
+        var incumbentHash = Assert.Single(harness.Store.Torrents.Keys);
 
         var parsedTitle = new AniParser().Parse(NekoTitle("简日双语"))!.Title;
         var itemId = await SeedAcceptedItemAsync(harness, "sub-jpsc", NekoTitle("简日双语"), NamingV1, 1, 12m,
-                                                 parsedTitle, "JpSc",
-                                                 "喵萌奶茶屋");
+                                                 parsedTitle, "JpSc", "喵萌奶茶屋");
         var taskId = await harness.CreateDownloadAsync(itemId);
 
         // 清理单项失败不阻塞本轮：被顶替种子保留，新任务照常提交，下一轮按同一未完成记录继续清理。
@@ -1556,16 +1687,16 @@ public sealed partial class DownloadServiceTests
             session => session.DeleteException = new QbittorrentException("模拟清理失败");
         await harness.ReconcileAsync();
         Assert.Empty(harness.Store.DeleteCalls);
-        Assert.True(harness.Store.Torrents.ContainsKey(uploadHash));
+        Assert.True(harness.Store.Torrents.ContainsKey(incumbentHash));
         Assert.Equal(DownloadTaskStatus.Downloading, (await harness.GetTaskAsync(taskId)).Status);
 
         harness.Factory.SessionConfigurator = null;
         await harness.ReconcileAsync();
         var deletion = Assert.Single(harness.Store.DeleteCalls);
-        Assert.Equal(uploadHash, deletion.Hash);
+        Assert.Equal(incumbentHash, deletion.Hash);
         Assert.False(deletion.DeleteFiles);
-        Assert.False(harness.Store.Torrents.ContainsKey(uploadHash));
-        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(uploadTaskId)).Status);
+        Assert.False(harness.Store.Torrents.ContainsKey(incumbentHash));
+        Assert.Equal(DownloadTaskStatus.Replaced, (await harness.GetTaskAsync(incumbentId)).Status);
     }
 
     /// <summary>测试规则：喵萌奶茶屋列入组序，语言序沿用默认（简日 JpSc 优先）。</summary>
@@ -1756,7 +1887,7 @@ public sealed partial class DownloadServiceTests
         await harness.SaveSelectionRulesAsync(NekoRules());
         await harness.SeedSubjectMappingAsync(42, "Test Subject", "测试作品", NekoParsedTitle());
         var oldTitle = NekoTitle("繁日双语");
-        var oldId    = await harness.CreateUploadAsync(TestTorrentBytes.Create(oldTitle), "mikan");
+        var oldId    = await CreateMikanRssIncumbentAsync(harness, "race-worse", oldTitle);
         var oldHash  = TestTorrentBytes.InfoHashOf(oldTitle);
         AddNekoFeedItem(harness, "race-better", NekoTitle("简日双语"));
         var gateWaitAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1793,12 +1924,10 @@ public sealed partial class DownloadServiceTests
     public async Task Reconcile_StalePendingSnapshotReplacedDuringHashLookup_IsNotSubmitted()
     {
         using var harness = await CreateHarnessAsync();
-        var pendingId = await harness.CreateDownloadAsync(
-                                                          await SeedAcceptedItemAsync(harness, "stale-snapshot",
-                                                              "Snapshot Pending - 01"));
-        var sentinelId = await harness.CreateDownloadAsync(
-                                                           await SeedAcceptedItemAsync(harness, "stale-sentinel",
-                                                               "Snapshot Sentinel - 01"));
+        var pendingId = await harness.CreateDownloadAsync(await SeedAcceptedItemAsync(harness, "stale-snapshot",
+                                                                   "Snapshot Pending - 01"));
+        var sentinelId = await harness.CreateDownloadAsync(await SeedAcceptedItemAsync(harness, "stale-sentinel",
+                                                                    "Snapshot Sentinel - 01"));
         await using (var db = await harness.CreateDbContextAsync())
         {
             var sentinel = await db.DownloadTasks.SingleAsync(task => task.Id == sentinelId);
@@ -2295,8 +2424,8 @@ public sealed partial class DownloadServiceTests
         var taskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(title));
 
         var task = await harness.GetTaskAsync(taskId);
-        // 默认模板渲染：{source} 缺失自然收缩。
-        var expectedSnapshot = "[Anime]测试作品 E12";
+        // 默认模板渲染：{source} 取上传 tracker 分类的 bt 兜底（默认替身 tracker 未知）。
+        var expectedSnapshot = "[Anime]测试作品 E12 bt";
         Assert.Equal(expectedSnapshot, task.NamingSnapshot);
         Assert.Equal(42, task.SubjectId);
         var ingredients = TorrentNamingIngredients.FromJson(task.NamingIngredients);
@@ -2305,6 +2434,7 @@ public sealed partial class DownloadServiceTests
         Assert.Equal("测试作品", ingredients.Title);
         Assert.Equal("12", ingredients.EpisodeText);
         Assert.Equal("喵萌奶茶屋", ingredients.Group);
+        Assert.Equal("bt", ingredients.Source);
 
         // 沿用既有提交管线：提交与完成改名都使用模板渲染的命名。
         await harness.ReconcileAsync();
@@ -2367,8 +2497,8 @@ public sealed partial class DownloadServiceTests
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                                                                                 harness
                                                                                    .CreateUploadAsync(TestTorrentBytes
-                                                                                           .Create(title),
-                                                                                        subjectId : null));
+                                                                                                .Create(title),
+                                                                                             subjectId : null));
 
         Assert.Contains("Bangumi ID", exception.Message);
         Assert.Equal(0, await CountTasksAsync(harness));
@@ -2383,7 +2513,8 @@ public sealed partial class DownloadServiceTests
 
         var task = await harness.GetTaskAsync(taskId);
         Assert.Equal(7, task.SubjectId);
-        Assert.Equal("[Anime]测试作品7 E12", task.NamingSnapshot);
+        // 上传来源取 tracker 分类的 bt 兜底（默认替身 tracker 未知）。
+        Assert.Equal("[Anime]测试作品7 E12 bt", task.NamingSnapshot);
         await using var db = await harness.CreateDbContextAsync();
         Assert.True(await db.SubjectTitleMappings.AsNoTracking().AnyAsync(mapping =>
                                                                               mapping.NormalizedTitle ==
@@ -2625,10 +2756,14 @@ public sealed partial class DownloadServiceTests
         using var harness = await CreateHarnessAsync(enableFileArchive : true);
         await harness.SaveNamingTemplateAsync("{title} E{episode}");
         await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
-        var firstId  = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语")), "mikan");
-        var secondId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("繁日双语")), "byrbt");
-        var first    = await harness.GetTaskAsync(firstId);
-        var second   = await harness.GetTaskAsync(secondId);
+        var firstId =
+            await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语"),
+                                                                    "https://tracker.byr.pt/announce.php"));
+        var secondId =
+            await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("繁日双语"),
+                                                                    "https://tracker-campus.tjupt.org/announce.php"));
+        var first  = await harness.GetTaskAsync(firstId);
+        var second = await harness.GetTaskAsync(secondId);
         await harness.ReconcileAsync();
         CompleteTorrent(harness, first.InfoHash);
         for (var i = 0; i < 3; i++) await harness.ReconcileAsync();
@@ -3040,15 +3175,18 @@ public sealed partial class DownloadServiceTests
     }
 
     /// <summary>多文件合集种子：文件名即发布名（Neko 式，可解析集数），info.name 不解析以保持合集语义。</summary>
-    private static byte[] BatchTorrent(params string[] filePaths)
+    private static byte[] BatchTorrent(params string[] filePaths) => BatchTorrent(filePaths, null);
+
+    private static byte[] BatchTorrent(string[] filePaths, string? announce)
     {
         var files = string.Concat(filePaths.Select(path =>
                                                        "d6:lengthi1024e4:pathl"                 +
                                                        string.Concat(path.Split('/').Select(B)) + "ee"));
-        var pieceCount = (filePaths.Length * 1024 + 16383) / 16384;
-        var pieces     = new string('0', checked(pieceCount * 20));
-        return Encoding.UTF8.GetBytes("d4:infod5:filesl"                                + files     +
-                                      "e4:name8:Original12:piece lengthi16384e6:pieces" + B(pieces) + "ee");
+        var pieceCount     = (filePaths.Length * 1024 + 16383) / 16384;
+        var pieces         = new string('0', checked(pieceCount * 20));
+        var announcePrefix = announce is null ? "d" : "d8:announce" + B(announce);
+        return Encoding.UTF8.GetBytes(announcePrefix                                    + "4:infod5:filesl" + files +
+                                      "e4:name8:Original12:piece lengthi16384e6:pieces" + B(pieces)         + "ee");
 
         static string B(string text) => Encoding.UTF8.GetByteCount(text) + ":" + text;
     }
@@ -3327,7 +3465,7 @@ public sealed partial class DownloadServiceTests
 
         await Assert.ThrowsAsync<QbittorrentException>(() =>
                                                            harness.Service.DeleteAsync(taskId,
-                                                               true, false));
+                                                                    true, false));
 
         Assert.NotNull(await harness.GetTaskAsync(taskId));
     }
@@ -3374,7 +3512,7 @@ public sealed partial class DownloadServiceTests
         using var harness = await CreateHarnessAsync();
         await harness.SaveSelectionRulesAsync(NekoRules());
         await harness.SeedSubjectMappingAsync(42, "Test Subject", "测试作品", NekoParsedTitle());
-        var tcTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("繁日双语")), "mikan");
+        var tcTaskId = await CreateMikanRssIncumbentAsync(harness, "neko-jptc", NekoTitle("繁日双语"));
         AddNekoFeedItem(harness, "neko-jpsc", NekoTitle("简日双语"));
         var result = await harness.CreateFromRssFeedAsync("https://mikanani.me/RSS/preview");
 
@@ -3546,10 +3684,14 @@ public sealed partial class DownloadServiceTests
         harness.TorrentNames[stableId] = torrentName;
         await using var db             = await harness.CreateDbContextAsync();
         var             subscriptionId = Guid.NewGuid();
+        // 条目种子地址属 mikan：订阅 RSS 地址以真实用途字符串加密落库，来源判定走解密路径。
+        var protector = harness.Provider.GetRequiredService<IDataProtectionProvider>()
+                               .CreateProtector("Banori.MediaSubscriptions.FeedUrl.v1");
         db.MediaSubscriptions.Add(new MediaSubscription
         {
-            Id        = subscriptionId, Name          = $"订阅-{stableId}", FeedUrlProtected = "unused",
-            IsEnabled = false, RefreshIntervalMinutes = 30
+            Id               = subscriptionId, Name = $"订阅-{stableId}",
+            FeedUrlProtected = protector.Protect("https://mikanani.me/RSS/bangumi"),
+            IsEnabled        = false, RefreshIntervalMinutes = 30
         });
         var itemId = Guid.NewGuid();
         db.FeedItems.Add(new FeedItem
@@ -3590,6 +3732,8 @@ public sealed partial class DownloadServiceTests
         var harnessTorrentNames = new Dictionary<string, string>(StringComparer.Ordinal);
         var services            = new ServiceCollection();
         services.AddLogging();
+        // 订阅 RSS 地址用 Data Protection 解密后才判定来源主机；测试用临时密钥即可。
+        services.AddDataProtection();
         services.AddDbContextFactory<ApplicationDbContext>(options =>
                                                                options
                                                                   .UseSqlite($"Data Source={Path.Combine(directory.FullName, "p3.db")};Pooling=False"));
@@ -3604,13 +3748,15 @@ public sealed partial class DownloadServiceTests
         var feedReader = new FakeFeedSourceReader();
         services.AddSingleton(feedReader);
         services.AddSingleton<IFeedSourceReader>(feedReader);
+        var harnessTorrentBytes = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
         var torrentFileSource = new FakeTorrentFileSource(uri =>
         {
-            // 每个条目的种子名由 seeding 注册；未注册的条目按 stableId 生成独立种子。
-            var stableId =
-                Path.GetFileNameWithoutExtension(uri.Segments[^1]);
-            return TestTorrentBytes.Create(harnessTorrentNames
-                                              .GetValueOrDefault(stableId, stableId));
+            // 每个条目的种子名由 seeding 注册；未注册的条目按 stableId 生成独立种子；
+            // 需要特制 tracker 的用例按 stableId 注入原始字节。
+            var stableId = Path.GetFileNameWithoutExtension(uri.Segments[^1]);
+            return harnessTorrentBytes.TryGetValue(stableId, out var bytes)
+                ? bytes
+                : TestTorrentBytes.Create(harnessTorrentNames.GetValueOrDefault(stableId, stableId));
         });
         services.AddSingleton<ITorrentFileSource>(torrentFileSource);
         var subjectProvider = new FakeSubjectProvider(timestamp);
@@ -3647,7 +3793,8 @@ public sealed partial class DownloadServiceTests
                                       provider.GetRequiredService<FakeQbittorrentSessionFactory>(),
                                       provider.GetRequiredService<DownloadService>(),
                                       provider.GetRequiredService<DownloadIntakeService>(), harnessTorrentNames,
-                                      feedReader, torrentFileSource, subjectProvider, linkResolver);
+                                      harnessTorrentBytes, feedReader, torrentFileSource, subjectProvider,
+                                      linkResolver);
         await using var db = await harness.CreateDbContextAsync();
         await db.Database.EnsureCreatedAsync();
         db.MediaSubjects.Add(new MediaSubject
@@ -3702,6 +3849,7 @@ public sealed partial class DownloadServiceTests
         DownloadService               service,
         DownloadIntakeService         intake,
         Dictionary<string, string>    torrentNames,
+        Dictionary<string, byte[]>    torrentBytes,
         FakeFeedSourceReader          feedReader,
         FakeTorrentFileSource         torrentFileSource,
         FakeSubjectProvider           subjectProvider,
@@ -3715,6 +3863,7 @@ public sealed partial class DownloadServiceTests
         public DownloadIntakeService         Intake           { get; } = intake;
         public IServiceProvider              Provider         { get; } = provider;
         public Dictionary<string, string>    TorrentNames     { get; } = torrentNames;
+        public Dictionary<string, byte[]>    TorrentBytes     { get; } = torrentBytes;
         public HashSet<string>               UsedWinnerGroups { get; } = new(StringComparer.Ordinal);
         public FakeFeedSourceReader          FeedReader       { get; } = feedReader;
         public FakeTorrentFileSource         TorrentSource    { get; } = torrentFileSource;

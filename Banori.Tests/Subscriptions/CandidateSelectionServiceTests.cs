@@ -14,6 +14,7 @@ using Banori.Integrations;
 using Banori.Integrations.Qbittorrent;
 using Banori.Tests.Downloads;
 using Banori.Tests.Notifications;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -944,7 +945,8 @@ public sealed class CandidateSelectionServiceTests
                                                       UnusedSubjectLinkResolver.Instance,
                                                       new SubjectEpisodeCorrectionPolicy(),
                                                       provider.GetRequiredService<TimeProvider>(),
-                                                      NullLogger<DownloadIntakeService>.Instance);
+                                                      NullLogger<DownloadIntakeService>.Instance,
+                                                      new EphemeralDataProtectionProvider());
         // 门闸必须进程级共享：与应用的单例注册一致，两个服务实例（模拟刷新 worker 与
         // Blazor 电路各自的 Scoped 实例）通过同一门闸互斥同组并发。
         var gate      = new SelectionGroupGate();
@@ -1137,6 +1139,9 @@ public sealed class CandidateSelectionServiceTests
                 SubjectId      = SubjectId,
                 Reason         = "通过硬性过滤。",
                 NamingPreview  = $"测试作品 E{Episode:00} v{version} [{group}]",
+                NamingIngredients = new TorrentNamingIngredients("{title} E{episode} {version} [{group}]", "测试作品",
+                                                                 ReleaseNamePreviewPolicy.FormatEpisodeText(Episode),
+                                                                 version, group, null).ToJson(),
                 EvaluatedAtUtc = Timestamp
             });
             await db.SaveChangesAsync();

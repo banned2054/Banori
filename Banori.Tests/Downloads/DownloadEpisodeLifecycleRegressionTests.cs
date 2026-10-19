@@ -13,21 +13,24 @@ public sealed partial class DownloadServiceTests
         using var h = await CreateHarnessAsync();
         await h.SaveSelectionRulesAsync(NekoRules());
         var oldName = NekoTitle("简日双语", episode : 12).Replace("[12]", "[12v2]");
-        var oldId   = await h.CreateUploadAsync(TestTorrentBytes.Create(oldName), "byrbt");
+        // 三个任务分属不同 PT 分类，互相跨源：版本守卫登记现行但不触发规则对决。
+        var oldId = await h.CreateUploadAsync(TestTorrentBytes.Create(oldName, "https://tracker.byr.pt/announce.php"));
         await h.ReconcileAsync();
         CompleteTorrent(h, (await h.GetTaskAsync(oldId)).InfoHash);
         await h.ReconcileAsync();
 
-        var v3   = NekoTitle("简日双语", episode : 12).Replace("[12]", "[12v3]");
-        var next = await h.CreateUploadAsync(BatchTorrent(v3, NekoTitle("简日双语", episode : 13)), "mikan");
+        var v3 = NekoTitle("简日双语", episode : 12).Replace("[12]", "[12v3]");
+        var next = await h.CreateUploadAsync(BatchTorrent([v3, NekoTitle("简日双语", episode : 13)],
+                                                          "https://daydream.dmhy.best/announce"));
         Assert.Equal(1, (await h.GetTaskAsync(next)).Version);
         var nextFile = await FindAnimeFileIdAsync(h, next);
         Assert.Equal(nextFile, (await FindEpisodeVersionAsync(h, 12))!.PendingVideoFileId);
 
         if (replacePending)
         {
-            var v4     = NekoTitle("简日双语", episode : 12).Replace("[12]", "[12v4]");
-            var latest = await h.CreateUploadAsync(BatchTorrent(v4, NekoTitle("简日双语", episode : 14)), "tjupt");
+            var v4 = NekoTitle("简日双语", episode : 12).Replace("[12]", "[12v4]");
+            var latest = await h.CreateUploadAsync(BatchTorrent([v4, NekoTitle("简日双语", episode : 14)],
+                                                                "https://tracker-public.tjupt.org/announce.php"));
             Assert.Equal(await FindAnimeFileIdAsync(h, latest),
                          (await FindEpisodeVersionAsync(h, 12))!.PendingVideoFileId);
         }
@@ -86,13 +89,10 @@ public sealed partial class DownloadServiceTests
     {
         using var h = await CreateHarnessAsync();
         await h.SaveSelectionRulesAsync(NekoRules());
-        var a = await h.CreateUploadAsync(
-                                          BatchTorrent(NekoTitle("繁日双语"), NekoTitle("繁日双语", episode : 13)), "mikan");
-        var b = await h.CreateUploadAsync(
-                                          BatchTorrent(NekoTitle("简日双语"), NekoTitle("简日双语", episode : 14)), "mikan");
+        var a  = await h.CreateUploadAsync(BatchTorrent(NekoTitle("繁日双语"), NekoTitle("繁日双语", episode : 13)), "mikan");
+        var b  = await h.CreateUploadAsync(BatchTorrent(NekoTitle("简日双语"), NekoTitle("简日双语", episode : 14)), "mikan");
         var v2 = NekoTitle("简日双语").Replace("[12]", "[12v2]");
-        var c = await h.CreateUploadAsync(
-                                          BatchTorrent(v2, NekoTitle("简日双语", episode : 15)), "mikan");
+        var c  = await h.CreateUploadAsync(BatchTorrent(v2, NekoTitle("简日双语", episode : 15)), "mikan");
 
         await h.Service.DeleteAsync(b, false, false);
         await using (var db = await h.CreateDbContextAsync())

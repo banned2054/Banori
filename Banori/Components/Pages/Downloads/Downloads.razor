@@ -42,7 +42,7 @@
 	<div class="card-body">
 		<h2 class="h5">上传种子</h2>
 		<div class="text-body-secondary small mb-2">
-			选择文件后会立即登记下载任务；不关联订阅与条目。每个种子都必须绑定 Bangumi：标题映射未命中时需填写 Bangumi ID，绑定后按 Bangumi 作品名（中文名优先）命名。来源站点按种子内 tracker 自动识别，无法识别时才取下方手填值。
+			选择文件后会立即登记下载任务；不关联订阅与条目。每个种子都必须绑定 Bangumi：标题映射未命中时需填写 Bangumi ID，绑定后按 Bangumi 作品名（中文名优先）命名。来源站点按种子内 tracker 分类识别（u2/byrbt/tjupt），未识别统一归 bt，命中多个站点分类时拒绝登记。
 		</div>
 		<div class="row g-2 align-items-center">
 			<div class="col-auto">
@@ -50,11 +50,6 @@
 				<label for="torrent-file-upload" class="btn btn-primary mb-0 @(_vm.Busy ? "disabled" : string.Empty)">
 					<span class="bi bi-cloud-arrow-up me-1" aria-hidden="true"></span>选择并上传 .torrent
 				</label>
-			</div>
-			<div class="col-auto">
-				<label for="torrent-upload-site" class="visually-hidden">来源站点</label>
-				<input id="torrent-upload-site" class="form-control" type="text" placeholder="来源站点（tracker 无法识别时使用）"
-				       maxlength="50" disabled="@_vm.Busy" @bind="_vm.UploadSiteSource"/>
 			</div>
 			<div class="col-auto">
 				<label for="torrent-upload-subject" class="visually-hidden">Bangumi ID</label>
