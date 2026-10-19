@@ -12,7 +12,7 @@
 <br>
 
 <div>
-    <a href="https://github.com/banned2054/Banori/releases/tag/v0.1.2"><img alt="Version 0.1.2" src="https://img.shields.io/badge/version-0.1.2-blue"></a>
+    <a href="https://github.com/banned2054/Banori/releases/tag/v0.2.0"><img alt="Version 0.2.0" src="https://img.shields.io/badge/version-0.2.0-blue"></a>
     <a href="https://dotnet.microsoft.com/"><img alt=".NET 10" src="https://img.shields.io/badge/.NET-10.0-512BD4"></a>
     <a href="https://learn.microsoft.com/aspnet/core/blazor/"><img alt="Blazor" src="https://img.shields.io/badge/Blazor-Interactive_Server-7B2CBF"></a>
     <a href="https://learn.microsoft.com/ef/core/"><img alt="EF Core" src="https://img.shields.io/badge/EF_Core-10-2EA44F"></a>
@@ -24,7 +24,7 @@
 
 </div>
 
-**Banori**（番組 × 織り）是面向个人或家庭媒体库的动漫 RSS 管理面板，基于 .NET 10 与 Blazor 构建。它可以管理 Mikan / AniBT 订阅、分析并关联 Bangumi 条目，评估优胜条目并登记下载任务，再提交到 qBittorrent，完成后按模板整理文件。
+**Banori**是面向个人或家庭媒体库的动漫 RSS 管理面板，基于 .NET 10 与 Blazor 构建。它可以管理 Mikan / AniBT 订阅、分析并关联 Bangumi 条目，评估优胜条目并登记下载任务，再提交到 qBittorrent，完成后按模板整理文件。
 
 ## 🚧 项目状态
 
@@ -34,8 +34,11 @@
 
 - **订阅与刷新** — 管理 Mikan、AniBT RSS，定时刷新并去重入库；RSS 地址加密保存。
 - **条目评估** — 解析条目信息、关联 Bangumi，并展示筛选理由与命名预览。
-- **下载管理** — 将条目提交到 qBittorrent，跟踪任务状态；支持 RSS 链接和本地种子。
-- **整理归档** — 下载完成后按命名模板整理媒体文件，并将附属文件移入 `Seed/`。
+- **下载管理** — 支持 RSS 链接、本地种子和已有种子接管；下载前确认文件选择与命名，按所选内容跟踪进度。
+- **逐集择优** — 单集与合集跨包比较版本，按每集分配下载职责；新版本完成后切换，删除承接方时按关系回退。
+- **数据复用** — 通过 qBittorrent 校验已有文件，确认后复用或交叉做种；不能确认时保留原数据并独立下载。
+- **整理归档** — 按命名模板整理媒体文件与随行字幕；归档受阻时展示原因并支持重新核对，冗余种子自动移除且保留磁盘文件。
+- **通知与代理** — 支持 Telegram、Gotify 通知与投递记录，统一管理各服务使用的命名代理。
 - **数据库** — 默认使用 SQLite，也可配置 MySQL。
 
 ## 🐳 Docker 部署
@@ -68,42 +71,27 @@ docker compose logs -f banori
 docker compose down
 ```
 
-升级到最新镜像：
+升级时保留原有数据挂载，执行：
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
+数据库结构会在启动时自动更新，无需手动迁移。建议升级前备份整个 `config/` 目录；版本变化见 [更新日志](Docs/CHANGELOG.md)。
+
 GitHub Actions 在发布 GitHub Release 或手动运行 `Publish container image` 工作流时构建并推送镜像；普通分支 push 或单独推送标签不会触发发布。Release 使用 `v*` 标签生成同名版本镜像，符合工作流默认分支条件时同时更新 `latest`，例如：
 
 ```text
 ghcr.io/banned2054/banori:latest
-ghcr.io/banned2054/banori:v0.1.2
+ghcr.io/banned2054/banori:v0.2.0
 ```
 
-### 数据持久化与迁移
+### 数据持久化
 
-Compose 默认使用目录映射 `./config:/app/config`。宿主机 `config/banori.db` 是 SQLite 数据库，`config/keys/` 是 Data Protection 密钥；两者都必须保留。删除或重建容器、执行 `docker compose down` 不会删除宿主机目录；**不要删除该目录或只保留数据库而遗漏密钥**。
+默认通过 `./config:/app/config` 保存数据：`config/banori.db` 为 SQLite 数据库，`config/keys/` 为加密密钥。重建容器或执行 `docker compose down` 会保留该目录；备份和恢复时请将数据库与密钥一起保留。MySQL 部署也需要保留本地密钥。
 
-可用下列命令备份整个数据目录（先停止服务，以保证 SQLite 文件一致；若挂载的是 `./data`，请相应替换目录名）：
-
-```bash
-docker compose down
-mkdir -p backups
-tar -czf "backups/banori-config-$(date +%Y%m%d-%H%M%S).tar.gz" -C config .
-docker compose up -d
-```
-
-恢复时先停止服务，将备份解压到实际挂载的宿主机目录，确保文件权限正确，再启动应用。恢复数据库时必须同时恢复 `keys/`，否则已保存的 RSS 地址和其他加密配置可能无法解密。
-
-从旧版 `data/` 或更早的 `App_Data/` 升级时，先停止应用并备份，然后按部署方式处理：
-
-- **已有 Docker 命名卷部署**：继续使用命名卷时，保留卷名 `banori-data` 和顶层卷声明，只把挂载目标由 `/app/data` 改为 `/app/config`；卷根目录的数据库和 `keys/` 无需移动。不要直接切换到新默认的 `./config` 空目录；若要改用目录映射，须先停止应用并将卷内数据库及配套文件、`keys/` 完整复制到目标目录。不要删除卷或执行 `docker compose down -v`，除非确定已不再需要原数据。
-- **Docker bind mount**：可以保留宿主机目录名，例如将 `./data:/app/data` 改为 `./data:/app/config`，无需搬动数据；新部署示例使用 `./config:/app/config`。
-- **本地运行**：将旧目录中的 `banori.db`、存在时的 `banori.db-wal`、`banori.db-shm`、`banori.db-journal` 和 `keys/` 一起复制到 `Banori/config/`。Windows 上旧 `data/` 可能与源码 `Data/` 是同一目录，**不要整体移动或删除 `Banori/Data/`**。迁移到 Docker 时，将这些运行数据复制到挂载目录根部，不要再套一层 `config/`。
-
-确保文件权限允许应用读写，不要让旧版和新版同时写同一数据库。MySQL 部署也需要迁移本地 `keys/`；如果覆盖了 SQLite 连接字符串，请同步核对真实数据库路径。仅迁移数据库而遗漏密钥会使已保存的加密配置无法解密。检测到旧数据库或旧密钥尚未迁移时，应用会停止启动并给出提示，不会自动移动数据或静默初始化。
+早期版本的数据目录调整见 [v0.1.2 升级说明](Docs/CHANGELOG.md#v012)。
 
 ### 使用 bind mount 时的目录权限
 
