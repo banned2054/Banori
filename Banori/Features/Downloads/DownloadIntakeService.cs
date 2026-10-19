@@ -579,13 +579,17 @@ public sealed class DownloadIntakeService(
     ///     修订版本才顶替。占用者以任务级集数（单集任务既有身份）或文件级集数（合集任务的选中正片）
     ///     覆盖该集；跨路径互认与订阅豁免口径沿用既有任务级裁决。纯决策无副作用，结论由调用方应用。
     ///     例外（包含关系承接，设计第四阶段）：同内容平级的现任保留可被覆盖面更大的新包翻转——
-    ///     占用者全部职责文件都能由新包逐文件承担且新包确有独有内容时，该集改判新包胜出。
+    ///     占用者全部职责文件都能由新包最终承担集合逐文件承担、且该集合确有独有内容时，该集
+    ///     改判新包胜出。承接判定采用有界单调剔除：先以全部当前选中文件找出乐观承接候选，再
+    ///     依幸存裁决重建承担集合重核全职责与严格增量，失败者剔除不复活直至稳定——常规胜出
+    ///     者始终保留，常规落选文件不构成增量，至多 scopes.Count 轮且不随文件/遍历顺序改变。
     /// </summary>
-    private async Task<List<EpisodeVerdict>> ArbitrateEpisodesAsync(
-        ApplicationDbContext db,        DownloadTask     task, SelectionRuleConfig config,
-        IReadOnlyList<EpisodeScope> scopes,
-        int?                 subjectId, string seriesKey, string? siteSource, string infoHash, int? exemptSubjectId,
-        CancellationToken    cancellationToken)
+    private async Task<List<EpisodeVerdict>> ArbitrateEpisodesAsync(ApplicationDbContext db, DownloadTask task,
+                                                                    SelectionRuleConfig config,
+                                                                    IReadOnlyList<EpisodeScope> scopes, int? subjectId,
+                                                                    string seriesKey, string? siteSource,
+                                                                    string infoHash, int? exemptSubjectId,
+                                                                    CancellationToken cancellationToken)
     {
         if (scopes.Count == 0) return [];
 
@@ -607,17 +611,7 @@ public sealed class DownloadIntakeService(
                                                task.Status           != DownloadTaskStatus.Replaced)
                                 .ToListAsync(cancellationToken);
 
-        // 包含承接判定素材：Subject 全量登记表（职责覆盖口径）、新任务全文件清单与选中内容清单。
-        var registryRows           = await db.EpisodeVersions.AsNoTracking()
-                                             .Where(row => row.SubjectId == subjectId)
-                                             .ToListAsync(cancellationToken);
-        var incomingManifest       = ManifestKeys(task);
-        var incomingSelectedKeys   = task.Files
-                                         .Where(file => file.Kind != DownloadFileKind.Seed && file.IsSelectedForDownload)
-                                         .Select(ManifestKey)
-                                         .ToList();
-        var verdicts = new List<EpisodeVerdict>(scopes.Count);
-        foreach (var scope in scopes)
+        EpisodeVerdict ArbitrateScope(EpisodeScope scope)
         {
             var candidates = new List<(Guid TaskId, string Naming, EpisodeCandidate Candidate, bool Completed,
                 Guid? VideoFileId)>();
@@ -675,11 +669,10 @@ public sealed class DownloadIntakeService(
                 var guardIncumbent = registryIncumbents.OrderByDescending(item => item.Version)
                                                        .ThenByDescending(item => item.CreatedAtUtc)
                                                        .FirstOrDefault();
-                verdicts.Add(guardIncumbent.TaskId != Guid.Empty
-                                 ? new EpisodeVerdict(scope.Episode, true, guardIncumbent.TaskId,
-                                                      guardIncumbent.Naming, true, guardIncumbent.VideoFileId)
-                                 : new EpisodeVerdict(scope.Episode, true, null, null, false, null));
-                continue;
+                return guardIncumbent.TaskId != Guid.Empty
+                    ? new EpisodeVerdict(scope.Episode, true, guardIncumbent.TaskId,
+                                         guardIncumbent.Naming, true, guardIncumbent.VideoFileId)
+                    : new EpisodeVerdict(scope.Episode, true, null, null, false, null);
             }
 
             // 多个占用者（历史并存）先按规则内部选出最强现任，再与新候选一对一对决。
@@ -689,35 +682,86 @@ public sealed class DownloadIntakeService(
                                                             .Select(candidates.Select(item => item.Candidate).ToList(),
                                                                     config).Winner ?? candidates[0].Candidate)
                                       .FeedItemId);
-            var verdict   = rankingPolicy.Select([incumbent.Candidate, scope.Incoming], config, incumbent.TaskId);
+            var verdict      = rankingPolicy.Select([incumbent.Candidate, scope.Incoming], config, incumbent.TaskId);
             var incomingWins = verdict.Winner?.FeedItemId == scope.Incoming.FeedItemId;
-            // 包含关系承接：同内容平级本由现任保留防抖，但占用者的全部职责文件都能由覆盖面更大的
-            // 新包逐文件承担、且新包确有独有内容（严格超集）时，该集改判新包胜出——正片保持选中，
-            // 由复用校验确认同内容后逐集承接现任，占用者职责耗尽即由冗余清理退场。
-            if (!incomingWins && incumbent.Completed &&
-                IsContainmentTakeover(incumbent.TaskId, incumbent.VideoFileId, scope, occupants, registryRows,
-                                      incomingManifest, incomingSelectedKeys))
-                incomingWins = true;
-            verdicts.Add(incomingWins
-                             ? new EpisodeVerdict(scope.Episode, true, incumbent.TaskId, incumbent.Naming,
-                                                  incumbent.Completed, incumbent.VideoFileId)
-                             : new EpisodeVerdict(scope.Episode, false, incumbent.TaskId, incumbent.Naming,
-                                                  incumbent.Completed, incumbent.VideoFileId));
+            return incomingWins
+                ? new EpisodeVerdict(scope.Episode, true, incumbent.TaskId, incumbent.Naming,
+                                     incumbent.Completed, incumbent.VideoFileId)
+                : new EpisodeVerdict(scope.Episode, false, incumbent.TaskId, incumbent.Naming,
+                                     incumbent.Completed, incumbent.VideoFileId);
         }
 
-        return verdicts;
+        // 第一阶段：常规逐集择优，常规胜出者始终保留，不参与承接剔除。
+        var baselineVerdicts = scopes.Select(ArbitrateScope).ToList();
+        var registryRows = await db.EpisodeVersions.AsNoTracking()
+                                   .Where(row => row.SubjectId == subjectId)
+                                   .ToListAsync(cancellationToken);
+        var selectedKeys = task.Files
+                               .Where(file => file.Kind != DownloadFileKind.Seed && file.IsSelectedForDownload)
+                               .Select(ManifestKey)
+                               .ToHashSet();
+
+        // 第二阶段乐观候选：常规落选且现任已完成的集，先以全部当前选中内容文件判定承接。
+        var takeovers = new List<EpisodeVerdict>();
+        foreach (var verdict in baselineVerdicts)
+        {
+            if (verdict.Winner || !verdict.IncumbentCompleted || verdict.IncumbentTaskId is not { } incumbentId)
+                continue;
+            var scope = scopes.First(item => item.Episode == verdict.Episode);
+            if (IsContainmentTakeover(incumbentId, verdict.IncumbentVideoFileId, scope, occupants, registryRows,
+                                      selectedKeys))
+                takeovers.Add(new EpisodeVerdict(verdict.Episode, true, incumbentId, verdict.IncumbentNaming, true,
+                                                 verdict.IncumbentVideoFileId));
+        }
+
+        // 有界单调剔除：每轮先按仍保留的裁决整体重建最终承担集合（常规落选与已剔除承接集的
+        // 文件终将被取消选择，不得充当独有增量或为职责充数），再统一重核全部候选——承接改判
+        // 集自身文件计入本集判定口径。全职责覆盖与严格增量任一不满足即剔除，失败者不复活；
+        // 每轮先全部算完再应用，至多 scopes.Count 轮且每轮至少剔除一个或收敛停止。
+        var survivorEpisodes = takeovers.Select(verdict => verdict.Episode).ToHashSet();
+        for (var round = 0; round < scopes.Count && takeovers.Count > 0; round++)
+        {
+            var winnerEpisodes = baselineVerdicts.Where(verdict => verdict.Winner)
+                                                 .Select(verdict => verdict.Episode)
+                                                 .ToHashSet();
+            var carriedKeys = new HashSet<(string Name, long Size)>(selectedKeys);
+            carriedKeys.ExceptWith(scopes.Where(scope => !winnerEpisodes.Contains(scope.Episode) &&
+                                                         !survivorEpisodes.Contains(scope.Episode))
+                                         .SelectMany(scope => CoveringFiles(task, scope.Episode))
+                                         .Select(ManifestKey));
+
+            var survivors = new List<EpisodeVerdict>();
+            foreach (var verdict in takeovers)
+            {
+                var scope        = scopes.First(item => item.Episode == verdict.Episode);
+                var scopeCarried = new HashSet<(string Name, long Size)>(carriedKeys);
+                scopeCarried.UnionWith(CoveringFiles(task, verdict.Episode).Select(ManifestKey));
+                if (IsContainmentTakeover(verdict.IncumbentTaskId!.Value, verdict.IncumbentVideoFileId, scope,
+                                          occupants, registryRows, scopeCarried))
+                    survivors.Add(verdict);
+            }
+
+            if (survivors.Count == takeovers.Count) break;
+            takeovers        = survivors;
+            survivorEpisodes = survivors.Select(verdict => verdict.Episode).ToHashSet();
+        }
+
+        return baselineVerdicts.Select(verdict =>
+                                           takeovers.FirstOrDefault(item => item.Episode == verdict.Episode) ?? verdict)
+                               .ToList();
     }
 
     /// <summary>
     ///     包含关系承接判定（纯清单线索，内容确认交给复用校验）：占用者已完成；双方该集承载正片
-    ///     同名同大小；占用者每个职责文件（见 FileHoldsResidualDuty）都能在新包清单中找到同名同
-    ///     大小对应；且新任务确有占用者清单之外的选中内容文件（严格超集——等价集合沿用现任保留，
-    ///     不因遍历顺序换包）。部分重叠（占用者另有独有职责）不翻转，双方各自保留。
+    ///     同名同大小；占用者每个职责文件（见 FileHoldsResidualDuty）都能在新包最终承担集合中
+    ///     找到同名同大小对应（常规择优落选的文件终将被取消选择，不得充数）；且该最终承担集合
+    ///     确有占用者清单之外的选中内容文件（严格超集——等价集合沿用现任保留，不因遍历顺序换
+    ///     包）。部分重叠（占用者另有独有职责）不翻转，双方各自保留。
     /// </summary>
-    private bool IsContainmentTakeover(
-        Guid incumbentTaskId, Guid? incumbentVideoFileId, EpisodeScope scope,
-        IReadOnlyList<DownloadTask> occupants, IReadOnlyList<EpisodeVersion> registryRows,
-        HashSet<(string Name, long Size)> incomingManifest, IReadOnlyList<(string Name, long Size)> incomingSelectedKeys)
+    private bool IsContainmentTakeover(Guid incumbentTaskId, Guid? incumbentVideoFileId, EpisodeScope scope,
+                                       IReadOnlyList<DownloadTask> occupants,
+                                       IReadOnlyList<EpisodeVersion> registryRows,
+                                       HashSet<(string Name, long Size)> incomingCarriedKeys)
     {
         if (incumbentVideoFileId is not { } carrierId) return false;
         var incumbent = occupants.FirstOrDefault(task => task.Id == incumbentTaskId);
@@ -729,18 +773,18 @@ public sealed class DownloadIntakeService(
         if (carrier is null || incomingCarrier is null || ManifestKey(carrier) != ManifestKey(incomingCarrier))
             return false;
 
-        var incumbentFiles  = incumbent.Files.ToList();
-        var ownFileIds      = incumbent.Files.Select(file => file.Id).ToHashSet();
+        var incumbentFiles = incumbent.Files.ToList();
+        var ownFileIds     = incumbent.Files.Select(file => file.Id).ToHashSet();
         var incumbentDuties = incumbent.Files
                                        .Where(file => DownloadTaskLookups.FileHoldsResidualDuty(
-                                                  aniParser, incumbent, file, incumbentFiles, registryRows,
-                                                  ownFileIds, episodeResolver.EpisodeOf))
+                                               aniParser, incumbent, file, incumbentFiles, registryRows,
+                                               ownFileIds, episodeResolver.EpisodeOf))
                                        .Select(ManifestKey)
                                        .ToList();
-        if (incumbentDuties.Any(key => !incomingManifest.Contains(key))) return false;
+        if (incumbentDuties.Any(key => !incomingCarriedKeys.Contains(key))) return false;
 
         var incumbentManifest = ManifestKeys(incumbent);
-        return incomingSelectedKeys.Any(key => !incumbentManifest.Contains(key));
+        return incomingCarriedKeys.Any(key => !incumbentManifest.Contains(key));
     }
 
     /// <summary>种子清单键：原始相对路径的文件名（忽略大小写）与大小；同名同大小只是内容相同的线索。</summary>
