@@ -144,6 +144,12 @@ public sealed record DownloadVerificationIntent
     /// <summary>校验期对无法解释的运行状态已发出暂停的次数；超过上限转待核对。</summary>
     public int PauseAttempts { get; init; }
 
+    /// <summary>
+    ///     未确认复用前曾观察到可能补写共享数据的下载状态；停止后也不能沿用本轮证据。
+    ///     null 表示旧意图未记录该信息，有暂停记录时必须保守处理；false 表示未记录到该风险。
+    /// </summary>
+    public bool? UnverifiedWriteRisk { get; init; }
+
     /// <summary>本次校验添加所用的候选根（保存根）。</summary>
     public string CandidateRoot { get; init; } = string.Empty;
 

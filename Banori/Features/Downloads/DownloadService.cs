@@ -1086,16 +1086,17 @@ public sealed class DownloadService(
     /// <summary>
     ///     活跃校验的推进驱动。快照无法区分「谁启动了运行」，校验期出现无法解释的运行状态一律先暂停；
     ///     人工暂停意图保留（IsUserPaused 全程不动）。完成证据：当前轮次观察到 Checking 且结束、
-    ///     映射未变、无移动、无错误，并在停止状态读取稳定文件结果。
+    ///     映射未变、无移动、无错误，并在停止状态读取文件结果。仅做种收尾的暂停不单独作废证据；
+    ///     未确认共享数据时出现下载则保留风险，即使已停止也不得沿用旧证据。已落库的启动意图单独恢复。
     /// </summary>
     private async Task AdvanceVerificationAsync(IQbittorrentSession session,  DownloadTask               task,
                                                 TorrentSnapshot?    snapshot, DownloadVerificationIntent intent,
                                                 CancellationToken   ct)
     {
         var loaded = await LoadTaskWithFilesAsync(task.Id, ct);
-        if (loaded is null ||
-            loaded.Status is not (DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused)) return;
+        if (loaded?.Status is not (DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused)) return;
         task = loaded;
+        var readyToRun = intent.Step == DownloadVerificationStep.ReadyToRun;
 
         if (snapshot is null)
         {
@@ -1107,10 +1108,9 @@ public sealed class DownloadService(
             !MatchesIsolationPath(task.SavePath, intent.CandidateRoot)                           ||
             intent.Files.Count                                             != task.Files.Count   ||
             intent.Files.Select(file => file.FileIndex).Distinct().Count() != intent.Files.Count ||
-            intent.Files.Any(mapping => task.Files.All(file =>
-                                                           file.FileIndex             != mapping.FileIndex ||
-                                                           file.Size                  != mapping.Size      ||
-                                                           file.IsSelectedForDownload != mapping.Selected)))
+            intent.Files.Any(mapping => task.Files.All(file => file.FileIndex             != mapping.FileIndex ||
+                                                               file.Size                  != mapping.Size      ||
+                                                               file.IsSelectedForDownload != mapping.Selected)))
         {
             await EnterIsolationAsync(task, intent, "校验的保存根、文件身份或选择计划已改变，结果作废。", ct);
             return;
@@ -1161,30 +1161,48 @@ public sealed class DownloadService(
             return;
         }
 
-        if (snapshot is not { Category: QbittorrentTorrentCategory.Stopped })
+        switch (readyToRun)
         {
-            // 运行中（校验后自动恢复或外部启动，快照无法区分来源）：统一先暂停再观察；
-            // 暂停屡次不生效则转待核对，绝不带着未证实的共享写入继续。
-            if (intent.PauseAttempts >= MaxVerificationPauseAttempts)
+            case false when snapshot is not { Category: QbittorrentTorrentCategory.Stopped } :
             {
-                await MarkFailedAsync(task.Id, task.Status, "复用校验",
-                                      "校验期间任务持续处于运行状态且暂停不生效，为保护共享数据已停止推进，请人工核对。",
-                                      ct);
+                // 运行中（校验后自动恢复或外部启动，快照无法区分来源）：统一先暂停再观察；
+                // 暂停屡次不生效则转待核对，绝不带着未证实的共享写入继续。
+                if (intent.PauseAttempts >= MaxVerificationPauseAttempts)
+                {
+                    await MarkFailedAsync(task.Id, task.Status, "复用校验",
+                                          "校验期间任务持续处于运行状态且暂停不生效，为保护共享数据已停止推进，请人工核对。",
+                                          ct);
+                    return;
+                }
+
+                await SaveVerificationIntentAsync(task.Id, task.Status,
+                                                  intent with
+                                                  {
+                                                      PauseAttempts = intent.PauseAttempts + 1,
+                                                      UnverifiedWriteRisk = intent.UnverifiedWriteRisk == true ||
+                                                                            (intent.Step != DownloadVerificationStep
+                                                                                .Mapping &&
+                                                                             snapshot.Category !=
+                                                                             QbittorrentTorrentCategory
+                                                                                .Seeding) ||
+                                                                            intent is
+                                                                            {
+                                                                                PauseAttempts      : > 0,
+                                                                                UnverifiedWriteRisk: null
+                                                                            }
+                                                  }, ct);
+                await session.PauseAsync(task.InfoHash, ct);
+                logger.LogWarning("任务 {TaskId} 校验期间出现无法解释的运行状态，已发出暂停（第 {Attempts} 次）。",
+                                  task.Id, intent.PauseAttempts + 1);
                 return;
             }
-
-            await SaveVerificationIntentAsync(task.Id, task.Status,
-                                              intent with { PauseAttempts = intent.PauseAttempts + 1 }, ct);
-            await session.PauseAsync(task.InfoHash, ct);
-            logger.LogWarning("任务 {TaskId} 校验期间出现无法解释的运行状态，已发出暂停（第 {Attempts} 次）。",
-                              task.Id, intent.PauseAttempts + 1);
-            return;
-        }
-
-        if (intent.PauseAttempts > 0 && intent.Step != DownloadVerificationStep.ReadyToRun)
-        {
-            await EnterIsolationAsync(task, intent, "校验期间曾出现无法解释的运行，原校验证据失效，转为独立下载。", ct);
-            return;
+            // 暂停不能撤销已经发生的共享写入；旧意图有暂停记录却缺少风险分类时也不能认定安全。
+            case false when intent.Step != DownloadVerificationStep.Mapping &&
+                            (intent.UnverifiedWriteRisk == true ||
+                             intent is { PauseAttempts: > 0, UnverifiedWriteRisk: null }) :
+                await MarkFailedAsync(task.Id, task.Status, "复用校验",
+                                      "校验确认前曾出现可能补写共享文件的运行，旧证据不可继续使用；任务已停止，请核对后重试。", ct);
+                return;
         }
 
         if (task.IsUserPaused) return;
@@ -1282,6 +1300,9 @@ public sealed class DownloadService(
             if (!indexByPath.TryGetValue(file.OriginalRelativePath, out var qbIndex) ||
                 !remoteByIndex.TryGetValue(qbIndex, out var remote) ||
                 remote.Size != mapping.Size || remote.IsSelectedForDownload != mapping.Selected ||
+                (readyToRun && mapping.IsCandidate &&
+                 (file.VerificationOutcome != DownloadFileVerificationOutcomes.ReusedVerified ||
+                  !EqualVerificationPath(file.VerificationPath ?? string.Empty, mapping.VerificationPath))) ||
                 !EqualVerificationPath(JoinAbsolute(task.SavePath, file.CurrentRelativePath),
                                        mapping.VerificationPath) ||
                 !EqualVerificationPath(JoinAbsolute(intent.CandidateRoot, remote.Path), mapping.VerificationPath))
@@ -1306,14 +1327,19 @@ public sealed class DownloadService(
             return;
         }
 
-        // 文件结果读取期间下载器也可能被外部移动/启动；必须回读停止态与保存根，不能组合不同时刻的证据。
+        // 首次确认要求回读停止态；已持久化 ReadyToRun 时允许授权运行态，但仍须核对根和文件证据。
         var stable = (await session.FindTorrentsAsync([task.InfoHash], ct)).SingleOrDefault();
-        if (stable is not { Category: QbittorrentTorrentCategory.Stopped, IsMoving: false } ||
+        if (stable is not { IsMoving: false } ||
+            (readyToRun
+                ? stable.Category is not (QbittorrentTorrentCategory.Stopped or QbittorrentTorrentCategory.Downloading
+                 or QbittorrentTorrentCategory.Seeding)
+                : stable.Category != QbittorrentTorrentCategory.Stopped) ||
             !MatchesIsolationPath(stable.SavePath, intent.CandidateRoot)) return;
 
         // 候选全部通过：登记 ReusedVerified（绑定路径）并按完成情况收尾。
-        await using (var db = await dbContextFactory.CreateDbContextAsync(ct))
+        if (!readyToRun)
         {
+            await using var db = await dbContextFactory.CreateDbContextAsync(ct);
             var tracked = await db.DownloadTasks.Include(value => value.Files)
                                   .SingleAsync(value => value.Id == task.Id, ct);
             foreach (var mapping in intent.Files.Where(item => item.IsCandidate))
@@ -1368,9 +1394,10 @@ public sealed class DownloadService(
             await db.SaveChangesAsync(ct);
         }
 
-        // 全部通过：数据已完整，恢复进入做种（用户选定行为）；部分通过：其余文件在命名空间停靠路径
-        // 继续下载补齐（不触碰候选路径）。完成判定与现任切换由后续轮次按统一口径推进。
-        await session.ResumeAsync(task.InfoHash, ct);
+        // 完整任务直接完成，保留分享限制或外部停止；部分完成只在仍停止时启动独立缺集。
+        // ReadyToRun 已在运行表示上次 Resume 已生效（可能丢响应），不能先暂停再重复启动。
+        if (!allSelectedComplete && stable.Category == QbittorrentTorrentCategory.Stopped)
+            await session.ResumeAsync(task.InfoHash, ct);
         await UpdateTaskAsync(task.Id, task.Status, update =>
         {
             update.IsSystemPaused     = false;
@@ -1378,8 +1405,10 @@ public sealed class DownloadService(
             update.PreparationStage   = DownloadPreparationStage.ReadyToRun;
             update.LastSyncedAtUtc    = timeProvider.GetUtcNow();
         }, ct);
+        if (allSelectedComplete)
+            await ApplySnapshotAsync(task.Id, task.Status, stable with { Progress = 1.0 }, session, ct);
         logger.LogInformation(allSelectedComplete
-                                  ? "任务 {TaskId} 复用校验全部通过，已确认复用既有数据并进入做种。"
+                                  ? "任务 {TaskId} 复用校验全部通过，已确认内容完整并进入完成归档。"
                                   : "任务 {TaskId} 复用校验候选全部通过，其余文件继续下载。", task.Id);
     }
 

@@ -234,16 +234,15 @@ public sealed partial class DownloadVerificationTests
         Assert.NotNull(observing);
         Assert.True(observing.ObservedChecking);
 
-        // 候选数据全部通过：结束校验 → 复用做种 + ReusedVerified。
+        // 候选数据全部通过：结束校验 → 直接完成 + ReusedVerified，不启动已完整的停止任务。
         harness.Store.FileIdentities[task.InfoHash] =
             harness.Store.FileIdentities[task.InfoHash]
                    .Select(file => file with { Progress = 1.0 })
                    .ToList();
         harness.Store.FinishRecheck(task.InfoHash);
-        await harness.ReconcileAsync();          // 结论轮：全部通过 → Resume 做种。
-        CompleteTorrent(harness, task.InfoHash); // 做种快照：所选内容已确认完整。
+        await harness.ReconcileAsync(); // 结论轮：全部通过 → 完成归档。
 
-        Assert.Contains(task.InfoHash, harness.Store.ResumeCalls);
+        Assert.DoesNotContain(task.InfoHash, harness.Store.ResumeCalls);
         var reused = await harness.GetTaskAsync(taskId);
         Assert.Null(reused.VerificationIntent);
         Assert.False(reused.IsSystemPaused);
@@ -404,6 +403,113 @@ public sealed partial class DownloadVerificationTests
         Assert.Null(held.CompletedAtUtc);
         Assert.False(held.IsUserPaused);
         Assert.NotNull(DownloadVerificationIntent.FromJson(held.VerificationIntent));
+    }
+
+    [Fact]
+    public async Task Verification_SeedingThenStoppedTorrent_PassesStopGuardAndReuses()
+    {
+        using var harness = await VerificationHarness.CreateAsync();
+        var       taskId  = await harness.CreateUploadAsync(SingleFileTorrent());
+        var       task    = await harness.GetTaskAsync(taskId);
+        var       target  = await ArchivalTargetAsync(harness, taskId);
+        SeedExternalOccupant(harness, target, 1024);
+
+        harness.Store.RecheckBehavior = FakeRecheckBehavior.EnterChecking;
+        await harness.ReconcileAsync(); // 提交（候选根）。
+        await harness.ReconcileAsync(); // 映射 + recheck（进入 Checking）。
+        await harness.ReconcileAsync(); // 观察位。
+
+        // 校验结束时任务已完成且被停止（分享率达标或外部停止 → qB 的 stoppedUP）：
+        // 「做种后停止」是停止而不是运行中，停止守卫必须直接通过，不得反复发暂停或判「暂停不生效」。
+        harness.Store.FileIdentities[task.InfoHash] =
+            harness.Store.FileIdentities[task.InfoHash]
+                   .Select(file => file with { Progress = 1.0 })
+                   .ToList();
+        harness.Store.Torrents[task.InfoHash] = harness.Store.Torrents[task.InfoHash] with
+        {
+            Category = QbittorrentTorrentCategory.Seeding, Progress = 1.0
+        };
+        harness.Store.Paused.Add(task.InfoHash);
+        harness.Store.FinishRecheck(task.InfoHash);
+        await harness.ReconcileAsync(); // 结论轮。
+
+        Assert.DoesNotContain(task.InfoHash, harness.Store.PauseCalls);
+        Assert.DoesNotContain(task.InfoHash, harness.Store.ResumeCalls);
+        var reused = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Completed, reused.Status);
+        Assert.Null(reused.VerificationIntent);
+        await using (var db = await harness.CreateDbContextAsync())
+        {
+            var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
+            Assert.Equal(DownloadFileVerificationOutcomes.ReusedVerified, file.VerificationOutcome);
+        }
+    }
+
+    [Fact]
+    public async Task Verification_PauseTakesEffect_EvidenceSurvivesAndReuses()
+    {
+        using var harness = await VerificationHarness.CreateAsync();
+        var       taskId  = await harness.CreateUploadAsync(SingleFileTorrent());
+        var       task    = await harness.GetTaskAsync(taskId);
+        var       target  = await ArchivalTargetAsync(harness, taskId);
+        SeedExternalOccupant(harness, target, 1024);
+
+        harness.Store.RecheckBehavior = FakeRecheckBehavior.EnterChecking;
+        await harness.ReconcileAsync(); // 提交（候选根）。
+        await harness.ReconcileAsync(); // 映射 + recheck（进入 Checking）。
+        await harness.ReconcileAsync(); // 观察位。
+
+        // 校验后完整内容进入做种：暂停后保留证据，不与未确认候选发生下载混为一谈。
+        harness.Store.FinishRecheck(task.InfoHash);
+        CompleteTorrent(harness, task.InfoHash);
+        harness.Store.Torrents[task.InfoHash] = harness.Store.Torrents[task.InfoHash] with
+        {
+            Category = QbittorrentTorrentCategory.Seeding
+        };
+        await harness.ReconcileAsync();
+        Assert.Contains(task.InfoHash, harness.Store.PauseCalls);
+
+        // 暂停已生效（回到停止）：发过暂停本身不作废本轮校验证据——
+        // 此处只观察到完整内容做种，没有未确认的共享下载，应继续完成归档。
+        await harness.ReconcileAsync(); // 结论轮。
+
+        var reused = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadIsolationState.None, reused.IsolationState);
+        Assert.Equal(DownloadTaskStatus.Completed, reused.Status);
+        Assert.Null(reused.VerificationIntent);
+        Assert.DoesNotContain(task.InfoHash, harness.Store.ResumeCalls);
+        await using (var db = await harness.CreateDbContextAsync())
+        {
+            var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
+            Assert.Equal(DownloadFileVerificationOutcomes.ReusedVerified, file.VerificationOutcome);
+        }
+    }
+
+    [Fact]
+    public async Task SingleFlow_ResumeThenImmediateShareLimitStop_CompletesWithoutRestarting()
+    {
+        using var harness = await VerificationHarness.CreateAsync();
+        var       taskId  = await harness.CreateUploadAsync(SingleFileTorrent());
+        var       task    = await harness.GetTaskAsync(taskId);
+        for (var i = 0; i < 3; i++) await harness.ReconcileAsync();
+        Assert.Contains(task.InfoHash, harness.Store.ResumeCalls);
+
+        // 启动后立即因分享率达标被 qB 停止（stoppedUP）：内容已完整即直接完成归档，
+        // 不得再次认定启动失败或循环 Resume 绕过分享限制。
+        harness.Store.FileIdentities[task.InfoHash] =
+            harness.Store.FileIdentities[task.InfoHash]
+                   .Select(file => file with { Progress = 1.0 })
+                   .ToList();
+        harness.Store.Torrents[task.InfoHash] = harness.Store.Torrents[task.InfoHash] with
+        {
+            Category = QbittorrentTorrentCategory.Seeding, Progress = 1.0
+        };
+        harness.Store.Paused.Add(task.InfoHash);
+        await harness.ReconcileAsync();
+
+        var completed = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
+        Assert.Equal(1, harness.Store.ResumeCalls.Count(hash => hash == task.InfoHash));
     }
 
     // ───────────────────────── 助手 ─────────────────────────

@@ -171,6 +171,9 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     /// <summary>启动请求失败，用于验证已持久化的启动意图可恢复。</summary>
     public Exception? ResumeException { get; set; }
 
+    /// <summary>Resume 已在远端生效后的回调，用于模拟响应丢失或分享限制立即停止。</summary>
+    public Func<Task>? AfterResumeAsync { get; set; }
+
     /// <summary>AddTorrent 完成后回调：可确定性模拟服务端已接收、客户端尚未收到结果。</summary>
     public Func<Task>? AfterAddTorrentAsync { get; set; }
 
@@ -341,13 +344,13 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         return Task.CompletedTask;
     }
 
-    public Task ResumeAsync(string infoHash, CancellationToken cancellationToken = default)
+    public async Task ResumeAsync(string infoHash, CancellationToken cancellationToken = default)
     {
         if (ResumeException is not null) throw ResumeException;
         store.ResumeCalls.Add(infoHash);
         store.Paused.Remove(infoHash);
         store.StoppedAdds.Remove(infoHash);
-        return Task.CompletedTask;
+        if (AfterResumeAsync is not null) await AfterResumeAsync();
     }
 
     public Task RenameTorrentAsync(string infoHash, string newName, CancellationToken cancellationToken = default)
@@ -425,8 +428,10 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         var category = snapshot.Category;
         // 校验阶段优先报告：进度可能临时波动，不推进冲突计划。
         if (store.Rechecking.Contains(hash)) return snapshot with { Category = QbittorrentTorrentCategory.Checking };
+        // 做种被暂停对应 qB 的 stoppedUP：映射后同样是 Stopped（完成程度由进度独立判定）。
         if ((store.StoppedAdds.Contains(hash) && category == QbittorrentTorrentCategory.Downloading) ||
-            (store.Paused.Contains(hash)      && category == QbittorrentTorrentCategory.Downloading))
+            (store.Paused.Contains(hash) && category is QbittorrentTorrentCategory.Downloading
+                                                     or QbittorrentTorrentCategory.Seeding))
             category = QbittorrentTorrentCategory.Stopped;
         return snapshot with { Category = category };
     }

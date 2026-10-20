@@ -340,12 +340,15 @@ public sealed partial class DownloadVerificationTests
     public async Task Verification_ResumeFailureKeepsRecoverableIntentAndEvidence(bool invalidate)
     {
         using var harness = await VerificationHarness.CreateAsync();
-        var       taskId  = await CreateCandidateAsync(harness);
+        var       taskId  = await CreatePartialCandidateAsync(harness);
         var       task    = await harness.GetTaskAsync(taskId);
         harness.Store.RecheckBehavior = FakeRecheckBehavior.EnterChecking;
         for (var i = 0; i < 3; i++) await harness.ReconcileAsync();
         harness.Store.FileIdentities[task.InfoHash] = harness.Store.FileIdentities[task.InfoHash]
-                                                             .Select(file => file with { Progress = 1 }).ToList();
+                                                             .Select(file => file with
+                                                              {
+                                                                  Progress = file.Index == 0 ? 1 : 0
+                                                              }).ToList();
         harness.Store.FinishRecheck(task.InfoHash);
         harness.Factory.SessionConfigurator =
             session => session.ResumeException = new IOException("Resume interrupted");
@@ -364,7 +367,8 @@ public sealed partial class DownloadVerificationTests
             for (var i = 0; i < 7; i++) await harness.ReconcileAsync();
             await using var db = await harness.CreateDbContextAsync();
             Assert.Equal(DownloadFileVerificationOutcomes.ReuseUnverified,
-                         (await db.DownloadTaskFiles.SingleAsync(f => f.DownloadTaskId == taskId)).VerificationOutcome);
+                         (await db.DownloadTaskFiles.SingleAsync(f => f.DownloadTaskId == taskId && f.FileIndex == 0))
+                        .VerificationOutcome);
             Assert.Equal(TaskRootOf(harness, taskId), (await harness.GetTaskAsync(taskId)).SavePath);
             Assert.Contains(harness.Store.RenameFileCalls,
                             call => call.Hash == task.InfoHash && call.NewPath.StartsWith("Media/Anime/"));
@@ -514,12 +518,15 @@ public sealed partial class DownloadVerificationTests
     public async Task Verification_ReselectionAfterSuccessInvalidatesEvidenceAndIsolatesBeforeDownload()
     {
         using var harness = await VerificationHarness.CreateAsync();
-        var       taskId  = await CreateCandidateAsync(harness);
+        var       taskId  = await CreatePartialCandidateAsync(harness);
         var       task    = await harness.GetTaskAsync(taskId);
         harness.Store.RecheckBehavior = FakeRecheckBehavior.EnterChecking;
         for (var i = 0; i < 3; i++) await harness.ReconcileAsync();
         harness.Store.FileIdentities[task.InfoHash] = harness.Store.FileIdentities[task.InfoHash]
-                                                             .Select(file => file with { Progress = 1 }).ToList();
+                                                             .Select(file => file with
+                                                              {
+                                                                  Progress = file.Index == 0 ? 1 : 0
+                                                              }).ToList();
         harness.Store.FinishRecheck(task.InfoHash);
         await harness.ReconcileAsync();
         var successorId = Guid.NewGuid();
@@ -530,7 +537,7 @@ public sealed partial class DownloadVerificationTests
                 Id       = successorId, InfoHash  = new string('c', 40), Status = DownloadTaskStatus.Failed,
                 SavePath = "/unused", TorrentFile = SingleFileTorrent("繁日双语"), NamingSnapshot = "Successor"
             });
-            var file = await db.DownloadTaskFiles.SingleAsync(f => f.DownloadTaskId == taskId);
+            var file = await db.DownloadTaskFiles.SingleAsync(f => f.DownloadTaskId == taskId && f.FileIndex == 0);
             file.IsSelectedForDownload = false;
             file.SupersededByTaskId    = successorId;
             await db.SaveChangesAsync();
@@ -539,7 +546,7 @@ public sealed partial class DownloadVerificationTests
         await harness.Provider.GetRequiredService<DownloadService>().DeleteAsync(successorId, false, false);
         await using (var db = await harness.CreateDbContextAsync())
         {
-            var file = await db.DownloadTaskFiles.SingleAsync(f => f.DownloadTaskId == taskId);
+            var file = await db.DownloadTaskFiles.SingleAsync(f => f.DownloadTaskId == taskId && f.FileIndex == 0);
             Assert.True(file.IsSelectedForDownload);
             Assert.Equal(DownloadFileVerificationOutcomes.ReuseUnverified, file.VerificationOutcome);
         }

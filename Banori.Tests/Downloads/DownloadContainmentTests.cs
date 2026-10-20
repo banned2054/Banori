@@ -88,7 +88,10 @@ public sealed partial class DownloadVerificationTests
         await harness.ReconcileAsync(); // 映射 + recheck（进入 Checking）。
         await harness.ReconcileAsync(); // 观察位。
         harness.Store.FileIdentities[big.InfoHash] = harness.Store.FileIdentities[big.InfoHash]
-                                                            .Select(file => file with { Progress = 1.0 })
+                                                            .Select(file => file with
+                                                             {
+                                                                 Progress = file.Index == 0 ? 1.0 : 0
+                                                             })
                                                             .ToList();
         harness.Store.FinishRecheck(big.InfoHash);
         await harness.ReconcileAsync(); // 结论轮：候选通过 → 证据落库。
@@ -131,7 +134,7 @@ public sealed partial class DownloadVerificationTests
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
                                                                 harness
                                                                    .CreateUploadAsync(ContainmentBatch(ContainmentFileName(1),
-                                                                        "readme.txt")));
+                                                                                      "readme.txt")));
 
         Assert.Equal(addsBefore, harness.Store.AddCalls.Count);
         Assert.Empty(harness.Store.DeleteCalls);

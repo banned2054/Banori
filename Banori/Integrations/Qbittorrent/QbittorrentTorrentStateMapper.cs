@@ -23,14 +23,15 @@ public static class QbittorrentTorrentStateMapper
              or EnumTorrentState.Moving
                 => QbittorrentTorrentCategory.Downloading,
 
+            // StoppedUpload 是「做种后停止」：仍是停止（含已完成停止），完成程度由进度与文件结果独立判定。
             EnumTorrentState.StoppedDownload
+             or EnumTorrentState.StoppedUpload
                 => QbittorrentTorrentCategory.Stopped,
 
             EnumTorrentState.Uploading
              or EnumTorrentState.StalledUpload
              or EnumTorrentState.ForcedUpload
              or EnumTorrentState.QueuedUpload
-             or EnumTorrentState.StoppedUpload
                 => QbittorrentTorrentCategory.Seeding,
 
             EnumTorrentState.Error

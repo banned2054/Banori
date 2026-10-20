@@ -17,7 +17,7 @@ public sealed class QbittorrentTorrentStateMapperTests
     [InlineData(EnumTorrentState.StoppedDownload, QbittorrentTorrentCategory.Stopped)]
     [InlineData(EnumTorrentState.Uploading, QbittorrentTorrentCategory.Seeding)]
     [InlineData(EnumTorrentState.StalledUpload, QbittorrentTorrentCategory.Seeding)]
-    [InlineData(EnumTorrentState.StoppedUpload, QbittorrentTorrentCategory.Seeding)]
+    [InlineData(EnumTorrentState.StoppedUpload, QbittorrentTorrentCategory.Stopped)]
     [InlineData(EnumTorrentState.Error, QbittorrentTorrentCategory.Error)]
     [InlineData(EnumTorrentState.MissingFiles, QbittorrentTorrentCategory.Error)]
     [InlineData(EnumTorrentState.Unknown, QbittorrentTorrentCategory.Unknown)]
