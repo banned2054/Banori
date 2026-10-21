@@ -26,9 +26,8 @@ public sealed class SelectionRuleConfigSerializationTests
             Version            = 7
         };
 
-        var restored = SelectionRuleConfigSerialization.TryDeserialize(
-                                                                       SelectionRuleConfigSerialization
-                                                                          .Serialize(config));
+        var restored =
+            SelectionRuleConfigSerialization.TryDeserialize(SelectionRuleConfigSerialization.Serialize(config));
 
         Assert.NotNull(restored);
         Assert.Equal(config.Mode, restored.Mode);

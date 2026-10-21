@@ -12,10 +12,7 @@ public sealed class SubjectEpisodeCorrectionPolicyTests
     [InlineData(484623, 14, 484623, 1)]
     [InlineData(420628, 24, 420628, 24)]
     public void Apply_PreservesLegacyCorrections(
-        int subjectId,
-        int episode,
-        int expectedSubjectId,
-        int expectedEpisode)
+        int subjectId, int episode, int expectedSubjectId, int expectedEpisode)
     {
         var result = _policy.Apply(subjectId, episode);
 

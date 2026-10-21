@@ -11,55 +11,52 @@ public sealed class CandidateRankingPolicyTests
     private static EpisodeCandidate Candidate(string          group, EnumLanguage? language, int version = 1,
                                               EnumResolution  resolution     = EnumResolution.R1080P,
                                               DateTimeOffset? publishedAtUtc = null,
-                                              string?         stableId       = null, Guid? itemId = null) =>
-        new()
-        {
-            FeedItemId     = itemId ?? Guid.NewGuid(),
-            SubjectId      = 100,
-            MediaType      = "SingleEpisode",
-            Episode        = 3,
-            Group          = group,
-            Language       = language,
-            Resolution     = resolution,
-            Version        = version,
-            PublishedAtUtc = publishedAtUtc,
-            StableId       = stableId ?? $"guid:{group}-{language}-v{version}"
-        };
+                                              string?         stableId       = null, Guid? itemId = null) => new()
+    {
+        FeedItemId     = itemId ?? Guid.NewGuid(),
+        SubjectId      = 100,
+        MediaType      = "SingleEpisode",
+        Episode        = 3,
+        Group          = group,
+        Language       = language,
+        Resolution     = resolution,
+        Version        = version,
+        PublishedAtUtc = publishedAtUtc,
+        StableId       = stableId ?? $"guid:{group}-{language}-v{version}"
+    };
 
     private static SelectionRuleConfig IndependentConfig(
         SelectionDimensionOrder order         = SelectionDimensionOrder.GroupFirst,
         LanguageMatchMode       match         = LanguageMatchMode.Exact,
         UnmatchedPolicy         unmatched     = UnmatchedPolicy.LowestPriority,
         EnumLanguage[]?         languageOrder = null,
-        int                     version       = 1) =>
-        new()
-        {
-            Mode               = SelectionMode.Independent,
-            GroupOrder         = ["LoliHouse", "ANi"],
-            LanguageOrder      = languageOrder ?? [EnumLanguage.JpSc, EnumLanguage.Sc],
-            DimensionOrder     = order,
-            CombinedEntries    = [],
-            LanguageMatch      = match,
-            Unmatched          = unmatched,
-            AllowedResolutions = [EnumResolution.R1080P],
-            Version            = version
-        };
+        int                     version       = 1) => new()
+    {
+        Mode               = SelectionMode.Independent,
+        GroupOrder         = ["LoliHouse", "ANi"],
+        LanguageOrder      = languageOrder ?? [EnumLanguage.JpSc, EnumLanguage.Sc],
+        DimensionOrder     = order,
+        CombinedEntries    = [],
+        LanguageMatch      = match,
+        Unmatched          = unmatched,
+        AllowedResolutions = [EnumResolution.R1080P],
+        Version            = version
+    };
 
     private static SelectionRuleConfig CombinedConfig(
         IReadOnlyList<CombinedRuleEntry> entries,
         LanguageMatchMode                match     = LanguageMatchMode.Exact,
-        UnmatchedPolicy                  unmatched = UnmatchedPolicy.NeedsReview) =>
-        new()
-        {
-            Mode               = SelectionMode.Combined,
-            GroupOrder         = [],
-            LanguageOrder      = [],
-            DimensionOrder     = SelectionDimensionOrder.GroupFirst,
-            CombinedEntries    = entries,
-            LanguageMatch      = match,
-            Unmatched          = unmatched,
-            AllowedResolutions = [EnumResolution.R1080P]
-        };
+        UnmatchedPolicy                  unmatched = UnmatchedPolicy.NeedsReview) => new()
+    {
+        Mode               = SelectionMode.Combined,
+        GroupOrder         = [],
+        LanguageOrder      = [],
+        DimensionOrder     = SelectionDimensionOrder.GroupFirst,
+        CombinedEntries    = entries,
+        LanguageMatch      = match,
+        Unmatched          = unmatched,
+        AllowedResolutions = [EnumResolution.R1080P]
+    };
 
     [Fact]
     public void Select_AnivalsHigherGroup_AnyInputOrderPicksSameWinner()

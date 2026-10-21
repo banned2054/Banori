@@ -34,14 +34,11 @@ public static class SelectionRuleConfigSerialization
     }
 
     /// <summary>保存前规范化：字幕组名去首尾空白并剔除空项；组合条件同理。其余字段按用户输入保留。</summary>
-    public static SelectionRuleConfig Normalize(SelectionRuleConfig config)
+    public static SelectionRuleConfig Normalize(SelectionRuleConfig config) => config with
     {
-        return config with
-        {
-            GroupOrder = [.. config.GroupOrder.Select(group => group.Trim()).Where(group => group.Length > 0)],
-            CombinedEntries = [.. config.CombinedEntries.Select(entry => entry with { Group = entry.Group?.Trim() })]
-        };
-    }
+        GroupOrder = [.. config.GroupOrder.Select(group => group.Trim()).Where(group => group.Length > 0)],
+        CombinedEntries = [.. config.CombinedEntries.Select(entry => entry with { Group = entry.Group?.Trim() })]
+    };
 
     /// <summary>
     ///     内容相等：忽略 Version 与字幕组大小写（规则匹配不区分大小写，仅大小写不同的配置语义相同），
@@ -70,8 +67,10 @@ public static class SelectionRuleConfigSerialization
     private static bool IsValid(SelectionRuleConfig config)
     {
         if (config.Version < 1) return false;
-        if (config.GroupOrder is null      || config.LanguageOrder is null ||
-            config.CombinedEntries is null || config.AllowedResolutions is null)
+        if (config.GroupOrder is null      ||
+            config.LanguageOrder is null   ||
+            config.CombinedEntries is null ||
+            config.AllowedResolutions is null)
             return false;
         if (config.GroupOrder.Any(group => string.IsNullOrWhiteSpace(group))) return false;
         if (config.CombinedEntries.Any(entry => entry.Group is not null &&
@@ -97,10 +96,8 @@ public static class SelectionRuleConfigSerialization
         return true;
     }
 
-    private static bool SequenceEquals<T>(IReadOnlyList<T> left, IReadOnlyList<T> right, Func<T, T, bool> equals)
-    {
-        return left.Count == right.Count && left.Zip(right).All(pair => equals(pair.First, pair.Second));
-    }
+    private static bool SequenceEquals<T>(IReadOnlyList<T> left, IReadOnlyList<T> right, Func<T, T, bool> equals) =>
+        left.Count == right.Count && left.Zip(right).All(pair => equals(pair.First, pair.Second));
 
     private static bool EntryEquals(CombinedRuleEntry left, CombinedRuleEntry right)
     {

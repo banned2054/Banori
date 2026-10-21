@@ -8,24 +8,21 @@ namespace Banori.Core.Rules.Selection;
 /// </summary>
 public static class LanguageComposition
 {
-    public static IReadOnlySet<EnumLanguage> Expand(EnumLanguage language)
+    public static IReadOnlySet<EnumLanguage> Expand(EnumLanguage language) => language switch
     {
-        return language switch
-        {
-            EnumLanguage.Jp      => Set(EnumLanguage.Jp),
-            EnumLanguage.Sc      => Set(EnumLanguage.Sc),
-            EnumLanguage.Tc      => Set(EnumLanguage.Tc),
-            EnumLanguage.Eng     => Set(EnumLanguage.Eng),
-            EnumLanguage.JpSc    => Set(EnumLanguage.Jp, EnumLanguage.Sc),
-            EnumLanguage.JpTc    => Set(EnumLanguage.Jp, EnumLanguage.Tc),
-            EnumLanguage.ScTc    => Set(EnumLanguage.Sc, EnumLanguage.Tc),
-            EnumLanguage.EngSc   => Set(EnumLanguage.Eng, EnumLanguage.Sc),
-            EnumLanguage.EngTc   => Set(EnumLanguage.Eng, EnumLanguage.Tc),
-            EnumLanguage.JpScTc  => Set(EnumLanguage.Jp, EnumLanguage.Sc, EnumLanguage.Tc),
-            EnumLanguage.EngScTc => Set(EnumLanguage.Eng, EnumLanguage.Sc, EnumLanguage.Tc),
-            _                    => Set(language)
-        };
-    }
+        EnumLanguage.Jp      => Set(EnumLanguage.Jp),
+        EnumLanguage.Sc      => Set(EnumLanguage.Sc),
+        EnumLanguage.Tc      => Set(EnumLanguage.Tc),
+        EnumLanguage.Eng     => Set(EnumLanguage.Eng),
+        EnumLanguage.JpSc    => Set(EnumLanguage.Jp, EnumLanguage.Sc),
+        EnumLanguage.JpTc    => Set(EnumLanguage.Jp, EnumLanguage.Tc),
+        EnumLanguage.ScTc    => Set(EnumLanguage.Sc, EnumLanguage.Tc),
+        EnumLanguage.EngSc   => Set(EnumLanguage.Eng, EnumLanguage.Sc),
+        EnumLanguage.EngTc   => Set(EnumLanguage.Eng, EnumLanguage.Tc),
+        EnumLanguage.JpScTc  => Set(EnumLanguage.Jp, EnumLanguage.Sc, EnumLanguage.Tc),
+        EnumLanguage.EngScTc => Set(EnumLanguage.Eng, EnumLanguage.Sc, EnumLanguage.Tc),
+        _                    => Set(language)
+    };
 
     /// <summary>配置语言是否命中候选语言：完全匹配要求相等；包含匹配要求配置的基础语言全部出现在候选中。</summary>
     public static bool Matches(EnumLanguage configured, EnumLanguage? candidate, LanguageMatchMode mode)

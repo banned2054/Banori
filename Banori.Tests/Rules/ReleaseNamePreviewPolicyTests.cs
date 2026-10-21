@@ -65,8 +65,7 @@ public sealed class ReleaseNamePreviewPolicyTests
     [Fact]
     public void Create_NamespacedTokens_KeepAniParserBangumiAndSiteValuesSeparate()
     {
-        var ingredients = new TorrentNamingIngredients(
-                                                       "{bgm.nameCn} {ani.episode} {ani.source} {site.source}", "中文名",
+        var ingredients = new TorrentNamingIngredients("{bgm.nameCn} {ani.episode} {ani.source} {site.source}", "中文名",
                                                        "07", 2, "sc", "mikan",
                                                        FileTemplate : "{ani.title} {bgm.name} {ani.resolution}",
                                                        AniTitle : "[Group] Parsed Title",

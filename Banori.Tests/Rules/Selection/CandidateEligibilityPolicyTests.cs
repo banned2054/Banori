@@ -7,18 +7,17 @@ public sealed class CandidateEligibilityPolicyTests
 {
     private static EpisodeCandidate Candidate(string         mediaType  = "SingleEpisode",
                                               EnumResolution resolution = EnumResolution.R1080P,
-                                              decimal        episode    = 3) =>
-        new()
-        {
-            FeedItemId = Guid.NewGuid(),
-            SubjectId  = 100,
-            MediaType  = mediaType,
-            Episode    = episode,
-            Group      = "ANi",
-            Language   = EnumLanguage.JpSc,
-            Resolution = resolution,
-            Version    = 1
-        };
+                                              decimal        episode    = 3) => new()
+    {
+        FeedItemId = Guid.NewGuid(),
+        SubjectId  = 100,
+        MediaType  = mediaType,
+        Episode    = episode,
+        Group      = "ANi",
+        Language   = EnumLanguage.JpSc,
+        Resolution = resolution,
+        Version    = 1
+    };
 
     private static SelectionRuleConfig Config(params EnumResolution[] allowed)
     {

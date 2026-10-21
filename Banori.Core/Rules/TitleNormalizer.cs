@@ -6,10 +6,8 @@ namespace Banori.Core.Rules;
 /// </summary>
 public static class TitleNormalizer
 {
-    public static string Normalize(string? title)
-    {
-        return string.IsNullOrWhiteSpace(title)
+    public static string Normalize(string? title) =>
+        string.IsNullOrWhiteSpace(title)
             ? string.Empty
             : string.Concat(title.Trim().ToUpperInvariant().Where(character => !char.IsWhiteSpace(character)));
-    }
 }
