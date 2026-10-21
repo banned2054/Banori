@@ -96,6 +96,17 @@ public sealed class FakeTorrentStore
 
     public List<(string Hash, IReadOnlyCollection<int> Indices, bool Download)> PendingSelections { get; } = [];
 
+    public List<(byte[] Bytes, string SavePath, IReadOnlyList<string> Tags, string? Rename)> AddCalls { get; } = [];
+    public List<(string Hash, string Name)> RenameCalls { get; } = [];
+    public List<(string Hash, string OldPath, string NewPath)> RenameFileCalls { get; } = [];
+    public List<(string Hash, string OldPath, string NewPath)> RenameFolderCalls { get; } = [];
+    public List<(string Hash, string Tag)> AddTagCalls { get; } = [];
+    public List<string> ResumeCalls { get; } = [];
+    public List<string> PauseCalls { get; } = [];
+    public List<(string Hash, bool DeleteFiles)> DeleteCalls { get; } = [];
+    public List<(string Hash, IReadOnlyCollection<int> Indices, bool Download)> SelectionCalls { get; } = [];
+    public List<string> RecheckCalls { get; } = [];
+
     /// <summary>放行延迟的选择变更：一次性应用到文件身份。</summary>
     public void CompleteSelections()
     {
@@ -107,17 +118,6 @@ public sealed class FakeTorrentStore
                                             .ToList();
         PendingSelections.Clear();
     }
-
-    public List<(byte[] Bytes, string SavePath, IReadOnlyList<string> Tags, string? Rename)> AddCalls { get; } = [];
-    public List<(string Hash, string Name)> RenameCalls { get; } = [];
-    public List<(string Hash, string OldPath, string NewPath)> RenameFileCalls { get; } = [];
-    public List<(string Hash, string OldPath, string NewPath)> RenameFolderCalls { get; } = [];
-    public List<(string Hash, string Tag)> AddTagCalls { get; } = [];
-    public List<string> ResumeCalls { get; } = [];
-    public List<string> PauseCalls { get; } = [];
-    public List<(string Hash, bool DeleteFiles)> DeleteCalls { get; } = [];
-    public List<(string Hash, IReadOnlyCollection<int> Indices, bool Download)> SelectionCalls { get; } = [];
-    public List<string> RecheckCalls { get; } = [];
 
     /// <summary>结束校验阶段：种子回到非 Checking 状态；intoError 时进入 Error（校验后出错的场景）。</summary>
     public void FinishRecheck(string hash, bool intoError = false)
@@ -248,16 +248,11 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
             if (!store.FileIdentities.ContainsKey(hash))
             {
                 var indexByPath = TorrentDownloadPolicy.GetQbittorrentFileIndices(torrentBytes, torrent, isMultiFile);
-                store.FileIdentities[hash] = torrent.Files
-                                                    .Select(file =>
-                                                     {
-                                                         var path = TorrentDownloadPolicy.GetRelativePath(
-                                                              torrent, file, isMultiFile);
-                                                         return new TorrentFileSnapshot(
-                                                              indexByPath.GetValueOrDefault(path, -1), path,
-                                                              file.Length);
-                                                     })
-                                                    .ToList();
+                store.FileIdentities[hash] = torrent.Files.Select(file =>
+                {
+                    var path = TorrentDownloadPolicy.GetRelativePath(torrent, file, isMultiFile);
+                    return new TorrentFileSnapshot(indexByPath.GetValueOrDefault(path, -1), path, file.Length);
+                }).ToList();
             }
 
             if (startStopped) store.StoppedAdds.Add(hash);
@@ -294,16 +289,11 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     public Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(
         string? tag, CancellationToken cancellationToken = default)
     {
-        return Task.FromResult<IReadOnlyList<TorrentSnapshot>>(store.Torrents.Values
-                                                                    .Where(snapshot => !store.HiddenTorrents
-                                                                                  .Contains(snapshot.Hash) &&
-                                                                               (tag is null ||
-                                                                                   SnapshotFor(snapshot.Hash)
-                                                                                      .Tags.Contains(tag,
-                                                                                                StringComparer
-                                                                                                   .OrdinalIgnoreCase)))
-                                                                    .Select(snapshot => SnapshotFor(snapshot.Hash))
-                                                                    .ToList());
+        return Task.FromResult<IReadOnlyList<TorrentSnapshot>>(
+            store.Torrents.Values
+                 .Where(snapshot => !store.HiddenTorrents.Contains(snapshot.Hash) &&
+                                    (tag is null || SnapshotFor(snapshot.Hash).Tags.Contains(tag, StringComparer.OrdinalIgnoreCase)))
+                 .Select(snapshot => SnapshotFor(snapshot.Hash)).ToList());
     }
 
     public Task AddTagAsync(string infoHash, string tag, CancellationToken cancellationToken = default)
@@ -327,11 +317,10 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     {
         if (store.FileIdentities.TryGetValue(infoHash, out var files))
             return Task.FromResult<IReadOnlyList<TorrentFileSnapshot>>(files.ToList());
-        return Task.FromResult<IReadOnlyList<TorrentFileSnapshot>>(store.Files.TryGetValue(infoHash, out var names)
-                                                                       ? names.Select((name, index) =>
-                                                                                    new TorrentFileSnapshot(index, name,
-                                                                                             1024)).ToList()
-                                                                       : []);
+        return Task.FromResult<IReadOnlyList<TorrentFileSnapshot>>(
+            store.Files.TryGetValue(infoHash, out var names)
+                ? names.Select((name, index) => new TorrentFileSnapshot(index, name, 1024)).ToList()
+                : []);
     }
 
     public Task SetTorrentFileSelectionAsync(string                   infoHash,

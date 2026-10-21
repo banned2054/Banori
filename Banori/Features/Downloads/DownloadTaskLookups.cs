@@ -46,8 +46,8 @@ internal static class DownloadTaskLookups
     ///     确认单集且文件名不可解析时，才允许使用任务级版本回退。
     /// </summary>
     internal static bool IsTakeoverEligibleIncumbent(
-        DownloadTaskStatus incumbentStatus, Guid? incumbentReplacedByTaskId, int incumbentVersion,
-        int                challengerVersion)
+        DownloadTaskStatus incumbentStatus,  Guid? incumbentReplacedByTaskId,
+        int                incumbentVersion, int   challengerVersion)
         => incumbentStatus == DownloadTaskStatus.Completed &&
            incumbentReplacedByTaskId is null               &&
            incumbentVersion <= challengerVersion;
@@ -101,13 +101,13 @@ internal static class DownloadTaskLookups
     ///     不得退出。SelectionSyncPending 不在此列：选择下推只是执行尾巴，退出后无需再下推。
     /// </summary>
     internal static bool HasResidualDuties(
-        AniParser parser, DownloadTask task, IReadOnlyList<DownloadTaskFile> files,
-        IReadOnlyList<EpisodeVersion> rows, Func<DownloadTask, DownloadTaskFile, decimal?> episodeOf)
+        AniParser                     parser, DownloadTask task, IReadOnlyList<DownloadTaskFile> files,
+        IReadOnlyList<EpisodeVersion> rows,   Func<DownloadTask, DownloadTaskFile, decimal?> episodeOf)
     {
-        if (task.VerificationIntent is not null                   ||
-            task.IsolationState    != DownloadIsolationState.None ||
-            task.PendingSavePath   is not null                    ||
-            task.ArchiveReview     is not null                    ||
+        if (task.VerificationIntent is not null                ||
+            task.IsolationState != DownloadIsolationState.None ||
+            task.PendingSavePath is not null                   ||
+            task.ArchiveReview is not null                     ||
             files.Any(file => file.PendingRenameFrom is not null))
             return true;
 
@@ -139,12 +139,9 @@ internal static class DownloadTaskLookups
     }
 
     internal static async Task<Guid?> FindCompletedDuplicateIdAsync(
-        ApplicationDbContext db, string infoHash, CancellationToken cancellationToken)
-    {
-        return await db.DownloadTasks.AsNoTracking()
-                       .Where(task => task.InfoHash == infoHash &&
-                                      task.Status   == DownloadTaskStatus.Completed)
-                       .Select(task => (Guid?)task.Id)
-                       .FirstOrDefaultAsync(cancellationToken);
-    }
+        ApplicationDbContext db, string infoHash, CancellationToken cancellationToken) =>
+        await db.DownloadTasks.AsNoTracking()
+                .Where(task => task.InfoHash == infoHash &&
+                               task.Status   == DownloadTaskStatus.Completed)
+                .Select(task => (Guid?)task.Id).FirstOrDefaultAsync(cancellationToken);
 }

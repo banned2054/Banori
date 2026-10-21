@@ -59,14 +59,14 @@ public sealed class DownloadService(
     private static readonly string[] ContentFileExtensions =
         [".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".wmv", ".mov", ".flv", ".ass", ".ssa", ".srt", ".sup"];
 
+    private readonly DownloadEpisodeResolver episodeResolver =
+        episodeResolver ?? new DownloadEpisodeResolver(aniParser, episodeCorrectionPolicy);
+
     /// <summary>
     ///     时间策略：窗口到期前不补发请求、查询轮次不消耗预算。未注册时用 Immediate 保持测试旧行为；
     ///     生产端在 Program.cs 注册 Default。
     /// </summary>
     private readonly DownloadTimingPolicy timing = timingPolicy ?? DownloadTimingPolicy.Immediate;
-
-    private readonly DownloadEpisodeResolver episodeResolver =
-        episodeResolver ?? new DownloadEpisodeResolver(aniParser, episodeCorrectionPolicy);
 
 
     /// <summary>一轮对账：提交待提交任务、核对未确认与下载中任务。下载器未启用或未配置时静默跳过。</summary>
@@ -121,10 +121,10 @@ public sealed class DownloadService(
         else
             pendingSnapshots =
                 (await session.FindTorrentsAsync(pendingFileTasks
-                                                   .Where(task => task.NextObservationAtUtc is not { } due ||
-                                                                  timeProvider.GetUtcNow() >= due)
-                                                   .Select(task => task.InfoHash).ToList(),
-                                               cancellationToken))
+                                                .Where(task => task.NextObservationAtUtc is not { } due ||
+                                                               timeProvider.GetUtcNow() >= due)
+                                                .Select(task => task.InfoHash).ToList(),
+                                                 cancellationToken))
                .GroupBy(snapshot => snapshot.Hash, StringComparer.OrdinalIgnoreCase)
                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
@@ -856,8 +856,8 @@ public sealed class DownloadService(
             Root          = verificationAdd?.CandidateRoot ?? addRoot,
             RelatedTaskId = task.ReplacesTaskId,
             Kind = verificationAdd is not null ? DownloadPathDecisionKinds.ReuseVerification
-                   : replacing                ? DownloadPathDecisionKinds.ReplacementStaging
-                                              : DownloadPathDecisionKinds.FinalRoot,
+                : replacing                    ? DownloadPathDecisionKinds.ReplacementStaging
+                                                 : DownloadPathDecisionKinds.FinalRoot,
             Reason = verificationAdd is not null
                 ? "发现可复用候选数据，在候选根受控映射并校验后再决定复用或隔离。"
                 : replacing
@@ -1166,7 +1166,7 @@ public sealed class DownloadService(
     /// <summary>校验期运行状态对应的风险结论：Mapping 之外的非做种运行可能补写共享文件；做种收尾不算。</summary>
     private static bool NextUnverifiedWriteRisk(
         DownloadVerificationIntent intent, QbittorrentTorrentCategory category) =>
-        intent.UnverifiedWriteRisk == true ||
+        intent.UnverifiedWriteRisk == true                                                                  ||
         (intent.Step != DownloadVerificationStep.Mapping && category != QbittorrentTorrentCategory.Seeding) ||
         intent is { PauseAttempts: > 0, UnverifiedWriteRisk: null };
 
@@ -1297,8 +1297,7 @@ public sealed class DownloadService(
                                                   {
                                                       PauseAttempts       = intent.PauseAttempts + 1,
                                                       PauseRequestedAtUtc = pausedAt,
-                                                      UnverifiedWriteRisk =
-                                                          NextUnverifiedWriteRisk(intent, snapshot.Category)
+                                                      UnverifiedWriteRisk = NextUnverifiedWriteRisk(intent, snapshot.Category)
                                                   }, ct);
                 await session.PauseAsync(task.InfoHash, ct);
                 logger.LogWarning("任务 {TaskId} 校验期间出现无法解释的运行状态，已发出暂停（第 {Attempts} 次）。",
@@ -1339,8 +1338,8 @@ public sealed class DownloadService(
 
             try
             {
-                if (!await downloadFileService.ApplyVerificationMappingUnderGateAsync(session, task.Id,
-                        candidateRelatives, ct)) return;
+                if (!await downloadFileService
+                       .ApplyVerificationMappingUnderGateAsync(session, task.Id, candidateRelatives, ct)) return;
             }
             catch (Exception exception) when (exception is InvalidOperationException or QbittorrentBadRequestException)
             {
@@ -1414,7 +1413,8 @@ public sealed class DownloadService(
             var file = task.Files.Single(item => item.FileIndex == mapping.FileIndex);
             if (!indexByPath.TryGetValue(file.OriginalRelativePath, out var qbIndex) ||
                 !remoteByIndex.TryGetValue(qbIndex, out var remote) ||
-                remote.Size != mapping.Size || remote.IsSelectedForDownload != mapping.Selected ||
+                remote.Size != mapping.Size ||
+                remote.IsSelectedForDownload != mapping.Selected ||
                 (readyToRun && mapping.IsCandidate &&
                  (file.VerificationOutcome != DownloadFileVerificationOutcomes.ReusedVerified ||
                   !EqualVerificationPath(file.VerificationPath ?? string.Empty, mapping.VerificationPath))) ||
@@ -1543,8 +1543,7 @@ public sealed class DownloadService(
     }
 
     private static string JoinAbsolute(string root, string relative) =>
-        DownloadPathNamePolicy.NormalizePath(
-                                             root.TrimEnd('/') + "/" + relative.Replace('\\', '/').TrimStart('/'));
+        DownloadPathNamePolicy.NormalizePath(root.TrimEnd('/') + "/" + relative.Replace('\\', '/').TrimStart('/'));
 
     private async Task<bool> AnyCandidateHasProgressAsync(
         IQbittorrentSession session, DownloadTask task, IReadOnlyDictionary<int, string> candidateRelatives,
@@ -2693,9 +2692,10 @@ public sealed class DownloadService(
                                   // 终态任务不再参与到期调度，清掉残留的观察时间。
                                   update.NextObservationAtUtc = null;
                               }, cancellationToken,
-                              (db, task) => notificationEnqueuer.TryEnqueueAsync(
-                               db, NotificationEventType.DownloadFailed, "下载失败",
-                               $"{DescribeTask(task)}：在「{step}」步骤失败。{error}", cancellationToken));
+                              (db, task) =>
+                                  notificationEnqueuer.TryEnqueueAsync(db, NotificationEventType.DownloadFailed, "下载失败",
+                                                                       $"{DescribeTask(task)}：在「{step}」步骤失败。{error}",
+                                                                       cancellationToken));
     }
 
     /// <summary>通知内容里对任务的描述：优先作品名（中文名优先），缺失时退回命名快照。</summary>

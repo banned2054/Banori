@@ -17,8 +17,7 @@ public sealed class TorrentDownloadPolicyTests
         // info 字典包含高层 Torrent 加载必需的完整 v1 字段；期望不经过生产解析器或重编码。
         const string infoDict =
             "d6:lengthi1024e4:name12:Test Torrent12:piece lengthi16384e6:pieces20:00000000000000000000e";
-        var bytes = Encoding.UTF8.GetBytes(
-                                           "d8:announce31:http://tracker.example/announce4:info" + infoDict + "e");
+        var bytes    = Encoding.UTF8.GetBytes("d8:announce31:http://tracker.example/announce4:info" + infoDict + "e");
         var expected = Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(infoDict))).ToLowerInvariant();
 
         Assert.True(TorrentDownloadPolicy.TryLoad(bytes, out var torrent, out _));
@@ -76,10 +75,10 @@ public sealed class TorrentDownloadPolicyTests
         ];
         byte[] infoBytes =
         [
-            .."d6:lengthi1e4:name3:abc12:piece lengthi16384e6:pieces20:"u8.ToArray(),
-            ..pieceHash, (byte)'e'
+            .. "d6:lengthi1e4:name3:abc12:piece lengthi16384e6:pieces20:"u8.ToArray(),
+            .. pieceHash, (byte)'e'
         ];
-        byte[] bytes    = [.."d4:info"u8.ToArray(), ..infoBytes, (byte)'e'];
+        byte[] bytes    = [.. "d4:info"u8.ToArray(), .. infoBytes, (byte)'e'];
         var    expected = Convert.ToHexString(SHA1.HashData(infoBytes)).ToLowerInvariant();
 
         Assert.True(TorrentDownloadPolicy.TryLoad(bytes, out var torrent, out _));

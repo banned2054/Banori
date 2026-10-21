@@ -44,15 +44,15 @@ public sealed class DownloadFileService(
     TimeProvider                            timeProvider,
     DownloadTimingPolicy?                   timingPolicy = null) : IDownloadFileService
 {
-
-    /// <summary>时间策略：布局请求确认窗口与有界补发预算；未注册时用 Immediate 保持测试旧行为。</summary>
-    private readonly DownloadTimingPolicy timing = timingPolicy ?? DownloadTimingPolicy.Immediate;
     private static readonly HashSet<string> SubtitleExtensions = new(StringComparer.OrdinalIgnoreCase)
         { ".ass", ".ssa", ".srt", ".sup" };
 
     private static readonly Regex SubtitleSuffix =
         new(@"(?<suffix>(?:\.(?:chs|cht|sc|tc|zh|zh-cn|zh-tw|chi|zho|gb|big5|jp|jpn|ja|en|eng|简|繁|简日|繁日|forced|default))+)$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    /// <summary>时间策略：布局请求确认窗口与有界补发预算；未注册时用 Immediate 保持测试旧行为。</summary>
+    private readonly DownloadTimingPolicy timing = timingPolicy ?? DownloadTimingPolicy.Immediate;
 
     public async Task<DownloadTaskFilesView> ListAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
@@ -485,8 +485,9 @@ public sealed class DownloadFileService(
             foreach (var (_, file, occupied) in files)
             {
                 var extension = Path.GetExtension(file.CurrentRelativePath);
-                replacementPaths[file.FileIndex] = RelativeDownloadPathPolicy.Normalize(
-                 $".replaced/{owner.Id:N}/{task.Id:N}-{file.FileIndex}{extension}");
+                replacementPaths[file.FileIndex] =
+                    RelativeDownloadPathPolicy
+                       .Normalize($".replaced/{owner.Id:N}/{task.Id:N}-{file.FileIndex}{extension}");
             }
 
             var replacementPlan = new FilePlan(owner.SavePath, replacementPaths);

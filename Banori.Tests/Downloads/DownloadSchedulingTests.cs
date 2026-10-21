@@ -358,7 +358,8 @@ public sealed class DownloadSchedulingTests
 
         var pulse = new ReconcilePulse();
         var worker =
-            new DownloadReconcileWorker(harness.Provider.GetRequiredService<IServiceScopeFactory>(), pulse, harness.Time,
+            new DownloadReconcileWorker(harness.Provider.GetRequiredService<IServiceScopeFactory>(), pulse,
+                                        harness.Time,
                                         harness.Provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>(),
                                         DownloadTimingPolicy.Default);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
@@ -550,7 +551,8 @@ public sealed class DownloadSchedulingTests
         using var harness = await SchedulingHarness.CreateAsync();
         var       pulse   = new ReconcilePulse();
         var worker =
-            new DownloadReconcileWorker(harness.Provider.GetRequiredService<IServiceScopeFactory>(), pulse, harness.Time,
+            new DownloadReconcileWorker(harness.Provider.GetRequiredService<IServiceScopeFactory>(), pulse,
+                                        harness.Time,
                                         harness.Provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>(),
                                         DownloadTimingPolicy.Default);
 
@@ -711,7 +713,8 @@ public sealed class DownloadSchedulingTests
         await harness.RoundAsync();
         await harness.RoundAsync();
         var risk =
-            DownloadVerificationIntent.FromJson((await harness.GetTaskAsync(taskId)).VerificationIntent)!.UnverifiedWriteRisk;
+            DownloadVerificationIntent.FromJson((await harness.GetTaskAsync(taskId)).VerificationIntent)!
+                                      .UnverifiedWriteRisk;
         Assert.True(risk, "暂停窗口中途出现的下载快照必须被采样到并记入共享写入风险。");
 
         // 最终停止回到 100%：带风险的证据不得登记复用。
@@ -1050,7 +1053,10 @@ internal sealed class StepTimeProvider : TimeProvider
 
     public override DateTimeOffset GetUtcNow()
     {
-        lock (_lock) return _now;
+        lock (_lock)
+        {
+            return _now;
+        }
     }
 
     public void Advance(TimeSpan by)

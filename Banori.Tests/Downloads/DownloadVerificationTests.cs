@@ -674,8 +674,8 @@ public sealed partial class DownloadVerificationTests
             // 登记服务按 Data Protection 解密订阅 RSS 地址后才判定来源；测试用临时密钥即可。
             services.AddDataProtection();
             services.AddDbContextFactory<ApplicationDbContext>(options =>
-                                                                   options.UseSqlite(
-                                                                    $"Data Source={Path.Combine(directory.FullName, "p3v.db")};Pooling=False"));
+                                                                   options
+                                                                      .UseSqlite($"Data Source={Path.Combine(directory.FullName, "p3v.db")};Pooling=False"));
             services.AddSingleton<TimeProvider>(new FixedVerificationTimeProvider());
             services.AddSingleton<IApplicationSettingStore, MemoryApplicationSettingStore>();
             var store = new FakeTorrentStore();
@@ -744,8 +744,7 @@ public sealed partial class DownloadVerificationTests
 
         public Task SaveDownloaderSettingsAsync()
         {
-            var settingsService = new ManageQbittorrentSettings(
-                                                                Provider.GetRequiredService<IApplicationSettingStore>(),
+            var settingsService = new ManageQbittorrentSettings(Provider.GetRequiredService<IApplicationSettingStore>(),
                                                                 Factory);
             return settingsService.SaveAsync(
                                              new QbittorrentSettings("http://qb.test:8080", "admin", DownloadRoot,
@@ -762,8 +761,7 @@ public sealed partial class DownloadVerificationTests
 
         public async Task SaveSelectionRulesAsync(SelectionRuleConfig config)
         {
-            var ruleSettings = new ManageSelectionRuleSettings(
-                                                               Provider.GetRequiredService<IApplicationSettingStore>(),
+            var ruleSettings = new ManageSelectionRuleSettings(Provider.GetRequiredService<IApplicationSettingStore>(),
                                                                NullLogger<ManageSelectionRuleSettings>.Instance);
             await ruleSettings.SaveAsync(config);
         }

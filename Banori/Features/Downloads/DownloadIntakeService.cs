@@ -127,7 +127,7 @@ public sealed class DownloadIntakeService(
         var fileTitleCandidates = ParseTorrentFileTitles(torrent, isMultiFile);
         var resolvedSource      = ResolveUploadSiteSource(torrent);
         // 门禁：必须绑定 Bangumi Subject；标题映射未命中且未填 ID 时拒绝登记。
-        var uploadedParsed = displayName is null ? null : aniParser.Parse(displayName);
+        var uploadedParsed      = displayName is null ? null : aniParser.Parse(displayName);
         var binding =
             await ResolveUploadedSubjectBindingAsync(fileTitleCandidates, uploadedParsed, subjectId,
                                                      cancellationToken) ??
@@ -158,10 +158,10 @@ public sealed class DownloadIntakeService(
         var taskId = Guid.NewGuid();
         var task = new DownloadTask
         {
-            Id          = taskId,
-            InfoHash    = infoHash,
-            TorrentFile = torrentBytes,
-            TorrentUrl  = $"upload://{infoHash}",
+            Id                = taskId,
+            InfoHash          = infoHash,
+            TorrentFile       = torrentBytes,
+            TorrentUrl        = $"upload://{infoHash}",
             // 普通任务直接使用正式根；提交前统一按已有数据与旧版替换关系决定是否需要暂存。
             SavePath          = settings.SavePath.Trim().TrimEnd('/', '\\'),
             DownloadRootPath  = settings.SavePath.Trim().TrimEnd('/', '\\'),
@@ -196,8 +196,7 @@ public sealed class DownloadIntakeService(
             await db.SaveChangesAsync(cancellationToken);
             logger.LogInformation("上传种子同集落选，已登记终止记录 {TaskId}（hash {InfoHash}）。",
                                   task.Id, infoHash);
-            throw new InvalidOperationException(
-                                                $"本次上传未登记：{ComposeLossReason(verdicts)}。（已保留终止记录供查重）");
+            throw new InvalidOperationException($"本次上传未登记：{ComposeLossReason(verdicts)}。（已保留终止记录供查重）");
         }
 
         await ApplyWinningEpisodesAsync(db, task, scopes, verdicts, cancellationToken);
@@ -783,11 +782,11 @@ public sealed class DownloadIntakeService(
         var incumbentFiles = incumbent.Files.ToList();
         var ownFileIds     = incumbent.Files.Select(file => file.Id).ToHashSet();
         var incumbentDuties = incumbent.Files
-                                       .Where(file => DownloadTaskLookups.FileHoldsResidualDuty(
-                                               aniParser, incumbent, file, incumbentFiles, registryRows,
-                                               ownFileIds, episodeResolver.EpisodeOf))
-                                       .Select(ManifestKey)
-                                       .ToList();
+                                       .Where(file =>
+                                                  DownloadTaskLookups.FileHoldsResidualDuty(aniParser, incumbent, file,
+                                                      incumbentFiles, registryRows,
+                                                      ownFileIds, episodeResolver.EpisodeOf))
+                                       .Select(ManifestKey).ToList();
         if (incumbentDuties.Any(key => !incomingCarriedKeys.Contains(key))) return false;
 
         var incumbentManifest = ManifestKeys(incumbent);
@@ -1038,7 +1037,7 @@ public sealed class DownloadIntakeService(
         IReadOnlyList<ParseResult> fileTitleCandidates, ParseResult? infoNameParsed, int? requestedSubjectId,
         CancellationToken          cancellationToken)
     {
-        List<ParseResult> candidates = [..fileTitleCandidates];
+        List<ParseResult> candidates = [.. fileTitleCandidates];
         if (infoNameParsed is not null) candidates.Add(infoNameParsed);
         candidates = candidates.Where(parsed => !string.IsNullOrWhiteSpace(parsed.Title)).ToList();
         var preferred = candidates.FirstOrDefault();

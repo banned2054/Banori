@@ -261,7 +261,7 @@ public sealed partial class DownloadServiceTests
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
                                                                 unconfigured
                                                                    .CreateUploadAsync(TestTorrentBytes
-                                                                                .Create("Uploaded Anime - 01")));
+                                                                       .Create("Uploaded Anime - 01")));
 
         using var configured = await CreateHarnessAsync();
         await Assert.ThrowsAsync<InvalidOperationException>(() => configured.CreateUploadAsync("bad"u8.ToArray()));
@@ -427,7 +427,7 @@ public sealed partial class DownloadServiceTests
     {
         using var harness = await CreateHarnessAsync();
         // 表单显式 ID：拉取元数据落库、命名用中文名，并把解析标题回写映射供后续直接命中。
-        var title = NekoTitle("简日双语");
+        var       title   = NekoTitle("简日双语");
         harness.TorrentNames["neko-a"] = title;
         harness.TorrentNames["neko-b"] = NekoTitle("简日双语", "1080p", 13);
         harness.FeedReader.Items.Add(RssItem("neko-a", title, "https://mikanani.me/Download/neko-a.torrent"));
@@ -464,7 +464,7 @@ public sealed partial class DownloadServiceTests
     {
         using var harness = await CreateHarnessAsync();
         // 链接解析兜底：Mikan 条目链接解析出 Subject，同样落库并回写映射。
-        var link = new Uri("https://example.com/posts/mikan-12");
+        var       link    = new Uri("https://example.com/posts/mikan-12");
         harness.LinkResolver.ResolvedLinks[link.AbsoluteUri] = 9;
         harness.TorrentNames["mikan-12"]                     = NekoTitle("简日双语");
         harness.FeedReader.Items.Add(RssItem("mikan-12", NekoTitle("简日双语"),
@@ -485,9 +485,9 @@ public sealed partial class DownloadServiceTests
     [Fact]
     public async Task CreateFromRssFeed_SkipsDuplicateHashesAcrossStatuses()
     {
-        using var harness = await CreateHarnessAsync();
+        using var harness        = await CreateHarnessAsync();
         // 预置一个活动任务；RSS 条目的种子名注册为同名以产生相同 hash。
-        var uploadedTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Uploaded Anime - 01"));
+        var       uploadedTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Uploaded Anime - 01"));
         harness.TorrentNames["dup"] = "Uploaded Anime - 01";
         harness.FeedReader.Items.Add(RssItem("dup", "重复资源条目", "https://example.com/torrents/dup.torrent"));
 
@@ -633,8 +633,9 @@ public sealed partial class DownloadServiceTests
 
         // 创建后全局目录与下载根设置变更不能覆写已登记任务，也不能影响本次提交。
         await directories.SaveAsync("New/Anime", "New/Seed");
-        await harness.Provider.GetRequiredService<ManageQbittorrentSettings>().SaveAsync(
-             new QbittorrentSettings("http://qb.test:8080", "admin", "/future-downloads", true), "secret");
+        await harness.Provider.GetRequiredService<ManageQbittorrentSettings>()
+                     .SaveAsync(new QbittorrentSettings("http://qb.test:8080", "admin", "/future-downloads", true),
+                                "secret");
         var task = await harness.GetTaskAsync(taskId);
         Assert.Equal("/downloads", task.DownloadRootPath);
         Assert.Equal("Library/Anime", task.MediaDirectory);
@@ -1121,7 +1122,7 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
         Assert.Contains(harness.Store.RenameFileCalls,
                         call => call.Hash == oldTask.InfoHash && call.NewPath.Contains(".replaced/",
-                                 StringComparison.Ordinal));
+                            StringComparison.Ordinal));
     }
 
     /// <summary>整包进度 100% 也不能跳过所选文件核验：远端取消了计划要求下载的文件时不得判定完成。</summary>
@@ -1925,9 +1926,9 @@ public sealed partial class DownloadServiceTests
     {
         using var harness = await CreateHarnessAsync();
         var pendingId = await harness.CreateDownloadAsync(await SeedAcceptedItemAsync(harness, "stale-snapshot",
-                                                                   "Snapshot Pending - 01"));
+                                                              "Snapshot Pending - 01"));
         var sentinelId = await harness.CreateDownloadAsync(await SeedAcceptedItemAsync(harness, "stale-sentinel",
-                                                                    "Snapshot Sentinel - 01"));
+                                                               "Snapshot Sentinel - 01"));
         await using (var db = await harness.CreateDbContextAsync())
         {
             var sentinel = await db.DownloadTasks.SingleAsync(task => task.Id == sentinelId);
@@ -2344,7 +2345,7 @@ public sealed partial class DownloadServiceTests
     {
         using var harness = await CreateHarnessAsync();
         // 上传种子标题无法解析：命名要素无集数，兼容收尾只改种子名，内容保持原始布局。
-        var taskId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Uploaded Anime - 01"));
+        var       taskId  = await harness.CreateUploadAsync(TestTorrentBytes.Create("Uploaded Anime - 01"));
         await harness.ReconcileAsync();
         var hash = TestTorrentBytes.InfoHashOf("Uploaded Anime - 01");
         CompleteTorrent(harness, hash);
@@ -2366,7 +2367,7 @@ public sealed partial class DownloadServiceTests
     {
         using var harness = await CreateHarnessAsync();
         // RSS 原始标题自带 .mp4 后缀且无法解析：快照兜底改名不得产出 .mp4.mp4。
-        var taskId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Uploaded Anime - 01.mp4"));
+        var       taskId  = await harness.CreateUploadAsync(TestTorrentBytes.Create("Uploaded Anime - 01.mp4"));
         await harness.ReconcileAsync();
         var hash = TestTorrentBytes.InfoHashOf("Uploaded Anime - 01.mp4");
         CompleteTorrent(harness, hash);
@@ -2423,7 +2424,7 @@ public sealed partial class DownloadServiceTests
             "【喵萌奶茶屋】★07月新番★[与你相恋到生命尽头 ／ きみが死ぬまで恋をしたい ／ Kimi ga Shinu made Koi wo Shitai][12][1080p][简日双语].mp4";
         var taskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(title));
 
-        var task = await harness.GetTaskAsync(taskId);
+        var task             = await harness.GetTaskAsync(taskId);
         // 默认模板渲染：{source} 取上传 tracker 分类的 bt 兜底（默认替身 tracker 未知）。
         var expectedSnapshot = "[Anime]测试作品 E12 bt";
         Assert.Equal(expectedSnapshot, task.NamingSnapshot);
@@ -2492,13 +2493,13 @@ public sealed partial class DownloadServiceTests
     {
         using var harness = await CreateHarnessAsync();
         // 标题映射未命中且未填 ID：拒绝登记并要求补 Bangumi ID，不落任何任务。
-        var title = NekoTitle("简日双语");
+        var       title   = NekoTitle("简日双语");
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                                                                                 harness
                                                                                    .CreateUploadAsync(TestTorrentBytes
-                                                                                                .Create(title),
-                                                                                             subjectId : null));
+                                                                                           .Create(title),
+                                                                                        subjectId : null));
 
         Assert.Contains("Bangumi ID", exception.Message);
         Assert.Equal(0, await CountTasksAsync(harness));
@@ -2509,7 +2510,7 @@ public sealed partial class DownloadServiceTests
     {
         using var harness = await CreateHarnessAsync();
         // 表单显式 ID 绑定：元数据经 Bangumi API 拉取落库，解析标题回写映射。
-        var taskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语")), null, 7);
+        var       taskId  = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语")), null, 7);
 
         var task = await harness.GetTaskAsync(taskId);
         Assert.Equal(7, task.SubjectId);
@@ -3445,8 +3446,8 @@ public sealed partial class DownloadServiceTests
     {
         using var harness = await CreateHarnessAsync();
         // 停留在待提交：下载器中尚无种子。删除请求照常发出，下载器对不存在的 hash 静默忽略。
-        var taskId = await harness.CreateUploadAsync(TestTorrentBytes.Create("Never Submitted - 01"));
-        var hash   = TestTorrentBytes.InfoHashOf("Never Submitted - 01");
+        var       taskId  = await harness.CreateUploadAsync(TestTorrentBytes.Create("Never Submitted - 01"));
+        var       hash    = TestTorrentBytes.InfoHashOf("Never Submitted - 01");
 
         await harness.Service.DeleteAsync(taskId, true, false);
 
@@ -3465,7 +3466,7 @@ public sealed partial class DownloadServiceTests
 
         await Assert.ThrowsAsync<QbittorrentException>(() =>
                                                            harness.Service.DeleteAsync(taskId,
-                                                                    true, false));
+                                                               true, false));
 
         Assert.NotNull(await harness.GetTaskAsync(taskId));
     }

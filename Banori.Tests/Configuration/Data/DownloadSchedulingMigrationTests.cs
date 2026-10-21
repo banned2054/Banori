@@ -24,7 +24,8 @@ public sealed class DownloadSchedulingMigrationTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddIdentityCore<ApplicationUser>(options =>
-                options.Stores.SchemaVersion = IdentitySchemaVersions.Version3)
+                                                          options.Stores.SchemaVersion =
+                                                              IdentitySchemaVersions.Version3)
                     .AddEntityFrameworkStores<ApplicationDbContext>();
             services.AddDbContextFactory<ApplicationDbContext>(options =>
             {
@@ -64,7 +65,8 @@ public sealed class DownloadSchedulingMigrationTests
             {
                 await db.GetService<IMigrator>().MigrateAsync("20261018113143_AddDataVerificationAndArchiveEvidence");
                 var columns =
-                    await db.Database.SqlQueryRaw<string>("SELECT name AS Value FROM pragma_table_info('DownloadTasks')")
+                    await db.Database
+                            .SqlQueryRaw<string>("SELECT name AS Value FROM pragma_table_info('DownloadTasks')")
                             .ToListAsync();
                 Assert.DoesNotContain("NextObservationAtUtc", columns);
                 Assert.DoesNotContain("LastSubmitAttemptAtUtc", columns);

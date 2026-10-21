@@ -29,7 +29,7 @@ public sealed class QbittorrentHookServiceTests
     public async Task Handle_WithValidToken_PulsesAndAcceptsCaseInsensitiveHash()
     {
         var (service, pulse, settings) = CreateService();
-        var token = await settings.GenerateHookTokenAsync();
+        var token    = await settings.GenerateHookTokenAsync();
         // 先挂等待者，验证 HandleAsync 真的触发了脉冲唤醒。
         var waitTask = pulse.WaitAsync(CancellationToken.None);
 

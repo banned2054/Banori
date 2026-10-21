@@ -77,13 +77,12 @@ public sealed class DownloadEpisodeResolverTests
         string           path,
         DownloadFileKind Kind                  = DownloadFileKind.Anime,
         decimal?         EpisodeNumberOverride = null,
-        decimal?         EpisodeEndOverride    = null) =>
-        new()
-        {
-            OriginalRelativePath  = path,
-            CurrentRelativePath   = path,
-            Kind                  = Kind,
-            EpisodeNumberOverride = EpisodeNumberOverride,
-            EpisodeEndOverride    = EpisodeEndOverride
-        };
+        decimal?         EpisodeEndOverride    = null) => new()
+    {
+        OriginalRelativePath  = path,
+        CurrentRelativePath   = path,
+        Kind                  = Kind,
+        EpisodeNumberOverride = EpisodeNumberOverride,
+        EpisodeEndOverride    = EpisodeEndOverride
+    };
 }

@@ -61,10 +61,9 @@ public sealed class DownloadTaskFilesMigrationTests
                 await db.DownloadTasks.Where(task => task.Id == id).ExecuteDeleteAsync();
                 Assert.Empty(await db.DownloadTaskFiles.ToListAsync());
                 await db.GetService<IMigrator>().MigrateAsync("20261010091200_UnlimitNamingIngredients");
-                var tables = await db
-                                  .Database
-                                  .SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type = 'table'")
-                                  .ToListAsync();
+                var tables =
+                    await db.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type = 'table'")
+                                     .ToListAsync();
                 Assert.DoesNotContain("DownloadTaskFiles", tables);
             }
         }
@@ -74,12 +73,11 @@ public sealed class DownloadTaskFilesMigrationTests
         }
     }
 
-    private static DownloadTaskFile CreateFile(Guid taskId) =>
-        new()
-        {
-            Id = Guid.NewGuid(), DownloadTaskId = taskId, FileIndex = 0,
-            OriginalRelativePath = "Original/Subs/episode01.chi.ass",
-            CurrentRelativePath = "Seed/Original/Subs/episode01.chi.ass",
-            Kind = DownloadFileKind.Seed, ClassificationReason = "未识别", UpdatedAtUtc = DateTimeOffset.UtcNow
-        };
+    private static DownloadTaskFile CreateFile(Guid taskId) => new()
+    {
+        Id                   = Guid.NewGuid(), DownloadTaskId = taskId, FileIndex = 0,
+        OriginalRelativePath = "Original/Subs/episode01.chi.ass",
+        CurrentRelativePath  = "Seed/Original/Subs/episode01.chi.ass",
+        Kind                 = DownloadFileKind.Seed, ClassificationReason = "未识别", UpdatedAtUtc = DateTimeOffset.UtcNow
+    };
 }

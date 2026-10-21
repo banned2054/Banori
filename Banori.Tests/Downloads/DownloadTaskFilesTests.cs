@@ -379,17 +379,11 @@ public sealed class DownloadTaskFilesTests
             if (FailApply) throw new InvalidOperationException("下载器改名失败");
             Details = Details with
             {
-                CurrentRootPath = "NewRoot", Files = Details.Files.Select(file =>
-                                                                              file with
-                                                                              {
-                                                                                  CurrentPath =
-                                                                                  file.CurrentPath
-                                                                                     .Replace("OldRoot/",
-                                                                                               "NewRoot/",
-                                                                                               StringComparison
-                                                                                                  .Ordinal)
-                                                                              })
-                                                            .ToArray()
+                CurrentRootPath = "NewRoot",
+                Files = Details.Files.Select(file => file with
+                {
+                    CurrentPath = file.CurrentPath.Replace("OldRoot/", "NewRoot/", StringComparison.Ordinal)
+                }).ToArray()
             };
             return Task.FromResult(Details);
         }

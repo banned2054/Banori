@@ -327,10 +327,11 @@ public sealed class DownloadFileServiceTests
         await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
         await h.Service.InitializeAsync(h.Task.Id);
         h.Store.AfterRenameFile = () => h.FailSave.Enabled = true;
-        await Assert.ThrowsAsync<DbUpdateException>(() => h.Service.ApplyAsync(h.Task.Id, 0,
-                                                                               new
-                                                                                   DownloadFileEditRequest(DownloadFileKind
-                                                                                      .Anime, Episode : 4)));
+        await Assert.ThrowsAsync<DbUpdateException>(() =>
+                                                        h.Service.ApplyAsync(h.Task.Id, 0,
+                                                                             new
+                                                                                 DownloadFileEditRequest(DownloadFileKind
+                                                                                    .Anime, Episode : 4)));
         h.FailSave.Enabled      = false;
         h.Store.AfterRenameFile = null;
         var pending = await h.Load();
@@ -379,8 +380,8 @@ public sealed class DownloadFileServiceTests
         await h.Service.InitializeAsync(h.Task.Id);
         h.Store.AfterRenameFile = () => throw new IOException("Injected lost rename response");
         await Assert.ThrowsAsync<IOException>(() => h.Service.ApplyAsync(h.Task.Id, 0,
-                                                                         new DownloadFileEditRequest(
-                                                                          DownloadFileKind.Anime, Episode : 3)));
+                                                                         new DownloadFileEditRequest(DownloadFileKind
+                                                                            .Anime, Episode : 3)));
         h.Store.AfterRenameFile = null;
         var pending = await h.Load();
         Assert.All(pending.Files, file => Assert.NotNull(file.PendingRenameTo));
@@ -513,10 +514,11 @@ public sealed class DownloadFileServiceTests
         await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
         await h.Service.InitializeAsync(h.Task.Id);
         h.Store.AfterRenameFile = () => h.FailSave.Enabled = true;
-        await Assert.ThrowsAsync<DbUpdateException>(() => h.Service.ApplyAsync(h.Task.Id, 0,
-                                                                               new
-                                                                                   DownloadFileEditRequest(DownloadFileKind
-                                                                                      .Anime, Episode : 4)));
+        await Assert.ThrowsAsync<DbUpdateException>(() =>
+                                                        h.Service.ApplyAsync(h.Task.Id, 0,
+                                                                             new
+                                                                                 DownloadFileEditRequest(DownloadFileKind
+                                                                                    .Anime, Episode : 4)));
         h.FailSave.Enabled      = false;
         h.Store.AfterRenameFile = null;
         await using (var db = await h.Factory.CreateDbContextAsync())

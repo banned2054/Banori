@@ -21,11 +21,11 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
             await File.WriteAllBytesAsync(temporaryPath, torrentBytes, cancellationToken);
             var request = new AddTorrentRequest
             {
-                FilePaths     = [temporaryPath],
-                SavePath      = savePath,
-                ContentLayout = EnumContentLayout.Original,
-                Tags          = string.Join(',', tags),
-                Rename        = string.IsNullOrWhiteSpace(rename) ? null : rename,
+                FilePaths      = [temporaryPath],
+                SavePath       = savePath,
+                ContentLayout  = EnumContentLayout.Original,
+                Tags           = string.Join(',', tags),
+                Rename         = string.IsNullOrWhiteSpace(rename) ? null : rename,
                 // qB 5.x 认 stopped、4.x 认 paused，客户端按服务器版本择一发送，这里同时声明两种开关。
                 PausedEnabled  = startStopped,
                 StoppedEnabled = startStopped
@@ -78,15 +78,10 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
     {
         var files = await client.Torrent.GetTorrentFiles(NormalizeHash(infoHash),
                                                          cancellationToken : cancellationToken);
-        return (files ?? []).Select(file => new TorrentFileSnapshot(file.Index
-                                                                 ?? throw new
-                                                                        InvalidOperationException("下载器没有返回可靠的文件 index。"),
-                                                                    file.Name ??
-                                                                    throw new InvalidOperationException("下载器没有返回文件路径。"),
-                                                                    file.Size,
-                                                                    file.Progress,
-                                                                    file.Priority != EnumTorrentFilePriority
-                                                                       .DoNotDownload))
+        return (files ?? []).Select(file =>
+            new TorrentFileSnapshot(file.Index ?? throw new InvalidOperationException("下载器没有返回可靠的文件 index。"),
+                                    file.Name ?? throw new InvalidOperationException("下载器没有返回文件路径。"),
+                                    file.Size, file.Progress, file.Priority != EnumTorrentFilePriority.DoNotDownload))
                             .ToList();
     }
 

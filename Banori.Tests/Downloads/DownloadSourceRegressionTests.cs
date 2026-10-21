@@ -40,7 +40,7 @@ public sealed partial class DownloadServiceTests
             var exception =
                 await Assert.ThrowsAsync<InvalidOperationException>(() =>
                                                                         harness.CreateUploadAsync(TestTorrentBytes
-                                                                                    .Create(incomingTitle, tracker)));
+                                                                           .Create(incomingTitle, tracker)));
             Assert.Contains("同集已有更优任务", exception.Message);
             var incumbent = await harness.GetTaskAsync(incumbentId);
             Assert.Equal(DownloadTaskStatus.PendingSubmit, incumbent.Status);

@@ -84,12 +84,11 @@ public sealed class TorrentPreparationMigrationTests
         }
     }
 
-    private static Task<List<string>> ColumnNamesAsync(ApplicationDbContext db, string table) =>
-        table switch
-        {
-            "DownloadTasks" => QueryAsync(db, "SELECT name AS Value FROM pragma_table_info('DownloadTasks')"),
-            _               => QueryAsync(db, "SELECT name AS Value FROM pragma_table_info('DownloadTaskFiles')")
-        };
+    private static Task<List<string>> ColumnNamesAsync(ApplicationDbContext db, string table) => table switch
+    {
+        "DownloadTasks" => QueryAsync(db, "SELECT name AS Value FROM pragma_table_info('DownloadTasks')"),
+        _               => QueryAsync(db, "SELECT name AS Value FROM pragma_table_info('DownloadTaskFiles')")
+    };
 
     private static async Task<List<string>> QueryAsync(ApplicationDbContext db, string sql) =>
         await db.Database.SqlQueryRaw<string>(sql).ToListAsync();

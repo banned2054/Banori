@@ -91,18 +91,18 @@ public sealed class DownloadReconcileWorker(
     ///     计算下一轮唤醒延迟：空闲间隔、最早到期任务与两轮最短间隔的共同约束。
     ///     最早到期任务让等待提前（到期任务尽快被观察）；最短间隔让重复脉冲不形成忙循环。
     /// </summary>
-    internal static TimeSpan ComputeWakeDelay(DateTimeOffset now, DateTimeOffset? earliestDue,
+    internal static TimeSpan ComputeWakeDelay(DateTimeOffset now,            DateTimeOffset?      earliestDue,
                                               DateTimeOffset lastRoundAtUtc, DownloadTimingPolicy timing)
     {
         var wake = timing.IdleReconcileInterval;
         if (earliestDue is { } due)
         {
-            var untilDue = due - now;
+            var untilDue              = due - now;
             if (untilDue < wake) wake = untilDue < TimeSpan.Zero ? TimeSpan.Zero : untilDue;
         }
 
         // 脉冲不能越过最短轮间隔：上一轮刚结束时连续脉冲最多把下一轮提前到最短间隔之后。
-        var throttle = timing.MinReconcileRoundInterval - (now - lastRoundAtUtc);
+        var throttle              = timing.MinReconcileRoundInterval - (now - lastRoundAtUtc);
         if (throttle > wake) wake = throttle > timing.IdleReconcileInterval ? timing.IdleReconcileInterval : throttle;
         return wake;
     }
