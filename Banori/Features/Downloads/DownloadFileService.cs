@@ -22,7 +22,13 @@ public sealed class TargetPathOccupiedException(string message) : InvalidOperati
 ///     这类失败必须阻塞推进（失败/待核对），绝不进入任何可启动或可迁移的回退——身份不明时
 ///     既不能证明目标可写，也不能证明当前布局可保留。
 /// </summary>
-public sealed class DownloadFileIdentityException(string message) : InvalidOperationException(message);
+public class DownloadFileIdentityException(string message) : InvalidOperationException(message);
+
+/// <summary>
+///     布局请求（改名、移动）在确认窗口内有界补发后仍未生效：下载器可能拒绝或吞掉了请求，
+///     继续重发只会形成请求风暴；停机待人工核对，校验布局的调用方转隔离链。
+/// </summary>
+public sealed class DownloadLayoutConfirmationException(string message) : DownloadFileIdentityException(message);
 
 /// <summary>文件身份、人工覆盖与可恢复归档。所有远端操作通过会话执行，不访问下载器文件系统。</summary>
 public sealed class DownloadFileService(
@@ -35,8 +41,12 @@ public sealed class DownloadFileService(
     AniParser                               aniParser,
     ReleaseNamePreviewPolicy                namingPolicy,
     SubjectEpisodeCorrectionPolicy          episodeCorrectionPolicy,
-    TimeProvider                            timeProvider) : IDownloadFileService
+    TimeProvider                            timeProvider,
+    DownloadTimingPolicy?                   timingPolicy = null) : IDownloadFileService
 {
+
+    /// <summary>时间策略：布局请求确认窗口与有界补发预算；未注册时用 Immediate 保持测试旧行为。</summary>
+    private readonly DownloadTimingPolicy timing = timingPolicy ?? DownloadTimingPolicy.Immediate;
     private static readonly HashSet<string> SubtitleExtensions = new(StringComparer.OrdinalIgnoreCase)
         { ".ass", ".ssa", ".srt", ".sup" };
 
@@ -1100,13 +1110,24 @@ public sealed class DownloadFileService(
 
     private void Stage(DownloadTask task, FilePlan plan)
     {
-        task.PendingSavePath = plan.Root;
+        task.PendingSavePath             = plan.Root;
+        // 新计划重置布局请求台账：确认窗口与补发预算随计划生效重新计算。
+        task.PendingLayoutRequestedAtUtc = null;
+        task.PendingLayoutRequestCount   = 0;
         foreach (var file in task.Files)
         {
             file.PendingRenameFrom = file.CurrentRelativePath;
             file.PendingRenameTo   = plan.Paths[file.FileIndex];
             file.UpdatedAtUtc      = timeProvider.GetUtcNow();
         }
+    }
+
+    /// <summary>布局等待的到期调度：持久化下一次观察时间，到期前的对账轮次跳过本任务。</summary>
+    private static async Task DeferPendingAsync(
+        ApplicationDbContext db, DownloadTask task, DateTimeOffset dueUtc, CancellationToken ct)
+    {
+        task.NextObservationAtUtc = dueUtc;
+        await db.SaveChangesAsync(ct);
     }
 
     private async Task<bool> ExecutePendingAsync(ApplicationDbContext db,   IQbittorrentSession session,
@@ -1119,7 +1140,12 @@ public sealed class DownloadFileService(
         var targetRoot = task.PendingSavePath ?? throw new DownloadFileIdentityException("待执行文件操作缺少保存目录。");
         var snapshot   = await SnapshotAsync(session, task.InfoHash, ct);
         if (snapshot.IsMoving ||
-            snapshot.Category is QbittorrentTorrentCategory.Checking or QbittorrentTorrentCategory.Error) return false;
+            snapshot.Category is QbittorrentTorrentCategory.Checking or QbittorrentTorrentCategory.Error)
+        {
+            await DeferPendingAsync(db, task, timeProvider.GetUtcNow() + timing.VerificationSampleInterval, ct);
+            return false;
+        }
+
         if (verificationMappingPaths is not null &&
             (snapshot.Category != QbittorrentTorrentCategory.Stopped || task.IsUserPaused)) return false;
         if (task.Files.Any(file => HasVerifiedReuseEvidence(task, Join(task.SavePath, file.CurrentRelativePath),
@@ -1145,24 +1171,67 @@ public sealed class DownloadFileService(
                 throw new DownloadFileIdentityException("归档目标计划已改变，停止恢复旧文件操作。");
         }
 
-        await ValidateTargetOccupancyAsync(db, session, task, pendingPlan, remote, ct, verificationMappingPaths);
-        foreach (var file in task.Files.OrderBy(value => value.FileIndex))
+        var now       = timeProvider.GetUtcNow();
+        var needsMove = !SameRoot(snapshot.SavePath, targetRoot);
+        var renamePending = task.Files
+                                .Where(file => matched[file.FileIndex].Path !=
+                                               RelativeDownloadPathPolicy.Normalize(file.PendingRenameTo!))
+                                .Select(file => file.FileIndex)
+                                .ToList();
+
+        // 布局确认窗口与有界补发：同一计划已发出的请求在窗口内不重发（先查后决定是否补发），
+        // 查询轮次与 pulse 不消耗预算；预算按实际发出的请求轮数扣减，耗尽仍未生效即受阻待人工核对。
+        if (renamePending.Count > 0 || needsMove)
         {
-            var observed = matched[file.FileIndex];
-            var from     = file.PendingRenameFrom!.Replace('\\', '/');
-            var to       = RelativeDownloadPathPolicy.Normalize(file.PendingRenameTo!);
-            if (observed.Path == to) continue; // Remote succeeded, DB acknowledgement was lost.
-            await session.RenameTorrentFileAsync(task.InfoHash, from, to, ct);
+            if (task.PendingLayoutRequestCount > 0               &&
+                task.PendingLayoutRequestedAtUtc is { } issuedAt &&
+                now < issuedAt + timing.LayoutConfirmationWindow)
+            {
+                await DeferPendingAsync(db, task, now + timing.PreparationSampleInterval, ct);
+                return false;
+            }
+
+            if (task.PendingLayoutRequestCount >= timing.MaxLayoutRequestIssues)
+                throw new DownloadLayoutConfirmationException(
+                                                              $"布局请求（改名/移动）已发出 {task.PendingLayoutRequestCount} 轮仍未生效，为避免请求风暴已停止推进，请人工核对下载器。");
+
+            // 副作用前持久化请求台账：重启后确认窗口与补发预算仍然生效。
+            task.PendingLayoutRequestedAtUtc =  now;
+            task.PendingLayoutRequestCount   += 1;
+            await db.SaveChangesAsync(ct);
         }
 
-        remote  = await session.ListFilesAsync(task.InfoHash, ct);
-        matched = MatchRemoteFiles(task.Files, remote, true);
-        if (task.Files.Any(file => matched[file.FileIndex].Path !=
-                                   RelativeDownloadPathPolicy.Normalize(file.PendingRenameTo!))) return false;
         await ValidateTargetOccupancyAsync(db, session, task, pendingPlan, remote, ct, verificationMappingPaths);
-        if (!SameRoot(snapshot.SavePath, targetRoot)) await session.SetLocationAsync(task.InfoHash, targetRoot, ct);
+        if (renamePending.Count > 0)
+        {
+            foreach (var index in renamePending.OrderBy(value => value))
+            {
+                var file = task.Files.Single(item => item.FileIndex == index);
+                var from = file.PendingRenameFrom!.Replace('\\', '/');
+                var to   = RelativeDownloadPathPolicy.Normalize(file.PendingRenameTo!);
+                if (matched[file.FileIndex].Path == to) continue; // Remote succeeded, DB acknowledgement was lost.
+                await session.RenameTorrentFileAsync(task.InfoHash, from, to, ct);
+            }
+
+            remote  = await session.ListFilesAsync(task.InfoHash, ct);
+            matched = MatchRemoteFiles(task.Files, remote, true);
+            if (task.Files.Any(file => matched[file.FileIndex].Path !=
+                                       RelativeDownloadPathPolicy.Normalize(file.PendingRenameTo!)))
+            {
+                await DeferPendingAsync(db, task, now + timing.PreparationSampleInterval, ct);
+                return false;
+            }
+        }
+
+        await ValidateTargetOccupancyAsync(db, session, task, pendingPlan, remote, ct, verificationMappingPaths);
+        if (needsMove) await session.SetLocationAsync(task.InfoHash, targetRoot, ct);
         snapshot = await SnapshotAsync(session, task.InfoHash, ct);
-        if (snapshot.IsMoving || !SameRoot(snapshot.SavePath, targetRoot)) return false;
+        if (snapshot.IsMoving || !SameRoot(snapshot.SavePath, targetRoot))
+        {
+            await DeferPendingAsync(db, task, now + timing.PreparationSampleInterval, ct);
+            return false;
+        }
+
         // Only publish paths after every remote rename and the asynchronous move have been observed.
         foreach (var file in task.Files)
         {
@@ -1172,8 +1241,11 @@ public sealed class DownloadFileService(
             file.UpdatedAtUtc        = timeProvider.GetUtcNow();
         }
 
-        task.SavePath        = targetRoot;
-        task.PendingSavePath = null;
+        task.SavePath                    = targetRoot;
+        task.PendingSavePath             = null;
+        task.PendingLayoutRequestedAtUtc = null;
+        task.PendingLayoutRequestCount   = 0;
+        task.NextObservationAtUtc        = null;
         if (task.Status == DownloadTaskStatus.Completed) task.ArchiveReview = null;
         await db.SaveChangesAsync(ct);
         return true;

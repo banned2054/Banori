@@ -204,6 +204,8 @@ internal class Program
         builder.Services.AddScoped<DashboardQueries>();
         builder.Services.AddScoped<AnimeQueries>();
         builder.Services.AddSingleton<DownloadCoordinationGate>();
+        // 生产时间策略：确认窗口/补发预算/采样间隔的统一起点；测试端未注册时服务自行回退 Immediate。
+        builder.Services.AddSingleton(DownloadTimingPolicy.Default);
         builder.Services.AddSingleton<DownloadEpisodeResolver>();
         builder.Services.AddScoped<DownloadService>();
         builder.Services.AddScoped<DownloadFileService>();

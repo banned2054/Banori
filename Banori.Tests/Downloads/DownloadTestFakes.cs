@@ -83,6 +83,31 @@ public sealed class FakeTorrentStore
     public Dictionary<string, string>           PendingLocations { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Action?                              AfterRenameFile  { get; set; }
 
+    /// <summary>改名延迟生效：请求被记录但不改路径，直到测试调用 CompleteRenames；模拟读结果滞后于写请求。</summary>
+    public bool DeferRenames { get; set; }
+
+    public List<(string Hash, string OldPath, string NewPath)> PendingRenames { get; } = [];
+
+    /// <summary>暂时查不到的种子：FindTorrents/ListTorrents 都不返回，模拟“已添加但尚未可见”。</summary>
+    public HashSet<string> HiddenTorrents { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>选择变更延迟生效：请求被记录但不改选中状态，直到 CompleteSelections；模拟读结果滞后。</summary>
+    public bool DeferSelections { get; set; }
+
+    public List<(string Hash, IReadOnlyCollection<int> Indices, bool Download)> PendingSelections { get; } = [];
+
+    /// <summary>放行延迟的选择变更：一次性应用到文件身份。</summary>
+    public void CompleteSelections()
+    {
+        foreach (var (hash, indices, download) in PendingSelections)
+            if (FileIdentities.TryGetValue(hash, out var files))
+                FileIdentities[hash] = files.Select(file => indices.Contains(file.Index)
+                                                        ? file with { IsSelectedForDownload = download }
+                                                        : file)
+                                            .ToList();
+        PendingSelections.Clear();
+    }
+
     public List<(byte[] Bytes, string SavePath, IReadOnlyList<string> Tags, string? Rename)> AddCalls { get; } = [];
     public List<(string Hash, string Name)> RenameCalls { get; } = [];
     public List<(string Hash, string OldPath, string NewPath)> RenameFileCalls { get; } = [];
@@ -110,6 +135,21 @@ public sealed class FakeTorrentStore
         foreach (var (hash, path) in PendingLocations)
             Torrents[hash] = Torrents[hash] with { SavePath = path, IsMoving = false };
         PendingLocations.Clear();
+    }
+
+    /// <summary>放行延迟的改名请求：一次性应用到文件路径（DeferRenames 模式下由测试手动调用）。</summary>
+    public void CompleteRenames()
+    {
+        foreach (var (hash, oldPath, newPath) in PendingRenames)
+        {
+            if (Files.TryGetValue(hash, out var fileNames))
+                Files[hash] = fileNames.Select(name => name == oldPath ? newPath : name).ToList();
+            if (FileIdentities.TryGetValue(hash, out var files))
+                FileIdentities[hash] =
+                    files.Select(file => file.Path == oldPath ? file with { Path = newPath } : file).ToList();
+        }
+
+        PendingRenames.Clear();
     }
 
     public void AddTorrent(string hash, string name, QbittorrentTorrentCategory category, double progress,
@@ -245,7 +285,7 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     {
         if (BeforeFindTorrentsAsync is not null) await BeforeFindTorrentsAsync(infoHashes);
         return infoHashes
-              .Where(hash => store.Torrents.ContainsKey(hash))
+              .Where(hash => store.Torrents.ContainsKey(hash) && !store.HiddenTorrents.Contains(hash))
               .Select(SnapshotFor)
               .ToList();
     }
@@ -255,11 +295,13 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         string? tag, CancellationToken cancellationToken = default)
     {
         return Task.FromResult<IReadOnlyList<TorrentSnapshot>>(store.Torrents.Values
-                                                                    .Where(snapshot => tag is null ||
-                                                                               SnapshotFor(snapshot.Hash)
-                                                                                  .Tags.Contains(tag,
-                                                                                            StringComparer
-                                                                                               .OrdinalIgnoreCase))
+                                                                    .Where(snapshot => !store.HiddenTorrents
+                                                                                  .Contains(snapshot.Hash) &&
+                                                                               (tag is null ||
+                                                                                   SnapshotFor(snapshot.Hash)
+                                                                                      .Tags.Contains(tag,
+                                                                                                StringComparer
+                                                                                                   .OrdinalIgnoreCase)))
                                                                     .Select(snapshot => SnapshotFor(snapshot.Hash))
                                                                     .ToList());
     }
@@ -297,6 +339,13 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
                                              CancellationToken        cancellationToken = default)
     {
         store.SelectionCalls.Add((infoHash, fileIndices.ToList(), download));
+        if (store.DeferSelections)
+        {
+            // 请求已被接收，但读结果尚未变化：只登记，不改选中状态。
+            store.PendingSelections.Add((infoHash, fileIndices.ToList(), download));
+            return Task.CompletedTask;
+        }
+
         if (store.FileIdentities.TryGetValue(infoHash, out var files))
             store.FileIdentities[infoHash] = files.Select(file => fileIndices.Contains(file.Index)
                                                               ? file with { IsSelectedForDownload = download }
@@ -376,6 +425,14 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
             }
 
         store.RenameFileCalls.Add((infoHash, oldPath, newPath));
+        if (store.DeferRenames)
+        {
+            // 请求已被接收，但读结果尚未变化：只登记，不改路径映射。
+            store.PendingRenames.Add((infoHash, oldPath, newPath));
+            store.AfterRenameFile?.Invoke();
+            return Task.CompletedTask;
+        }
+
         if (store.Files.TryGetValue(infoHash, out var fileNames))
             store.Files[infoHash] = fileNames.Select(name => name == oldPath ? newPath : name).ToList();
         if (store.FileIdentities.TryGetValue(infoHash, out var files))

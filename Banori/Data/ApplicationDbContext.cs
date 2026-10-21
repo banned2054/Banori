@@ -148,6 +148,11 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.Property(item => item.IsolationState).HasConversion<string>().HasMaxLength(32)
                   .HasDefaultValue(DownloadIsolationState.None);
             entity.Property(item => item.ArchiveReview);
+            entity.Property(item => item.PathDecision);
+            // worker 按最早到期任务唤醒时扫描；仅索引时间列，活动状态过滤在查询中表达。
+            entity.HasIndex(item => item.NextObservationAtUtc);
+            entity.Property(item => item.PendingLayoutRequestCount).HasDefaultValue(0);
+            entity.Property(item => item.SelectionRequestCount).HasDefaultValue(0);
             entity.Property(item => item.FailedStep).HasMaxLength(50);
             entity.Property(item => item.Error).HasMaxLength(1000);
             entity.HasIndex(item => item.FeedItemId);

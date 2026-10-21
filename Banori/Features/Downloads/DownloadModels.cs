@@ -145,6 +145,12 @@ public sealed record DownloadVerificationIntent
     public int PauseAttempts { get; init; }
 
     /// <summary>
+    ///     最近一次暂停请求时间；确认窗口内不重复发出、不计失败。null 表示旧意图未记录
+    ///     或本轮尚未发出暂停——旧意图按“窗口已过期”处理，保持可立即保护共享数据。
+    /// </summary>
+    public DateTimeOffset? PauseRequestedAtUtc { get; init; }
+
+    /// <summary>
     ///     未确认复用前曾观察到可能补写共享数据的下载状态；停止后也不能沿用本轮证据。
     ///     null 表示旧意图未记录该信息，有暂停记录时必须保守处理；false 表示未记录到该风险。
     /// </summary>
@@ -164,6 +170,60 @@ public sealed record DownloadVerificationIntent
         try
         {
             return JsonSerializer.Deserialize<DownloadVerificationIntent>(json, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+}
+
+/// <summary>路径决策种类：任务保存根被选择的原因；决策时落库，供诊断与展示（如 .tasks 暂存的由来）。</summary>
+public static class DownloadPathDecisionKinds
+{
+    /// <summary>无候选且无待替换版本：直接在正式根下载。</summary>
+    public const string FinalRoot = "FinalRoot";
+
+    /// <summary>存在待替换旧版：先在 .tasks/{taskId} 暂存，完成后统一归档替换。</summary>
+    public const string ReplacementStaging = "ReplacementStaging";
+
+    /// <summary>发现可复用候选：在候选根受控映射并校验，再决定复用或隔离。</summary>
+    public const string ReuseVerification = "ReuseVerification";
+
+    /// <summary>复用校验放弃：隔离删除重加，在 .tasks/{taskId} 转独立下载。</summary>
+    public const string IsolationRecovery = "IsolationRecovery";
+
+    /// <summary>下载器已存在同 Hash 种子：接管其真实保存位置。</summary>
+    public const string SameHashAdoption = "SameHashAdoption";
+}
+
+/// <summary>路径决策记录：保存根为什么这样选。每次新决策覆盖旧记录，保留最近一次以供解释。</summary>
+public sealed record DownloadPathDecision
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    /// <summary>决策种类，见 <see cref="DownloadPathDecisionKinds" />。</summary>
+    public string Kind { get; init; } = string.Empty;
+
+    /// <summary>决策时的解释说明（含触发条件）。</summary>
+    public string Reason { get; init; } = string.Empty;
+
+    /// <summary>决策得到的保存根。</summary>
+    public string Root { get; init; } = string.Empty;
+
+    /// <summary>关联任务：替换暂存关联被替换的旧任务等；无关联为空。</summary>
+    public Guid? RelatedTaskId { get; init; }
+
+    public DateTimeOffset DecidedAtUtc { get; init; }
+
+    public string ToJson() => JsonSerializer.Serialize(this, JsonOptions);
+
+    public static DownloadPathDecision? FromJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<DownloadPathDecision>(json, JsonOptions);
         }
         catch (JsonException)
         {

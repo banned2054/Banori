@@ -77,6 +77,29 @@ public sealed class DownloadTask
     /// </summary>
     public string? ArchiveReview { get; set; }
 
+    /// <summary>
+    ///     路径决策 JSON：保存根为什么这样选（正式/替换暂存/复用候选/隔离/接管）。每次新决策覆盖。
+    /// </summary>
+    public string? PathDecision { get; set; }
+
+    /// <summary>
+    ///     下一次允许观察/推进本任务的最早时间；null 或已到期表示随对账正常处理。
+    ///     由等待窗口（可见性、确认窗口、采样间隔）设置，供 worker 按最早到期任务唤醒。
+    /// </summary>
+    public DateTimeOffset? NextObservationAtUtc { get; set; }
+
+    /// <summary>最近一次 AddTorrent 请求时间（含隔离重加）：添加可见性窗口内不重复提交。</summary>
+    public DateTimeOffset? LastSubmitAttemptAtUtc { get; set; }
+
+    /// <summary>当前布局计划（改名/移动/选择）最近一次请求时间；布局确认窗口内不补发。</summary>
+    public DateTimeOffset? PendingLayoutRequestedAtUtc { get; set; }
+
+    /// <summary>当前布局计划已发出的请求轮数（改名/移动）；耗尽仍未生效即受阻待人工核对。</summary>
+    public int PendingLayoutRequestCount { get; set; }
+
+    /// <summary>文件选择变更已发出的请求轮数；确认收敛后归零，耗尽仍未生效按文件整理受阻处理。</summary>
+    public int SelectionRequestCount { get; set; }
+
     public int     AttemptCount { get; set; }
     public double? Progress     { get; set; }
     public long?   TotalSize    { get; set; }
