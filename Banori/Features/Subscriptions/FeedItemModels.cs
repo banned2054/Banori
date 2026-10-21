@@ -32,7 +32,7 @@ public sealed record FeedSourceItem(
     Uri?            TorrentUri,
     DateTimeOffset? PublishedAtUtc,
     /// <summary>来源 feed 直接提供的 Bangumi Subject ID（如 AniBT 的 bgmId）；feed 未提供时为 null。</summary>
-    int? SourceSubjectId = null);
+    int?            SourceSubjectId = null);
 
 /// <summary>
 ///     一次评估产生的完整结果。失败与待处理分支只填写可用的字段，Reason 始终给出可读解释。

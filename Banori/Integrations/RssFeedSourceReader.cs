@@ -55,11 +55,9 @@ public sealed class RssFeedSourceReader(IProxiedHttpClientSource httpClientSourc
                           element.Elements().FirstOrDefault(value => value.Name.LocalName == "link");
         var linkText = linkElement?.Attribute("href")?.Value ?? linkElement?.Value;
         Uri.TryCreate(linkText?.Trim(), UriKind.Absolute, out var link);
-        var enclosure = element.Elements().FirstOrDefault(value => value.Name.LocalName == "enclosure" &&
-                                                                   (value.Attribute("type")?.Value
-                                                                         .Equals("application/x-bittorrent",
-                                                                              StringComparison
-                                                                                 .OrdinalIgnoreCase) ?? false));
+        var enclosure = element.Elements().FirstOrDefault(value =>
+            value.Name.LocalName == "enclosure" &&
+            (value.Attribute("type")?.Value.Equals("application/x-bittorrent", StringComparison.OrdinalIgnoreCase) ?? false));
         var torrentText = enclosure?.Attribute("url")?.Value ?? enclosure?.Attribute("href")?.Value;
         Uri.TryCreate(torrentText?.Trim(), UriKind.Absolute, out var torrentUri);
         var publishedText = ChildValue(element, "pubDate") ?? ChildValue(element, "published") ??
@@ -80,10 +78,8 @@ public sealed class RssFeedSourceReader(IProxiedHttpClientSource httpClientSourc
         return new FeedSourceItem(stableId, guid, title, link, torrentUri, published, sourceSubjectId);
     }
 
-    private static string? ChildValue(XElement element, string localName)
-    {
-        return element.Elements().FirstOrDefault(value => value.Name.LocalName == localName)?.Value;
-    }
+    private static string? ChildValue(XElement element, string localName) =>
+        element.Elements().FirstOrDefault(value => value.Name.LocalName == localName)?.Value;
 
     private static DateTimeOffset? ParseTimestamp(string? text)
     {

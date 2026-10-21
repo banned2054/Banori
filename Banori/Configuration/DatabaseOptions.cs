@@ -15,16 +15,12 @@ public sealed class DatabaseOptions
     /// </summary>
     public string MySqlServerVersion { get; init; } = string.Empty;
 
-    public static DatabaseProvider ParseProvider(string? value)
+    public static DatabaseProvider ParseProvider(string? value) => value?.Trim().ToLowerInvariant() switch
     {
-        return value?.Trim().ToLowerInvariant() switch
-        {
-            null or "" or "sqlite" => DatabaseProvider.Sqlite,
-            "mysql"                => DatabaseProvider.MySql,
-            _ => throw new InvalidOperationException(
-                                                     $"未知的 Database:Provider 配置值“{value}”，可选 Sqlite 或 MySql。")
-        };
-    }
+        null or "" or "sqlite" => DatabaseProvider.Sqlite,
+        "mysql"                => DatabaseProvider.MySql,
+        _ => throw new InvalidOperationException($"未知的 Database:Provider 配置值“{value}”，可选 Sqlite 或 MySql。")
+    };
 
     public static ServerVersion ResolveMySqlServerVersion(string configuredVersion, string connectionString)
     {

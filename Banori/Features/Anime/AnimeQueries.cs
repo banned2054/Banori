@@ -71,8 +71,8 @@ public sealed class AnimeQueries(IDbContextFactory<ApplicationDbContext> dbConte
                                                                    {
                                                                        // 字幕组与语言取任务自带的命名要素快照；旧行没有合法 JSON 时回退占位字幕组。
                                                                        var ingredients =
-                                                                           TorrentNamingIngredients.FromJson(row
-                                                                              .NamingIngredients);
+                                                                           TorrentNamingIngredients
+                                                                              .FromJson(row.NamingIngredients);
                                                                        var group = ingredients?.Group;
                                                                        return new AnimeEpisodeLine(
                                                                         row.Id,

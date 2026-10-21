@@ -194,11 +194,11 @@ public sealed class SettingsPageViewModel(
         try
         {
             var (succeeded, message) = await qbittorrentSettings.TestConnectionAsync(
-                 new QbittorrentSettings(Downloader.BaseUrl  ?? string.Empty, Downloader.Username ?? string.Empty,
-                                         Downloader.SavePath ?? string.Empty, true,
-                                         Downloader.ParseProxyId()),
-                 string.IsNullOrWhiteSpace(Downloader.Password) ? null : Downloader.Password,
-                 cancellationToken);
+             new QbittorrentSettings(Downloader.BaseUrl  ?? string.Empty, Downloader.Username ?? string.Empty,
+                                     Downloader.SavePath ?? string.Empty, true,
+                                     Downloader.ParseProxyId()),
+             string.IsNullOrWhiteSpace(Downloader.Password) ? null : Downloader.Password,
+             cancellationToken);
             TestSucceeded = succeeded;
             TestMessage   = message;
         }
@@ -220,13 +220,12 @@ public sealed class SettingsPageViewModel(
         try
         {
             var proxyUrl = await proxyService.ResolveProxyUrlAsync(Telegram.ParseProxyId(), cancellationToken);
-            var (succeeded, message) = await telegramSettings.TestSendAsync(
-                                                                            Telegram.ToSettings(),
-                                                                            string.IsNullOrWhiteSpace(Telegram.BotToken)
-                                                                                ? null
-                                                                                : Telegram.BotToken,
-                                                                            proxyUrl,
-                                                                            cancellationToken);
+            var (succeeded, message) =
+                await telegramSettings.TestSendAsync(Telegram.ToSettings(),
+                                                     string.IsNullOrWhiteSpace(Telegram.BotToken)
+                                                         ? null
+                                                         : Telegram.BotToken,
+                                                     proxyUrl, cancellationToken);
             TestSucceeded = succeeded;
             TestMessage   = message;
         }
@@ -248,13 +247,10 @@ public sealed class SettingsPageViewModel(
         try
         {
             var proxyUrl = await proxyService.ResolveProxyUrlAsync(Gotify.ParseProxyId(), cancellationToken);
-            var (succeeded, message) = await gotifySettings.TestSendAsync(
-                                                                          Gotify.ToSettings(),
-                                                                          string.IsNullOrWhiteSpace(Gotify.AppToken)
-                                                                              ? null
-                                                                              : Gotify.AppToken,
-                                                                          proxyUrl,
-                                                                          cancellationToken);
+            var (succeeded, message) =
+                await gotifySettings.TestSendAsync(Gotify.ToSettings(),
+                                                   string.IsNullOrWhiteSpace(Gotify.AppToken) ? null : Gotify.AppToken,
+                                                   proxyUrl, cancellationToken);
             TestSucceeded = succeeded;
             TestMessage   = message;
         }

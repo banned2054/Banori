@@ -17,8 +17,8 @@ public sealed class AnimeQueriesTests
     {
         using var harness   = await AnimeQueriesHarness.CreateAsync();
         var       subjectId = await harness.AddSubjectAsync("星屑旅途");
-        var       replaced = await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Replaced, 1);
-        var       current  = await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Completed, 2);
+        var       replaced  = await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Replaced, 1);
+        var       current   = await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Completed, 2);
 
         // 绑定了 Subject、解析出集数但从未产生下载任务的 RSS 条目不应出现在动画目录。
         await harness.AddFeedItemAsync(subjectId, 2m);
@@ -38,13 +38,13 @@ public sealed class AnimeQueriesTests
     {
         using var harness   = await AnimeQueriesHarness.CreateAsync();
         var       subjectId = await harness.AddSubjectAsync("星屑旅途");
-        var baseTime = new DateTimeOffset(2026, 10, 12, 8, 0, 0, TimeSpan.Zero);
-        var olderV2 = await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Completed, 1, version: 2,
-                                                 created: baseTime);
-        var newerV2 = await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Completed, 2, version: 2,
-                                                 created: baseTime.AddHours(1));
-        await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Completed, 3, version: 1,
-                                   created: baseTime.AddHours(2));
+        var       baseTime  = new DateTimeOffset(2026, 10, 12, 8, 0, 0, TimeSpan.Zero);
+        var olderV2 = await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Completed, 1, 2,
+                                                 baseTime);
+        var newerV2 = await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Completed, 2, 2,
+                                                 baseTime.AddHours(1));
+        await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Completed, 3, 1,
+                                   baseTime.AddHours(2));
 
         var cards = await harness.Queries.ListAsync();
 
@@ -59,9 +59,9 @@ public sealed class AnimeQueriesTests
         using var harness   = await AnimeQueriesHarness.CreateAsync();
         var       subjectId = await harness.AddSubjectAsync("星屑旅途");
         var withSnapshot = await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Completed, 1,
-                                                      group: "悠亚字幕组", language: "简体中文");
+                                                      group : "悠亚字幕组", language : "简体中文");
         var withoutSnapshot = await harness.AddTaskAsync(subjectId, 2m, DownloadTaskStatus.Downloading, 2,
-                                                         ingredientsJson: null);
+                                                         ingredientsJson : null);
 
         var episodes = Assert.Single(await harness.Queries.ListAsync()).Episodes;
 
@@ -78,9 +78,9 @@ public sealed class AnimeQueriesTests
     [Fact]
     public async Task ListAsync_GroupsSubjects_CardNamingAndEpisodeOrder()
     {
-        using var harness = await AnimeQueriesHarness.CreateAsync();
-        var cnSubject = await harness.AddSubjectAsync("星屑旅途", name: "Hoshizuma Tabi");
-        var nameOnly  = await harness.AddSubjectAsync("Solitary Cafe");
+        using var harness   = await AnimeQueriesHarness.CreateAsync();
+        var       cnSubject = await harness.AddSubjectAsync("星屑旅途", "Hoshizuma Tabi");
+        var       nameOnly  = await harness.AddSubjectAsync("Solitary Cafe");
         await harness.AddTaskAsync(cnSubject, 2m, DownloadTaskStatus.Completed, 1);
         await harness.AddTaskAsync(cnSubject, 1m, DownloadTaskStatus.Completed, 2);
         await harness.AddTaskAsync(nameOnly, 1m, DownloadTaskStatus.Completed, 3);
@@ -104,7 +104,7 @@ public sealed class AnimeQueriesTests
         using var harness   = await AnimeQueriesHarness.CreateAsync();
         var       subjectId = await harness.AddSubjectAsync("星屑旅途");
         var failedId = await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Failed, 1,
-                                                  failedStep: "提交");
+                                                  failedStep : "提交");
 
         var final = Assert.Single(Assert.Single(await harness.Queries.ListAsync()).Episodes).Final;
 
@@ -114,14 +114,11 @@ public sealed class AnimeQueriesTests
 
     private sealed class AnimeQueriesHarness : IDisposable
     {
-        public AnimeQueries                       Queries { get; }
-        public IDbContextFactory<ApplicationDbContext> Factory { get; }
+        private readonly DirectoryInfo   _directory;
+        private readonly ServiceProvider _provider;
+        private          int             _nextSubjectId = 1;
 
-        private readonly DirectoryInfo    _directory;
-        private readonly ServiceProvider  _provider;
-        private          int              _nextSubjectId = 1;
-
-        private AnimeQueriesHarness(DirectoryInfo directory, ServiceProvider provider,
+        private AnimeQueriesHarness(DirectoryInfo                           directory, ServiceProvider provider,
                                     IDbContextFactory<ApplicationDbContext> factory)
         {
             _directory = directory;
@@ -130,18 +127,27 @@ public sealed class AnimeQueriesTests
             Queries    = new AnimeQueries(factory);
         }
 
+        public AnimeQueries                            Queries { get; }
+        public IDbContextFactory<ApplicationDbContext> Factory { get; }
+
+        public void Dispose()
+        {
+            _provider.Dispose();
+            _directory.Delete(true);
+        }
+
         public static async Task<AnimeQueriesHarness> CreateAsync()
         {
             var directory = Directory.CreateTempSubdirectory("Banori.Anime.Tests.");
             var services  = new ServiceCollection();
             services.AddLogging();
             services.AddDbContextFactory<ApplicationDbContext>(options =>
-                                                                   options.UseSqlite(
-                                                                       $"Data Source={Path.Combine(directory.FullName, "anime.db")};Pooling=False"));
+                                                                   options
+                                                                      .UseSqlite($"Data Source={Path.Combine(directory.FullName, "anime.db")};Pooling=False"));
             // 与其它测试保持一致的 Identity 模型配置：Identity 服务注册影响 ApplicationDbContext
             // 模型缓存的行为，缺注册会与先构建模型的测试产生顺序依赖。
             services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion =
-                                                         IdentitySchemaVersions.Version3)
+                                                          IdentitySchemaVersions.Version3)
                     .AddEntityFrameworkStores<ApplicationDbContext>();
             var provider = services.BuildServiceProvider();
             var factory  = provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
@@ -158,10 +164,10 @@ public sealed class AnimeQueriesTests
             await using var db = await Factory.CreateDbContextAsync();
             var subject = new MediaSubject
             {
-                Id      = _nextSubjectId++,
-                Name    = name ?? nameCn,
-                NameCn  = nameCn,
-                Platform = "TV",
+                Id          = _nextSubjectId++,
+                Name        = name ?? nameCn,
+                NameCn      = nameCn,
+                Platform    = "TV",
                 CachedAtUtc = DateTimeOffset.UnixEpoch
             };
             db.MediaSubjects.Add(subject);
@@ -177,21 +183,21 @@ public sealed class AnimeQueriesTests
             await using var db = await Factory.CreateDbContextAsync();
             var task = new DownloadTask
             {
-                Id          = Guid.NewGuid(),
-                SubjectId   = subjectId,
-                Episode     = episode,
-                Status      = status,
-                Version     = version,
+                Id             = Guid.NewGuid(),
+                SubjectId      = subjectId,
+                Episode        = episode,
+                Status         = status,
+                Version        = version,
                 // 40 位小写十六进制且互不相同，满足唯一索引 (InfoHash, ActiveFlag)。
-                InfoHash        = hashIndex.ToString("x40"),
-                SavePath        = "/downloads",
-                NamingSnapshot  = "snapshot",
-                CreatedAtUtc    = created ?? DateTimeOffset.UnixEpoch,
-                FailedStep      = failedStep
+                InfoHash       = hashIndex.ToString("x40"),
+                SavePath       = "/downloads",
+                NamingSnapshot = "snapshot",
+                CreatedAtUtc   = created ?? DateTimeOffset.UnixEpoch,
+                FailedStep     = failedStep
             };
             if (ingredientsJson is null && (group is not null || language is not null))
                 ingredientsJson = new TorrentNamingIngredients(null, "title", "01", version, group, null,
-                                                                Language: language).ToJson();
+                                                               language).ToJson();
             task.NamingIngredients = ingredientsJson;
             db.DownloadTasks.Add(task);
             await db.SaveChangesAsync();
@@ -201,7 +207,8 @@ public sealed class AnimeQueriesTests
         public async Task AddFeedItemAsync(int subjectId, decimal episode)
         {
             await using var db = await Factory.CreateDbContextAsync();
-            var subscription = new MediaSubscription { Id = Guid.NewGuid(), Name = "订阅", FeedUrlProtected = "https://example.org/rss" };
+            var subscription = new MediaSubscription
+                { Id = Guid.NewGuid(), Name = "订阅", FeedUrlProtected = "https://example.org/rss" };
             db.MediaSubscriptions.Add(subscription);
             db.FeedItems.Add(new FeedItem
             {
@@ -215,12 +222,6 @@ public sealed class AnimeQueriesTests
                 Episode        = episode
             });
             await db.SaveChangesAsync();
-        }
-
-        public void Dispose()
-        {
-            _provider.Dispose();
-            _directory.Delete(true);
         }
     }
 }

@@ -43,9 +43,8 @@ public sealed class TelegramSender : ITelegramSender
                                               JsonSerializer.Serialize(new { chat_id = chatId.Trim(), text },
                                                                        JsonOptions),
                                               Encoding.UTF8, "application/json");
-        using var response = await client
-           .PostAsync($"{ApiBaseUrl}/bot{botToken.Trim()}/sendMessage", content,
-                      cancellationToken);
+        using var response =
+            await client.PostAsync($"{ApiBaseUrl}/bot{botToken.Trim()}/sendMessage", content, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new NotificationSendException($"Telegram 返回 {(int)response.StatusCode}：{Truncate(body)}");

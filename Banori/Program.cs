@@ -146,23 +146,23 @@ internal class Program
             options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
             {
                 if (BaselineRateLimiting.IsAuthenticationSubmit(context.Request.Path, context.Request.Method))
-                    return RateLimitPartition.GetFixedWindowLimiter(BaselineRateLimiting.AuthPartitionKey(context), _ =>
-                                                                        new FixedWindowRateLimiterOptions
-                                                                        {
-                                                                            PermitLimit = BaselineRateLimiting
-                                                                               .AuthPermitLimit,
-                                                                            Window     = BaselineRateLimiting.Window,
-                                                                            QueueLimit = 0
-                                                                        });
+                    return RateLimitPartition.GetFixedWindowLimiter(
+                        BaselineRateLimiting.AuthPartitionKey(context),
+                        _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = BaselineRateLimiting.AuthPermitLimit,
+                            Window      = BaselineRateLimiting.Window,
+                            QueueLimit  = 0
+                        });
                 if (BaselineRateLimiting.IsHookCallback(context.Request.Path))
-                    return RateLimitPartition.GetFixedWindowLimiter(BaselineRateLimiting.HookPartitionKey(context), _ =>
-                                                                        new FixedWindowRateLimiterOptions
-                                                                        {
-                                                                            PermitLimit = BaselineRateLimiting
-                                                                               .HookPermitLimit,
-                                                                            Window     = BaselineRateLimiting.Window,
-                                                                            QueueLimit = 0
-                                                                        });
+                    return RateLimitPartition.GetFixedWindowLimiter(
+                        BaselineRateLimiting.HookPartitionKey(context),
+                        _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = BaselineRateLimiting.HookPermitLimit,
+                            Window      = BaselineRateLimiting.Window,
+                            QueueLimit  = 0
+                        });
                 return RateLimitPartition.GetNoLimiter("default");
             });
         });

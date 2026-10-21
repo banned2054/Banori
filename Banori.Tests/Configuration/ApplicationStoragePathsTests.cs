@@ -241,7 +241,7 @@ public sealed class ApplicationStoragePathsTests : IDisposable
         var error = Assert.Throws<InvalidOperationException>(() =>
                                                                  ApplicationStoragePaths
                                                                     .ResolveConfigDirectory(ContentRoot, provider,
-                                                                              connectionString));
+                                                                         connectionString));
 
         Assert.Contains(Path.Combine(ContentRoot, legacyName), error.Message);
         Assert.Contains(ConfigDirectory, error.Message);

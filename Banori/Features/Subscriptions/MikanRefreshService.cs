@@ -358,16 +358,13 @@ public sealed class MikanRefreshService(
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    private static string GetSafeFeedError(Exception exception)
+    private static string GetSafeFeedError(Exception exception) => exception switch
     {
-        return exception switch
-        {
-            InvalidOperationException => exception.Message,
-            XmlException xmlException => $"RSS 源 XML 格式错误（第 {xmlException.LineNumber} 行）。",
-            HttpRequestException      => "无法连接 RSS 源。",
-            _                         => "读取或解析 RSS 源失败。"
-        };
-    }
+        InvalidOperationException => exception.Message,
+        XmlException xmlException => $"RSS 源 XML 格式错误（第 {xmlException.LineNumber} 行）。",
+        HttpRequestException      => "无法连接 RSS 源。",
+        _                         => "读取或解析 RSS 源失败。"
+    };
 
     /// <summary>刷新执行所需的订阅数据；FeedUrl 为解密后的完整地址，仅在服务内部使用。</summary>
     private sealed record RefreshSubscription(
@@ -378,8 +375,9 @@ public sealed class MikanRefreshService(
         int?   FixedSubjectId,
         Guid?  ProxyId)
     {
-        public RefreshSubscription(MediaSubscription entity, string feedUrl) : this(entity.Id, entity.Name, feedUrl,
-                 entity.RefreshIntervalMinutes, entity.FixedSubjectId, entity.ProxyId)
+        public RefreshSubscription(MediaSubscription entity, string feedUrl)
+            : this(entity.Id, entity.Name, feedUrl, entity.RefreshIntervalMinutes, entity.FixedSubjectId,
+                   entity.ProxyId)
         {
         }
     }

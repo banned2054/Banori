@@ -53,8 +53,7 @@ public sealed class ManageTelegramSettings(IApplicationSettingStore settingStore
 
     public async Task<TelegramSettings> GetAsync(CancellationToken cancellationToken = default)
     {
-        var stored = await NotificationChannelSettingsStore.GetAsync(
-                                                                     settingStore, EnabledKey, ChatIdKey, EventsKey,
+        var stored = await NotificationChannelSettingsStore.GetAsync(settingStore, EnabledKey, ChatIdKey, EventsKey,
                                                                      ProxyIdKey, cancellationToken);
         return new TelegramSettings(stored.ChannelValue.Trim(), stored.ProxyId, stored.Enabled, stored.Events);
     }
@@ -83,12 +82,10 @@ public sealed class ManageTelegramSettings(IApplicationSettingStore settingStore
                 throw new ArgumentException("启用 Telegram 通知时必须填写 Bot Token。", nameof(settings));
         }
 
-        await NotificationChannelSettingsStore.SaveAsync(
-                                                         settingStore, EnabledKey, ChatIdKey, chatId, ProxyIdKey,
+        await NotificationChannelSettingsStore.SaveAsync(settingStore, EnabledKey, ChatIdKey, chatId, ProxyIdKey,
                                                          EventsKey, settings.Enabled, settings.ProxyId,
                                                          settings.Events, cancellationToken);
-        await NotificationChannelSettingsStore.SaveTokenIfProvidedAsync(
-                                                                        settingStore, BotTokenKey, botToken,
+        await NotificationChannelSettingsStore.SaveTokenIfProvidedAsync(settingStore, BotTokenKey, botToken,
                                                                         cancellationToken);
     }
 
@@ -139,8 +136,7 @@ public sealed class ManageGotifySettings(IApplicationSettingStore settingStore, 
 
     public async Task<GotifySettings> GetAsync(CancellationToken cancellationToken = default)
     {
-        var stored = await NotificationChannelSettingsStore.GetAsync(
-                                                                     settingStore, EnabledKey, BaseUrlKey, EventsKey,
+        var stored = await NotificationChannelSettingsStore.GetAsync(settingStore, EnabledKey, BaseUrlKey, EventsKey,
                                                                      ProxyIdKey, cancellationToken);
         return new GotifySettings(stored.ChannelValue.Trim(), stored.ProxyId, stored.Enabled, stored.Events);
     }
@@ -177,12 +173,10 @@ public sealed class ManageGotifySettings(IApplicationSettingStore settingStore, 
                 throw new ArgumentException("启用 Gotify 通知时必须填写应用 Token。", nameof(settings));
         }
 
-        await NotificationChannelSettingsStore.SaveAsync(
-                                                         settingStore, EnabledKey, BaseUrlKey, baseUrl, ProxyIdKey,
+        await NotificationChannelSettingsStore.SaveAsync(settingStore, EnabledKey, BaseUrlKey, baseUrl, ProxyIdKey,
                                                          EventsKey, settings.Enabled, settings.ProxyId,
                                                          settings.Events, cancellationToken);
-        await NotificationChannelSettingsStore.SaveTokenIfProvidedAsync(
-                                                                        settingStore, AppTokenKey, appToken,
+        await NotificationChannelSettingsStore.SaveTokenIfProvidedAsync(settingStore, AppTokenKey, appToken,
                                                                         cancellationToken);
     }
 

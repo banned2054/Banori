@@ -184,17 +184,15 @@ public sealed class FeedItemEvaluator(
         var preference       = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
         var correctionReason = correction.Reason == "未应用集数修正规则。" ? string.Empty : $" {correction.Reason}";
         // 命名模板的 {source} 令牌取订阅 RSS 地址判定的来源站点（mikan/anibt）。
-        var siteSource     = feedHost;
-        var namingTemplate = await namingTemplateStore.GetAsync(cancellationToken);
-        var fileTemplate   = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
+        var siteSource       = feedHost;
+        var namingTemplate   = await namingTemplateStore.GetAsync(cancellationToken);
+        var fileTemplate     = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
         // 预览与命名要素同源生成，且分别快照 AniParser 与 Bangumi 字段。
-        var ingredients = NamingIngredientsComposer.Compose(
-                                                            namingTemplate, fileTemplate, parsed,
-                                                            ReleaseNamePreviewPolicy
-                                                               .FormatEpisodeText(correction.Episode), preference,
-                                                            siteSource,
-                                                            subject.Id, subject.Name, subject.NameCn, subject.Platform,
-                                                            subject.AirDate);
+        var ingredients =
+            NamingIngredientsComposer.Compose(namingTemplate, fileTemplate, parsed,
+                                              ReleaseNamePreviewPolicy.FormatEpisodeText(correction.Episode),
+                                              preference, siteSource, subject.Id, subject.Name, subject.NameCn,
+                                              subject.Platform, subject.AirDate);
         var namingPreview = namingPolicy.Create(ingredients);
 
         await SaveAnalysisAsync(itemId,
@@ -249,35 +247,34 @@ public sealed class FeedItemEvaluator(
     private FeedItemAnalysis CreateAnalysis(ParseResult parsed,      FeedItemStatus status, int? subjectId,
                                             string?     subjectName, ReleaseDecisionStatus? decisionStatus,
                                             string?     preference,  string reason, string? namingPreview,
-                                            decimal?    episode,     string? namingIngredients = null) =>
-        new()
-        {
-            Status            = status,
-            ParsedTitle       = parsed.Title,
-            MediaType         = parsed.MediaType.ToString(),
-            Episode           = episode,
-            StartEpisode      = parsed.StartEpisode,
-            EndEpisode        = parsed.EndEpisode,
-            Version           = parsed.Version,
-            Group             = parsed.Group,
-            GroupType         = parsed.GroupType.ToString(),
-            Language          = parsed.Language.ToString(),
-            SubtitleType      = parsed.SubtitleType.ToString(),
-            Resolution        = parsed.Resolution.ToString(),
-            Source            = parsed.Source.ToString(),
-            WebSource         = parsed.WebSource,
-            VideoCodec        = parsed.VideoCodec,
-            AudioCodec        = parsed.AudioCodec,
-            ColorBitDepth     = parsed.ColorBitDepth,
-            SubjectId         = subjectId,
-            SubjectName       = subjectName,
-            DecisionStatus    = decisionStatus,
-            Preference        = preference,
-            Reason            = reason,
-            NamingPreview     = namingPreview,
-            NamingIngredients = namingIngredients,
-            EvaluatedAtUtc    = timeProvider.GetUtcNow()
-        };
+                                            decimal?    episode,     string? namingIngredients = null) => new()
+    {
+        Status            = status,
+        ParsedTitle       = parsed.Title,
+        MediaType         = parsed.MediaType.ToString(),
+        Episode           = episode,
+        StartEpisode      = parsed.StartEpisode,
+        EndEpisode        = parsed.EndEpisode,
+        Version           = parsed.Version,
+        Group             = parsed.Group,
+        GroupType         = parsed.GroupType.ToString(),
+        Language          = parsed.Language.ToString(),
+        SubtitleType      = parsed.SubtitleType.ToString(),
+        Resolution        = parsed.Resolution.ToString(),
+        Source            = parsed.Source.ToString(),
+        WebSource         = parsed.WebSource,
+        VideoCodec        = parsed.VideoCodec,
+        AudioCodec        = parsed.AudioCodec,
+        ColorBitDepth     = parsed.ColorBitDepth,
+        SubjectId         = subjectId,
+        SubjectName       = subjectName,
+        DecisionStatus    = decisionStatus,
+        Preference        = preference,
+        Reason            = reason,
+        NamingPreview     = namingPreview,
+        NamingIngredients = namingIngredients,
+        EvaluatedAtUtc    = timeProvider.GetUtcNow()
+    };
 
     private Task SaveParsedNeedsReviewAsync(
         Guid itemId, ParseResult parsed, string reason, CancellationToken cancellationToken, int? subjectId = null) =>

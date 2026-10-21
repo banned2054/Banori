@@ -61,7 +61,7 @@ public sealed class ProxyServiceTests
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
                                                         harness.Service.SaveAsync(new SaveProxyRequest(null, name,
-                                                            ProxyProtocol.Http, host, port, null)));
+                                                                          ProxyProtocol.Http, host, port, null)));
     }
 
     [Fact]
@@ -72,8 +72,8 @@ public sealed class ProxyServiceTests
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
                                                         harness.Service.SaveAsync(new SaveProxyRequest(null, "重名",
-                                                            ProxyProtocol.Socks5, "10.0.0.2", 1080,
-                                                            null)));
+                                                                          ProxyProtocol.Socks5, "10.0.0.2", 1080,
+                                                                          null)));
     }
 
     [Fact]
@@ -94,9 +94,9 @@ public sealed class ProxyServiceTests
     /// <summary>独立临时目录 + 真实 SQLite 与 Data Protection 的完整环境。</summary>
     private sealed class Harness : IDisposable
     {
-        private readonly DirectoryInfo _directory = Directory.CreateTempSubdirectory("Banori.Proxy.Tests.");
+        private readonly DirectoryInfo           _directory = Directory.CreateTempSubdirectory("Banori.Proxy.Tests.");
         private readonly IDataProtectionProvider _protection;
-        private readonly ServiceProvider _provider;
+        private readonly ServiceProvider         _provider;
 
         public Harness()
         {

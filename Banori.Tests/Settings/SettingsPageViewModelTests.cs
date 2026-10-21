@@ -106,8 +106,7 @@ public sealed class SettingsPageViewModelTests
     private static async Task<(SettingsPageViewModel ViewModel, MemoryApplicationSettingStore Store)> CreateAsync()
     {
         var store = new MemoryApplicationSettingStore();
-        var downloader = new ManageQbittorrentSettings(
-                                                       store,
+        var downloader = new ManageQbittorrentSettings(store,
                                                        new FakeQbittorrentSessionFactory(new FakeTorrentStore()));
         var telegram     = new ManageTelegramSettings(store, new FakeTelegramSender());
         var gotify       = new ManageGotifySettings(store, new FakeGotifySender());

@@ -314,14 +314,12 @@ public sealed class CandidateSelectionService(
 
         var groups = plans.Select(plan =>
         {
-            var currentWinnerId = currentWinners.TryGetValue(
-                                                             (plan.Key.SubjectId, plan.Key.MediaType, plan.Key.Episode),
-                                                             out var winnerId)
-                ? (Guid?)winnerId
-                : null;
+            var currentWinnerId =
+                currentWinners.TryGetValue((plan.Key.SubjectId, plan.Key.MediaType, plan.Key.Episode), out var winnerId)
+                    ? (Guid?)winnerId
+                    : null;
             var draftWinnerId = plan.Winner?.FeedItemId;
-            return new SelectionPreviewGroup(
-                                             plan.Key,
+            return new SelectionPreviewGroup(plan.Key,
                                              subjectNames.TryGetValue(plan.Key.SubjectId, out var name)
                                                  ? name
                                                  : $"#{plan.Key.SubjectId}",
@@ -335,8 +333,7 @@ public sealed class CandidateSelectionService(
                                              titleById.TryGetValue(draftWinnerId.Value, out var draftTitle)
                                                  ? draftTitle
                                                  : null,
-                                             plan.WinnerBasis,
-                                             currentWinnerId != draftWinnerId);
+                                             plan.WinnerBasis, currentWinnerId != draftWinnerId);
         }).ToList();
 
         return new SelectionPreviewResult(groups.Count, groups.Count(group => group.WinnerChanged), groups);
@@ -615,8 +612,10 @@ public sealed class CandidateSelectionService(
                         }
                         else
                         {
-                            selection.IntentTaskId = await intakeService.CreateTaskWithinContextAsync(
-                                 db, winnerItem, torrentBytes!, infoHash!, cancellationToken);
+                            selection.IntentTaskId =
+                                await intakeService.CreateTaskWithinContextAsync(db, winnerItem, torrentBytes!,
+                                    infoHash!,
+                                    cancellationToken);
                             selection.IntentFailedReason = null;
                         }
                     }
@@ -677,15 +676,12 @@ public sealed class CandidateSelectionService(
         };
     }
 
-    private static string DescribeIntentError(Exception exception)
+    private static string DescribeIntentError(Exception exception) => exception switch
     {
-        return exception switch
-        {
-            InvalidOperationException => exception.Message,
-            HttpRequestException      => "获取种子文件失败。",
-            _                         => "登记下载意图时发生意外错误。"
-        };
-    }
+        InvalidOperationException => exception.Message,
+        HttpRequestException      => "获取种子文件失败。",
+        _                         => "登记下载意图时发生意外错误。"
+    };
 
     /// <summary>组级守卫扫描结果：通过守卫的组键，以及仍被待评估条目阻塞的组键集合。</summary>
     private sealed record GuardedGroupScan(

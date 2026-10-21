@@ -27,13 +27,10 @@ public static class ProxyEndpoint
         return builder.Uri.AbsoluteUri;
     }
 
-    private static string Scheme(ProxyProtocol protocol)
+    private static string Scheme(ProxyProtocol protocol) => protocol switch
     {
-        return protocol switch
-        {
-            ProxyProtocol.Socks4 => "socks4",
-            ProxyProtocol.Socks5 => "socks5",
-            _                    => "http"
-        };
-    }
+        ProxyProtocol.Socks4 => "socks4",
+        ProxyProtocol.Socks5 => "socks5",
+        _                    => "http"
+    };
 }

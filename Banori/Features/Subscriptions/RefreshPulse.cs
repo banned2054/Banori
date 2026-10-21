@@ -18,8 +18,8 @@ public sealed class RefreshPulse
         {
             _signaled = true;
             // 已唤醒的等待者必须摘除：留着会让后续 WaitAsync 拿到已完成的任务，工作线程忙循环。
-            waiter  = _waiter;
-            _waiter = null;
+            waiter    = _waiter;
+            _waiter   = null;
         }
 
         waiter?.TrySetResult(true);

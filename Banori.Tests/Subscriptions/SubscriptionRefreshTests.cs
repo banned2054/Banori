@@ -50,9 +50,10 @@ public sealed class SubscriptionRefreshTests
                 await db.Database.EnsureCreatedAsync();
 
                 var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
-                var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "测试订阅",
-                                                                                  "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                                  true, 30, 42));
+                var subscriptionId =
+                    await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "测试订阅",
+                                                                 "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                 true, 30, 42));
                 var queuedWorkId = await subscriptionService.RequestRefreshAsync(subscriptionId);
                 Assert.Equal(queuedWorkId, await subscriptionService.RequestRefreshAsync(subscriptionId));
                 var refreshService = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
@@ -268,10 +269,9 @@ public sealed class SubscriptionRefreshTests
             await using var db       = await factory.CreateDbContextAsync();
             await db.Database.MigrateAsync();
 
-            var tableNames = await db
-                                  .Database
-                                  .SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table'")
-                                  .ToListAsync();
+            var tableNames = await db.Database
+                                     .SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table'")
+                                     .ToListAsync();
             Assert.Contains("MediaSubscriptions", tableNames);
             Assert.Contains("FeedItems", tableNames);
             Assert.Contains("MediaSubjects", tableNames);
@@ -300,9 +300,10 @@ public sealed class SubscriptionRefreshTests
                 await using (var db = await factory.CreateDbContextAsync())
                 {
                     await db.Database.EnsureCreatedAsync();
-                    var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "恢复测试",
-                                                                                      "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                                      true, 30, null));
+                    var subscriptionId =
+                        await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "恢复测试",
+                                                                     "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                     true, 30, null));
                     db.FeedItems.Add(new FeedItem
                     {
                         Id             = Guid.NewGuid(),
@@ -622,9 +623,10 @@ public sealed class SubscriptionRefreshTests
 
                 var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
                 var refreshService      = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
-                var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "缓存测试",
-                                                                                  "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                                  true, 30, null));
+                var subscriptionId =
+                    await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "缓存测试",
+                                                                 "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                 true, 30, null));
 
                 await subscriptionService.RequestRefreshAsync(subscriptionId);
                 var first = await refreshService.ProcessNextAsync();
@@ -689,9 +691,10 @@ public sealed class SubscriptionRefreshTests
                 var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
                 var refreshService      = scope.ServiceProvider.GetRequiredService<MikanRefreshService>();
                 // 订阅未固定 Subject：Subject 只能来自标题映射缓存或 Mikan 页面发现（这里固定返回 467461）。
-                var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "标题映射测试",
-                                                                                  "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                                  true, 30, null));
+                var subscriptionId =
+                    await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "标题映射测试",
+                                                                 "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                 true, 30, null));
                 var normalizedTitle = TitleNormalizer.Normalize(
                                                                 scope.ServiceProvider
                                                                      .GetRequiredService<AniParser>()
@@ -844,9 +847,10 @@ public sealed class SubscriptionRefreshTests
             await using (scope2)
             {
                 var subscriptionService = scope2.ServiceProvider.GetRequiredService<SubscriptionService>();
-                var subscriptionId = await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "并发入队",
-                                                                                  "https://mikanani.me/RSS/MyBangumi?token=secret",
-                                                                                  true, 30, null));
+                var subscriptionId =
+                    await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "并发入队",
+                                                                 "https://mikanani.me/RSS/MyBangumi?token=secret",
+                                                                 true, 30, null));
 
                 for (var round = 0; round < 3; round++)
                 {

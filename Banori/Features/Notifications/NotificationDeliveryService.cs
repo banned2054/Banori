@@ -48,8 +48,8 @@ public sealed class NotificationDeliveryService(
 
         if (deliveries.Count == 0) return;
 
-        var telegram = await telegramSettings.GetAsync(cancellationToken);
-        var gotify   = await gotifySettings.GetAsync(cancellationToken);
+        var telegram         = await telegramSettings.GetAsync(cancellationToken);
+        var gotify           = await gotifySettings.GetAsync(cancellationToken);
         // 渠道代理按批解析一次：代理被删除时回退 null（直连），不让失效引用阻塞投递。
         var telegramProxyUrl = await proxyService.ResolveProxyUrlAsync(telegram.ProxyId, cancellationToken);
         var gotifyProxyUrl   = await proxyService.ResolveProxyUrlAsync(gotify.ProxyId, cancellationToken);

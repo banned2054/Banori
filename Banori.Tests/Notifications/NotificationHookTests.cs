@@ -149,9 +149,9 @@ public sealed class NotificationHookTests
                                                               provider
                                                                  .GetRequiredService<FakeQbittorrentSessionFactory>());
         services.AddSingleton<ITorrentFileSource>(_ => new FakeTorrentFileSource(uri =>
-                                                               TestTorrentBytes
-                                                                  .Create(Path.GetFileNameWithoutExtension(uri.Segments
-                                                                                       [^1]))));
+                                                      TestTorrentBytes
+                                                         .Create(Path.GetFileNameWithoutExtension(uri.Segments
+                                                                     [^1]))));
         services.AddScoped<ManageQbittorrentSettings>();
         services.AddDataProtection();
         services.AddNotificationTestFakes();

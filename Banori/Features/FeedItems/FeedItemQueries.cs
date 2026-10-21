@@ -23,32 +23,31 @@ public sealed class FeedItemQueries(IDbContextFactory<ApplicationDbContext> dbCo
                     .ToList();
     }
 
-    private static FeedItemView ToView(FeedItem item) =>
-        new()
-        {
-            Id               = item.Id,
-            SubscriptionId   = item.SubscriptionId,
-            SubscriptionName = item.Subscription.Name,
-            Title            = item.Title,
-            Link             = item.Link,
-            TorrentUrl       = item.TorrentUrl,
-            PublishedAtUtc   = item.PublishedAtUtc,
-            FirstSeenAtUtc   = item.FirstSeenAtUtc,
-            Status           = item.Status,
-            ParsedTitle      = item.ParsedTitle,
-            MediaType        = item.MediaType,
-            Episode          = item.Episode,
-            Version          = item.Version,
-            Group            = item.Group,
-            Language         = item.Language,
-            Resolution       = item.Resolution,
-            SubjectId        = item.SubjectId,
-            SubjectName = item.Subject is null                 ? null :
-                string.IsNullOrWhiteSpace(item.Subject.NameCn) ? item.Subject.Name : item.Subject.NameCn,
-            DecisionStatus   = item.DecisionStatus,
-            Preference       = item.Preference,
-            Reason           = item.Reason,
-            NamingPreview    = item.NamingPreview,
-            SelectionOutcome = item.SelectionOutcome
-        };
+    private static FeedItemView ToView(FeedItem item) => new()
+    {
+        Id               = item.Id,
+        SubscriptionId   = item.SubscriptionId,
+        SubscriptionName = item.Subscription.Name,
+        Title            = item.Title,
+        Link             = item.Link,
+        TorrentUrl       = item.TorrentUrl,
+        PublishedAtUtc   = item.PublishedAtUtc,
+        FirstSeenAtUtc   = item.FirstSeenAtUtc,
+        Status           = item.Status,
+        ParsedTitle      = item.ParsedTitle,
+        MediaType        = item.MediaType,
+        Episode          = item.Episode,
+        Version          = item.Version,
+        Group            = item.Group,
+        Language         = item.Language,
+        Resolution       = item.Resolution,
+        SubjectId        = item.SubjectId,
+        SubjectName = item.Subject is null                 ? null :
+            string.IsNullOrWhiteSpace(item.Subject.NameCn) ? item.Subject.Name : item.Subject.NameCn,
+        DecisionStatus   = item.DecisionStatus,
+        Preference       = item.Preference,
+        Reason           = item.Reason,
+        NamingPreview    = item.NamingPreview,
+        SelectionOutcome = item.SelectionOutcome
+    };
 }

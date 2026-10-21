@@ -119,10 +119,9 @@ public sealed class SubscriptionsPageViewModelTests
 
             var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
             await Assert.ThrowsAsync<ArgumentException>(() =>
-                                                            subscriptionService
-                                                               .SaveAsync(new SaveSubscriptionRequest(null, "坏代理订阅",
-                                                                                   "https://anibt.net/rss/magnets.xml?limit=100",
-                                                                                   true, 30, null, Guid.NewGuid())));
+                subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "坏代理订阅",
+                                                                         "https://anibt.net/rss/magnets.xml?limit=100",
+                                                                         true, 30, null, Guid.NewGuid())));
 
             Assert.Empty(await subscriptionService.ListAsync());
         }
@@ -144,13 +143,10 @@ public sealed class SubscriptionsPageViewModelTests
             await EnsureCreatedAsync(scope);
 
             var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
-            var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
-                                                                            subscriptionService
-                                                                               .SaveAsync(new
-                                                                                             SaveSubscriptionRequest(null,
-                                                                                                      "未支持源",
-                                                                                                      "https://nyaa.si/?page=rss",
-                                                                                                      true, 30, null)));
+            var exception =
+                await Assert.ThrowsAsync<ArgumentException>(() =>
+                    subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "未支持源",
+                                                                             "https://nyaa.si/?page=rss", true, 30, null)));
 
             Assert.Contains("订阅目前仅支持 Mikan（mikanani.me）与 AniBT（anibt.net）", exception.Message);
             Assert.Empty(await subscriptionService.ListAsync());

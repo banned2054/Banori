@@ -146,7 +146,7 @@ public sealed class SecurityIntegrationTests : IAsyncLifetime
             ["BANORI_USERNAME"]                     = "reviewadmin",
             ["BANORI_PASSWORD"]                     = $"{Guid.NewGuid():N}-A9!"
         });
-        if (trustedProxy is not null) builder.Configuration["ReverseProxy:KnownProxies:0"] = trustedProxy;
+        if (trustedProxy is not null) builder.Configuration["ReverseProxy:KnownProxies:0"]    = trustedProxy;
         // 隔离测试中的宿主机代理允许两种回环地址，兼容实际连接来源为 IPv6 的运行环境。
         if (trustedProxy == "127.0.0.1") builder.Configuration["ReverseProxy:KnownProxies:1"] = "::1";
         builder.WebHost.UseUrls("http://127.0.0.1:0");

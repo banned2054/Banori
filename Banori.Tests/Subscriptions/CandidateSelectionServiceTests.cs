@@ -41,7 +41,7 @@ public sealed class CandidateSelectionServiceTests
         {
             using var harness = await CreateHarnessAsync();
             // 按给定顺序依次入库，验证数据库中的条目先后不影响择优结果。
-            var itemIds = new Dictionary<string, Guid>();
+            var       itemIds = new Dictionary<string, Guid>();
             foreach (var group in order)
                 itemIds[group] =
                     await harness.AddItemAsync($"guid:{group.ToLowerInvariant()}", group, "JpSc", 1);
@@ -226,7 +226,7 @@ public sealed class CandidateSelectionServiceTests
         using var harness = await CreateHarnessAsync();
         // 批次评估中途中断：组内已有选择记录（如下载器未配置时落库）但意图未登记，且同订阅
         // 仍有待评估条目——与“无选择记录”分支同一等待规则，不得按旧候选提前登记下载意图。
-        var itemId = await harness.AddItemAsync("guid:unregistered", "ANi", "JpSc", 1);
+        var       itemId  = await harness.AddItemAsync("guid:unregistered", "ANi", "JpSc", 1);
         await harness.AddSelectionRecordAsync(itemId, null, null);
         await using (var db = await harness.CreateDbContextAsync())
         {

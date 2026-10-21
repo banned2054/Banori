@@ -44,17 +44,16 @@ public sealed class NotificationEnqueuer(
     }
 
     private NotificationDelivery CreateDelivery(NotificationChannel channel, NotificationEventType eventType,
-                                                string              title,   string                message) =>
-        new()
-        {
-            Id           = Guid.NewGuid(),
-            Channel      = channel,
-            EventType    = eventType,
-            Title        = Truncate(title, TitleMaxLength),
-            Message      = Truncate(message, MessageMaxLength),
-            Status       = NotificationDeliveryStatus.Pending,
-            CreatedAtUtc = timeProvider.GetUtcNow()
-        };
+                                                string              title,   string                message) => new()
+    {
+        Id           = Guid.NewGuid(),
+        Channel      = channel,
+        EventType    = eventType,
+        Title        = Truncate(title, TitleMaxLength),
+        Message      = Truncate(message, MessageMaxLength),
+        Status       = NotificationDeliveryStatus.Pending,
+        CreatedAtUtc = timeProvider.GetUtcNow()
+    };
 
     private static string Truncate(string text, int maxLength)
     {

@@ -35,13 +35,12 @@ public sealed class GotifySender : IGotifySender
         if (!string.IsNullOrWhiteSpace(title)) payload["title"] = title;
         using var content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions),
                                               Encoding.UTF8, "application/json");
-        using var response = await client
-           .PostAsync($"{normalized}/message?token={Uri.EscapeDataString(appToken.Trim())}",
-                      content, cancellationToken);
+        using var response =
+            await client.PostAsync($"{normalized}/message?token={Uri.EscapeDataString(appToken.Trim())}",
+                                   content, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
-            throw new NotificationSendException(
-                                                $"Gotify 返回 {(int)response.StatusCode}：{Truncate(body)}");
+            throw new NotificationSendException($"Gotify 返回 {(int)response.StatusCode}：{Truncate(body)}");
     }
 
     private static string Truncate(string text)
