@@ -160,17 +160,43 @@ public sealed partial class DownloadVerificationTests
     }
 
     [Fact]
-    public async Task Verification_CheckingHasBoundedDeadline()
+    public async Task Verification_CheckingNoProgress_StopsThenFailsWhenStopIneffective()
     {
         using var harness = await VerificationHarness.CreateAsync();
         var       taskId  = await CreateCandidateAsync(harness);
         var       task    = await harness.GetTaskAsync(taskId);
         harness.Store.RecheckBehavior = FakeRecheckBehavior.EnterChecking;
         for (var i = 0; i < 3; i++) await harness.ReconcileAsync();
-        await ExpireVerificationDeadlineAsync(harness, taskId);
-        await harness.ReconcileAsync();
-        Assert.Equal(DownloadTaskStatus.Failed, (await harness.GetTaskAsync(taskId)).Status);
+        Assert.Contains(task.InfoHash, harness.Store.Rechecking);
+
+        // 无进展期限到期（固定时钟下把有效进展与停止台账改写为过去）：到期退出先停止确认，
+        // 停止请求在确认窗口内不重复发；窗口反复过期且停止不生效（fake 保持 Checking）才判失败。
+        for (var round = 0; round < 5; round++)
+        {
+            await AgeOutCheckProgressAsync(harness, taskId);
+            await harness.ReconcileAsync();
+        }
+
+        var failed = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Failed, failed.Status);
+        Assert.True(harness.Store.PauseCalls.Count(hash => hash == task.InfoHash) is >= 1 and <= 3);
         Assert.DoesNotContain(task.InfoHash, harness.Store.ResumeCalls);
+        Assert.All(harness.Store.DeleteCalls, call => Assert.NotEqual(task.InfoHash, call.Hash));
+    }
+
+    /// <summary>把本轮校验的有效进展时间与超时停止台账改写为窗口前：模拟无进展期限与停止确认窗口均已到期。</summary>
+    private static async Task AgeOutCheckProgressAsync(VerificationHarness harness, Guid taskId)
+    {
+        await using var db   = await harness.CreateDbContextAsync();
+        var             task = await db.DownloadTasks.SingleAsync(value => value.Id == taskId);
+        var intent = DownloadVerificationIntent.FromJson(task.VerificationIntent) ??
+                     throw new InvalidOperationException("校验意图缺失。");
+        task.VerificationIntent = (intent with
+        {
+            LastCheckProgressAtUtc = DateTimeOffset.UnixEpoch,
+            TimeoutStopRequestedAtUtc = DateTimeOffset.UnixEpoch
+        }).ToJson();
+        await db.SaveChangesAsync();
     }
 
     [Fact]

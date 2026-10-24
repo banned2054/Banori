@@ -129,17 +129,55 @@ public sealed record DownloadVerificationIntent
 
     public DateTimeOffset CreatedAtUtc { get; init; }
 
-    /// <summary>本轮 recheck 请求时间；null 表示尚未发出请求（仍在映射阶段）。</summary>
+    /// <summary>本轮 recheck 请求时间；null 表示尚未发出请求（仍在映射阶段），或本轮证据已作废、等待重新发起。</summary>
     public DateTimeOffset? RecheckRequestedAtUtc { get; init; }
 
-    /// <summary>本轮等待观察到 Checking 的截止时间；超时按未确认处理，不允许据此登记复用。</summary>
+    /// <summary>等待观察到 Checking 的截止时间（校验启动窗口）；超时允许有界补发，超时后出现的 Checking 仍可归属本轮。证据作废时一并清空。</summary>
     public DateTimeOffset? DeadlineUtc { get; init; }
+
+    /// <summary>首次观察到移动的时间；移动等待期限从此独立起算，前面校验的耗时不算入，重复快照不重置。null 表示当前无移动等待。</summary>
+    public DateTimeOffset? MovingObservedAtUtc { get; init; }
 
     /// <summary>累计 recheck 请求次数（跨轮次累计，用于有界重发的终止判断）。</summary>
     public int IssuedCount { get; init; }
 
     /// <summary>本轮是否已观察到 Checking；新一轮请求时重置为 false。</summary>
     public bool ObservedChecking { get; init; }
+
+    /// <summary>本轮首次观察到 Checking 的时间；单轮校验总上限从此起算。</summary>
+    public DateTimeOffset? CheckStartedAtUtc { get; init; }
+
+    /// <summary>校验期间最后一次有效进展的时间与进度值；只由有意义的进度变化更新，请求成功或重复快照不算进展。</summary>
+    public DateTimeOffset? LastCheckProgressAtUtc { get; init; }
+
+    public double? LastCheckProgress { get; init; }
+
+    /// <summary>
+    ///     结果稳定观察的最近一致样本：任务状态与所选文件进度的摘要。样本变化时重置起点与计数；
+    ///     新一轮 recheck 请求清空。null 表示尚未取得首个样本。
+    /// </summary>
+    public string? StabilitySample { get; init; }
+
+    /// <summary>当前一致样本序列的首个样本时间；稳定窗口从此起算。</summary>
+    public DateTimeOffset? StabilityStartedAtUtc { get; init; }
+
+    /// <summary>结果稳定观察的起始时间（退出校验后的首个样本）；稳定观察上限从此起算，样本变化不重置。</summary>
+    public DateTimeOffset? StabilityObservedAtUtc { get; init; }
+
+    /// <summary>最近一次稳定样本的采样时间；与下一样本的间隔超过稳定窗口表示观察中断，序列重新积累。</summary>
+    public DateTimeOffset? StabilitySampleAtUtc { get; init; }
+
+    /// <summary>当前一致样本序列的样本数（含首个样本）。</summary>
+    public int StabilitySampleCount { get; init; }
+
+    /// <summary>
+    ///     到期退出或轮次作废（人工暂停、移动）的停止请求时间与次数；与共享写入风险的暂停台账相互独立。
+    ///     活跃轮次的停止生效后仍走结果评估：校验恰好完成则正常收尾，被中断则以稳定结果确认缺失；
+    ///     作废轮次的残留校验停稳后由补发路径重新发起。人工暂停本身计为第一次停止请求。
+    /// </summary>
+    public DateTimeOffset? TimeoutStopRequestedAtUtc { get; init; }
+
+    public int TimeoutStopAttempts { get; init; }
 
     /// <summary>校验期对无法解释的运行状态已发出暂停的次数；超过上限转待核对。</summary>
     public int PauseAttempts { get; init; }

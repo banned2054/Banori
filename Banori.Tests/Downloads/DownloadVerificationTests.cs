@@ -315,7 +315,7 @@ public sealed partial class DownloadVerificationTests
     }
 
     [Fact]
-    public async Task Verification_FastRecheckNeverObserved_BoundedReissueThenIsolation()
+    public async Task Verification_FastRecheckNeverObserved_BoundedReissueThenHaltsUnconfirmed()
     {
         using var harness = await VerificationHarness.CreateAsync();
         var       taskId  = await harness.CreateUploadAsync(SingleFileTorrent());
@@ -336,15 +336,22 @@ public sealed partial class DownloadVerificationTests
         Assert.Equal(2, harness.Store.RecheckCalls.Count(hash => hash == task.InfoHash));
 
         await ExpireVerificationDeadlineAsync(harness, taskId);
-        await harness.ReconcileAsync(); // 仍无法确认 → 放弃复用，转独立下载。
+        await harness.ReconcileAsync(); // 仍无法归属本轮 → 校验执行未确认，停止自动推进。
 
-        var isolated = await harness.GetTaskAsync(taskId);
-        Assert.Equal(DownloadIsolationState.Deleting, isolated.IsolationState);
-        Assert.Null(isolated.VerificationIntent);
+        // 不凭重复 100% 宣告通过，也不因漏采 Checking 断言数据损坏、删除数据或自动重新下载：
+        // 任务保持受阻待人工重试，意图保留供重试链使用。
+        var halted = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Failed, halted.Status);
+        Assert.Equal("复用校验", halted.FailedStep);
+        Assert.Contains("未确认", halted.Error);
+        Assert.Equal(DownloadIsolationState.None, halted.IsolationState);
+        Assert.NotNull(halted.VerificationIntent);
+        Assert.Empty(harness.Store.DeleteCalls);
+        Assert.Single(harness.Store.AddCalls);
         await using (var db = await harness.CreateDbContextAsync())
         {
             var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
-            Assert.Equal(DownloadFileVerificationOutcomes.ReuseUnverified, file.VerificationOutcome);
+            Assert.Null(file.VerificationOutcome);
         }
     }
 
