@@ -51,9 +51,17 @@ public sealed class NamingIngredientsModelConsistencyTests
             Assert.Equal(mysql ? "longtext" : "TEXT", property.GetColumnType(), true);
         }
 
+        // 观察类别列按字符串转换存枚举名：两 provider 一致限制 32 字符，nullable 供存量行为空。
+        var categoryProperty = db.Model.GetEntityTypes().SelectMany(entity => entity.GetProperties())
+                                 .Single(value => value.Name                         == "LastObservedCategory" &&
+                                                  value.DeclaringType.GetTableName() == "DownloadTasks");
+        Assert.Equal(32, categoryProperty.GetMaxLength());
+        Assert.True(categoryProperty.IsNullable);
+
         var migration = assembly.Migrations.Keys.Last();
         // 迁移序列里必须同时能看到文件表与其后的逐集登记表迁移；新增迁移后更新这里的最新迁移名。
-        Assert.Contains("AddDownloadSchedulingAndPathDecision", migration);
+        Assert.Contains("AddDownloadTaskObservedCategory", migration);
+        Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddDownloadExternalStopProvenance"));
         Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddDataVerificationAndArchiveEvidence"));
         var fileEntity = db.Model.FindEntityType(typeof(DownloadTaskFile));
         Assert.NotNull(fileEntity);

@@ -119,21 +119,31 @@ else
 						}
 					</td>
 					<td>
-						<span class="badge @StatusClass(task.Status)">@StatusText(task)</span>
+						<span class="badge @StatusClass(task.Phase)">@task.StatusText</span>
+						@foreach (var note in task.PhaseNotes)
+						{
+							<div class="small text-body-secondary">@note</div>
+						}
 					</td>
 					<td>
-						@if (task.Progress is { } progress &&
-						     (task.Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused ||
-						      task is { Status: DownloadTaskStatus.Failed, FailedStep: "文件整理" }))
+						@if (task.ShowsProgress && task.Progress is { } progress)
 						{
 							<div class="progress" style="height: 8px;">
 								<div class="progress-bar" style="width: @(Math.Clamp(progress * 100, 0, 100).ToString("0.#"))%;"></div>
 							</div>
-							<span class="small text-body-secondary">@(progress.ToString("0.0%"))</span>
+							<span class="small text-body-secondary">@task.ProgressCaption@(progress.ToString("0.0%"))</span>
+							@if (task.ProgressNote is { } progressNote)
+							{
+								<div class="small text-body-secondary">@progressNote</div>
+							}
 						}
 						else
 						{
 							<span class="text-body-secondary">—</span>
+						}
+						@if (task.ShowsLastSync && task.LastSyncedAtUtc is { } synced)
+						{
+							<div class="small text-body-secondary">观察于 @synced.ToLocalTime().ToString("MM-dd HH:mm:ss")</div>
 						}
 					</td>
 					<td class="small text-body-secondary">
@@ -464,35 +474,32 @@ else
 		return $"{subject}{episode}{language}{group}{version}";
 	}
 
-	private static string StatusText(DownloadTaskView task)
+	private static string StatusClass(DownloadDisplayPhase phase)
 	{
-		return task.Status switch
+		return phase switch
 		{
-			DownloadTaskStatus.PendingSubmit => "等待提交",
-			DownloadTaskStatus.Submitting    => "提交结果待确认",
-			DownloadTaskStatus.Downloading   => task.IsSystemPaused ? "准备中（未启动下载）" : "下载中",
-			DownloadTaskStatus.Paused        => task.IsUserPaused ? "已暂停（人工）" : "已暂停",
-			DownloadTaskStatus.Completed     => "已完成",
-			DownloadTaskStatus.Failed        => "失败",
-			DownloadTaskStatus.Lost          => "任务丢失",
-			DownloadTaskStatus.Replaced      => "已被替换",
-			_                                => task.Status.ToString()
-		};
-	}
-
-	private static string StatusClass(DownloadTaskStatus status)
-	{
-		return status switch
-		{
-			DownloadTaskStatus.PendingSubmit => "text-bg-secondary",
-			DownloadTaskStatus.Submitting    => "text-bg-warning",
-			DownloadTaskStatus.Downloading   => "text-bg-primary",
-			DownloadTaskStatus.Paused        => "text-bg-secondary",
-			DownloadTaskStatus.Completed     => "text-bg-success",
-			DownloadTaskStatus.Failed        => "text-bg-danger",
-			DownloadTaskStatus.Lost          => "text-bg-danger",
-			DownloadTaskStatus.Replaced      => "text-bg-dark",
-			_                                => "text-bg-light"
+			// 准备与校验等待属于受控推进，用 info 区分于真实下载的 primary；
+			// 需要用户注意或人工干预的等待（停止确认、隔离迁移、添加确认）用 warning。
+			DownloadDisplayPhase.Preparing or
+			DownloadDisplayPhase.PreparingLayout or
+			DownloadDisplayPhase.WaitingCheckStart or
+			DownloadDisplayPhase.Checking or
+			DownloadDisplayPhase.WaitingResultStable or
+			DownloadDisplayPhase.WaitingStartConfirm => "text-bg-info",
+			DownloadDisplayPhase.WaitingAddConfirm   => "text-bg-warning",
+			DownloadDisplayPhase.WaitingStopConfirm  => "text-bg-warning",
+			DownloadDisplayPhase.IsolationMigrating  => "text-bg-warning",
+			DownloadDisplayPhase.WaitingSubmit       => "text-bg-secondary",
+			DownloadDisplayPhase.Archiving           => "text-bg-success",
+			DownloadDisplayPhase.Downloading         => "text-bg-primary",
+			DownloadDisplayPhase.PausedManually or
+			DownloadDisplayPhase.PausedByDownloader or
+			DownloadDisplayPhase.Paused              => "text-bg-secondary",
+			DownloadDisplayPhase.Completed           => "text-bg-success",
+			DownloadDisplayPhase.Failed              => "text-bg-danger",
+			DownloadDisplayPhase.Lost                => "text-bg-danger",
+			DownloadDisplayPhase.Replaced            => "text-bg-dark",
+			_                                        => "text-bg-light"
 		};
 	}
 

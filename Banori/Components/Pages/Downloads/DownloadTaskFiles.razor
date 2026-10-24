@@ -25,6 +25,11 @@
 				刷新文件
 			</button>
 		</div>
+		@if (TaskView?.PathDecisionNote is { } decision)
+		{
+			// 暂存/复用/隔离/接管的根目录由路径决策解释，避免只剩一个 .tasks 目录让用户猜。
+			<div class="small text-body-secondary mb-2">@decision</div>
+		}
 		@foreach (var animeGroup in new[] { true, false })
 		{
 			var files = details.Files.Where(file => file.Kind != DownloadFileKind.Seed == animeGroup).ToArray();
@@ -136,6 +141,9 @@
 	public CancellationToken CancellationToken { get; set; }
 
 	private DownloadTaskFilesState State => ViewModel.FileState(TaskId);
+
+	/// <summary>从页面视图模型反查任务投影：文件面板需要路径决策解释，避免重复查询。</summary>
+	private DownloadTaskView? TaskView => ViewModel.Tasks.FirstOrDefault(item => item.Id == TaskId);
 
 	private Task ReloadAsync()
 	{

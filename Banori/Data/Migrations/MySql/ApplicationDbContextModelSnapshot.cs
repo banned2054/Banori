@@ -199,6 +199,9 @@ namespace Banori.Data.Migrations.MySql
                         .HasMaxLength(1000)
                         .HasColumnType("varchar(1000)");
 
+                    b.Property<DateTimeOffset?>("ExternalStopObservedAtUtc")
+                        .HasColumnType("datetime(6)");
+
                     b.Property<string>("FailedStep")
                         .HasMaxLength(50)
                         .HasColumnType("varchar(50)");
@@ -223,6 +226,10 @@ namespace Banori.Data.Migrations.MySql
                         .HasMaxLength(32)
                         .HasColumnType("varchar(32)")
                         .HasDefaultValue("None");
+
+                    b.Property<string>("LastObservedCategory")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
 
                     b.Property<DateTimeOffset?>("LastSubmitAttemptAtUtc")
                         .HasColumnType("datetime(6)");

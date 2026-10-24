@@ -1030,6 +1030,91 @@ public sealed partial class DownloadServiceTests
         // 恢复后按普通下载对账，不触发准备流程（与响应丢失后的接管保留准备意图不同）。
         Assert.False(adopted.IsSystemPaused);
         Assert.Empty(harness.Store.ResumeCalls);
+        // 停止来源是下载器端观察：记录来源时间，界面解释为“下载器端停止”而非编造人工暂停。
+        Assert.Equal(harness.Timestamp, adopted.ExternalStopObservedAtUtc);
+    }
+
+    /// <summary>
+    ///     外部停止的来源区分：下载器端观察到的停止记录来源时间（界面解释为“下载器端停止”，原因未记录），
+    ///     重复快照不改写；下载器内恢复运行后清除，再次外部停止重新观察。
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_ExternalStop_RecordsAndClearsProvenance()
+    {
+        using var harness = await CreateHarnessAsync(enableFileArchive : true);
+        var       taskId  = await harness.CreateUploadAsync(TestTorrentBytes.Create());
+        var       task    = await harness.GetTaskAsync(taskId);
+        var       hash    = task.InfoHash;
+
+        await harness.ReconcileAsync(); // 提交。
+        await harness.ReconcileAsync(); // 选择。
+        await harness.ReconcileAsync(); // 命名并启动。
+        Assert.False((await harness.GetTaskAsync(taskId)).IsSystemPaused);
+
+        harness.Store.Torrents[hash] = harness.Store.Torrents[hash] with
+        {
+            Category = QbittorrentTorrentCategory.Stopped, Progress = 0.4
+        };
+        await harness.ReconcileAsync();
+
+        var stopped = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Paused, stopped.Status);
+        Assert.True(stopped.IsUserPaused);
+        Assert.Equal(harness.Timestamp, stopped.ExternalStopObservedAtUtc);
+
+        // 已处于 Paused 的重复停止快照不改写来源时间。
+        await harness.ReconcileAsync();
+        Assert.Equal(harness.Timestamp, (await harness.GetTaskAsync(taskId)).ExternalStopObservedAtUtc);
+
+        // 用户在下载器内直接恢复运行：人工暂停语义结束，来源记录一并清除。
+        harness.Store.Torrents[hash] = harness.Store.Torrents[hash] with
+        {
+            Category = QbittorrentTorrentCategory.Downloading, Progress = 0.5
+        };
+        await harness.ReconcileAsync();
+        var resumed = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Downloading, resumed.Status);
+        Assert.False(resumed.IsUserPaused);
+        Assert.Null(resumed.ExternalStopObservedAtUtc);
+
+        // 再次外部停止重新观察；页面恢复同样清除来源记录。
+        harness.Store.Torrents[hash] = harness.Store.Torrents[hash] with
+        {
+            Category = QbittorrentTorrentCategory.Stopped
+        };
+        await harness.ReconcileAsync();
+        Assert.NotNull((await harness.GetTaskAsync(taskId)).ExternalStopObservedAtUtc);
+
+        await harness.Service.ResumeAsync(taskId);
+        Assert.Null((await harness.GetTaskAsync(taskId)).ExternalStopObservedAtUtc);
+    }
+
+    /// <summary>页面人工暂停来源明确：不记录外部停止，暂停生效后的停止快照也不得追标为外部停止。</summary>
+    [Fact]
+    public async Task PauseFromPage_IsNotMislabelledAsExternalStop()
+    {
+        using var harness = await CreateHarnessAsync(enableFileArchive : true);
+        var       taskId  = await harness.CreateUploadAsync(TestTorrentBytes.Create());
+        var       task    = await harness.GetTaskAsync(taskId);
+        var       hash    = task.InfoHash;
+
+        await harness.ReconcileAsync(); // 提交。
+        await harness.ReconcileAsync(); // 选择。
+        await harness.ReconcileAsync(); // 命名并启动。
+        await harness.Service.PauseAsync(taskId);
+
+        var paused = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Paused, paused.Status);
+        Assert.True(paused.IsUserPaused);
+        Assert.Null(paused.ExternalStopObservedAtUtc);
+
+        // 暂停请求生效后的停止快照：任务已是 Paused，不得把页面人工暂停误标为外部停止。
+        harness.Store.Torrents[hash] = harness.Store.Torrents[hash] with
+        {
+            Category = QbittorrentTorrentCategory.Stopped
+        };
+        await harness.ReconcileAsync();
+        Assert.Null((await harness.GetTaskAsync(taskId)).ExternalStopObservedAtUtc);
     }
 
     /// <summary>准备未完成时的人工恢复：只解除人工暂停，不直接启动下载器，文件选择仍由准备流程补齐。</summary>

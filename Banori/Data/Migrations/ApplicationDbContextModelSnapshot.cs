@@ -3,7 +3,6 @@ using System;
 using Banori.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
-
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -13,7 +12,6 @@ namespace Banori.Data.Migrations
     [DbContext(typeof(ApplicationDbContext))]
     partial class ApplicationDbContextModelSnapshot : ModelSnapshot
     {
-        /// <inheritdoc />
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
@@ -194,6 +192,9 @@ namespace Banori.Data.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTimeOffset?>("ExternalStopObservedAtUtc")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("FailedStep")
                         .HasMaxLength(50)
                         .HasColumnType("TEXT");
@@ -218,6 +219,10 @@ namespace Banori.Data.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("TEXT")
                         .HasDefaultValue("None");
+
+                    b.Property<string>("LastObservedCategory")
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
 
                     b.Property<DateTimeOffset?>("LastSubmitAttemptAtUtc")
                         .HasColumnType("TEXT");

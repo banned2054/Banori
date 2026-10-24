@@ -1,4 +1,5 @@
 using Banori.Features.Downloads;
+using Banori.Integrations.Qbittorrent;
 
 namespace Banori.Data;
 
@@ -59,6 +60,19 @@ public sealed class DownloadTask
 
     /// <summary>系统以停止状态添加且准备流程（文件选择、命名）未完成；只有系统能在准备完成后清除并恢复下载。</summary>
     public bool IsSystemPaused { get; set; }
+
+    /// <summary>
+    ///     在下载器端观察到外部停止（下载器内人工暂停、分享限制等，原因无法确认）的时间；页面发起的人工暂停不设置。
+    ///     仅用于界面区分解释停止来源，不改变“对账绝不自动恢复”的语义。
+    /// </summary>
+    public DateTimeOffset? ExternalStopObservedAtUtc { get; set; }
+
+    /// <summary>
+    ///     最近一次对账观察到的下载器端任务类别（按可解释类别落库，Unknown 状态不改写）：
+    ///     供界面如实展示普通任务在 qB 端被重新校验等阶段，每次观察覆盖；不参与状态机推进，
+    ///     null 表示尚未观察到（存量行）。
+    /// </summary>
+    public QbittorrentTorrentCategory? LastObservedCategory { get; set; }
 
     /// <summary>停止添加后的准备阶段；用于解释当前推进位置，实际推进以下载器真实状态比对为准。</summary>
     public DownloadPreparationStage PreparationStage { get; set; }

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Banori.Integrations.Qbittorrent;
 
 namespace Banori.Features.Downloads;
 
@@ -77,6 +78,66 @@ public enum DownloadIsolationState
 
     /// <summary>待确认：核对重加后的文件布局与原始身份一致，清理旧改名日志并回到准备流程。</summary>
     Confirming
+}
+
+/// <summary>
+///     界面展示用的工作阶段：从持久状态（任务状态、暂停标志、准备/隔离阶段与校验意图摘要）派生，
+///     解释任务当前推进位置与等待依据。只用于展示解释，不参与状态机推进，也不是新的持久化状态。
+/// </summary>
+public enum DownloadDisplayPhase
+{
+    /// <summary>已登记意图，等待提交到下载器。</summary>
+    WaitingSubmit,
+
+    /// <summary>添加请求已发出（或响应丢失），等待按 Hash 观察到种子与文件清单。</summary>
+    WaitingAddConfirm,
+
+    /// <summary>准备暂停但无法归入更细阶段（存量行或阶段字段缺失时的保守展示）。</summary>
+    Preparing,
+
+    /// <summary>停止添加后正在应用并核对文件选择、命名与移动。</summary>
+    PreparingLayout,
+
+    /// <summary>本轮 recheck 已发出，尚未观察到可归属的 Checking。</summary>
+    WaitingCheckStart,
+
+    /// <summary>本轮已观察到 Checking，校验仍在进行。</summary>
+    Checking,
+
+    /// <summary>校验已结束，正在跨采样间隔核对逐文件结果的一致性。</summary>
+    WaitingResultStable,
+
+    /// <summary>已发出停止请求（到期退出或保护共享数据），等待在下载器端确认生效。</summary>
+    WaitingStopConfirm,
+
+    /// <summary>准备完成（复用结果或布局已确认），等待启动确认。</summary>
+    WaitingStartConfirm,
+
+    /// <summary>隔离迁移中：删除候选种子并在任务专属根重加为独立下载。</summary>
+    IsolationMigrating,
+
+    /// <summary>内容已完成，归档移动或改名尚未全部确认。</summary>
+    Archiving,
+
+    /// <summary>下载器内真实下载或做种运行中。</summary>
+    Downloading,
+
+    /// <summary>通过本应用页面暂停。</summary>
+    PausedManually,
+
+    /// <summary>在下载器端观察到的停止（人工或分享限制等，原因无法确认）。</summary>
+    PausedByDownloader,
+
+    /// <summary>暂停但无人工标志（正常不应出现，保守展示）。</summary>
+    Paused,
+
+    Completed,
+
+    Failed,
+
+    Lost,
+
+    Replaced
 }
 
 /// <summary>复用校验意图的持久化子步骤：先落库子步骤与次数，再发对应远端请求。</summary>
@@ -183,8 +244,9 @@ public sealed record DownloadVerificationIntent
     public int PauseAttempts { get; init; }
 
     /// <summary>
-    ///     最近一次暂停请求时间；确认窗口内不重复发出、不计失败。null 表示旧意图未记录
-    ///     或本轮尚未发出暂停——旧意图按“窗口已过期”处理，保持可立即保护共享数据。
+    ///     最近一次暂停请求时间；确认窗口内不重复发出、不计失败。null 表示旧意图未记录该信息
+    ///     或本轮尚未发出暂停——旧意图按“窗口已过期”处理，保持可立即保护共享数据。停止态快照
+    ///     确认暂停已生效后清空（次数与风险另记），展示不得把已生效的停止继续解释为待确认。
     /// </summary>
     public DateTimeOffset? PauseRequestedAtUtc { get; init; }
 
@@ -338,6 +400,187 @@ public sealed record DownloadTaskView
 
     /// <summary>归档受阻原因：文件已完成，但目标占用或共享布局尚未解决。</summary>
     public string? ArchiveReviewReason { get; init; }
+
+    /// <summary>隔离迁移状态；None 之外表示正在删除候选并重加为独立下载。</summary>
+    public DownloadIsolationState IsolationState { get; init; }
+
+    /// <summary>复用校验当前子步骤（Mapping/Requested/Observing/ReadyToRun）；无校验意图为空。</summary>
+    public string? VerificationStep { get; init; }
+
+    /// <summary>复用校验轮次；无意图为 0。</summary>
+    public int VerificationRound { get; init; }
+
+    /// <summary>本轮已观察到 Checking：校验确实执行过，是结果判定的前提。</summary>
+    public bool ObservedChecking { get; init; }
+
+    /// <summary>存在待确认的停止请求（到期退出停止或共享数据保护暂停）。</summary>
+    public bool StopConfirmPending { get; init; }
+
+    /// <summary>退出校验后已开始积累结果稳定样本。</summary>
+    public bool ResultStabilizing { get; init; }
+
+    /// <summary>在下载器端观察到外部停止的时间；页面发起的人工暂停不设置。</summary>
+    public DateTimeOffset? ExternalStopObservedAtUtc { get; init; }
+
+    /// <summary>最近一次成功对账下载器的时间（最后观察时间）。</summary>
+    public DateTimeOffset? LastSyncedAtUtc { get; init; }
+
+    /// <summary>最近一次对账观察到的下载器端任务类别；普通任务的 qB 端校验据此如实展示。</summary>
+    public QbittorrentTorrentCategory? LastObservedCategory { get; init; }
+
+    /// <summary>路径决策种类（正式/替换暂存/复用候选/隔离/接管）；无决策记录为空。</summary>
+    public string? PathDecisionKind { get; init; }
+
+    /// <summary>路径决策的解释说明（决策时写入，含触发条件）。</summary>
+    public string? PathDecisionReason { get; init; }
+
+    /// <summary>路径决策关联的任务 Id（如替换暂存关联的旧任务）。</summary>
+    public Guid? PathDecisionRelatedTaskId { get; init; }
+
+    /// <summary>路径决策关联任务的命名快照；关联任务已删除时为空。</summary>
+    public string? PathDecisionRelatedNaming { get; init; }
+
+    /// <summary>存在未确认完成的保存位置移动或文件改名（完成后的归档移动、准备期的布局请求）。</summary>
+    public bool HasPendingFileMoves { get; init; }
+
+    /// <summary>
+    ///     从持久状态派生的界面工作阶段：先按任务状态与暂停来源分类，准备暂停下再按隔离、校验意图
+    ///     与准备阶段细分等待位置。展示允许「准备/校验 → 完成」，不虚构下载过程。
+    /// </summary>
+    public DownloadDisplayPhase Phase
+    {
+        get
+        {
+            switch (Status)
+            {
+                case DownloadTaskStatus.PendingSubmit :
+                    return DownloadDisplayPhase.WaitingSubmit;
+                case DownloadTaskStatus.Submitting :
+                    return DownloadDisplayPhase.WaitingAddConfirm;
+                case DownloadTaskStatus.Completed :
+                    return HasPendingFileMoves ? DownloadDisplayPhase.Archiving : DownloadDisplayPhase.Completed;
+                case DownloadTaskStatus.Failed :
+                    return DownloadDisplayPhase.Failed;
+                case DownloadTaskStatus.Lost :
+                    return DownloadDisplayPhase.Lost;
+                case DownloadTaskStatus.Replaced :
+                    return DownloadDisplayPhase.Replaced;
+                case DownloadTaskStatus.Paused :
+                    // 人工/外部暂停的普通任务在 qB 端被重新校验时同样如实显示校验中（复用校验
+                    // 任务的展示仍由校验意图驱动，不借用类别）；退出校验后的下一次观察覆盖
+                    // 类别、恢复对应的暂停来源展示。
+                    if (VerificationStep is null && LastObservedCategory == QbittorrentTorrentCategory.Checking)
+                        return DownloadDisplayPhase.Checking;
+                    if (!IsUserPaused) return DownloadDisplayPhase.Paused;
+                    return ExternalStopObservedAtUtc is null
+                        ? DownloadDisplayPhase.PausedManually
+                        : DownloadDisplayPhase.PausedByDownloader;
+                default :
+                    break;
+            }
+
+            // Downloading：未准备暂停即真实运行；普通任务最近观察到下载器端校验（qB 端 recheck）时
+            // 如实显示校验中（进度前缀随之标注），退出校验后的下一次观察覆盖类别、恢复对应展示。
+            if (!IsSystemPaused)
+                return LastObservedCategory == QbittorrentTorrentCategory.Checking
+                           ? DownloadDisplayPhase.Checking
+                           : DownloadDisplayPhase.Downloading;
+            if (IsolationState != DownloadIsolationState.None) return DownloadDisplayPhase.IsolationMigrating;
+            if (VerificationStep is not null)
+            {
+                if (VerificationStep == DownloadVerificationStep.ReadyToRun) return DownloadDisplayPhase.WaitingStartConfirm;
+                if (StopConfirmPending) return DownloadDisplayPhase.WaitingStopConfirm;
+                if (VerificationStep == DownloadVerificationStep.Mapping) return DownloadDisplayPhase.PreparingLayout;
+                if (!ObservedChecking) return DownloadDisplayPhase.WaitingCheckStart;
+                return ResultStabilizing ? DownloadDisplayPhase.WaitingResultStable : DownloadDisplayPhase.Checking;
+            }
+
+            return PreparationStage switch
+            {
+                DownloadPreparationStage.Planned or DownloadPreparationStage.Applying =>
+                    DownloadDisplayPhase.PreparingLayout,
+                DownloadPreparationStage.ReadyToRun => DownloadDisplayPhase.WaitingStartConfirm,
+                _                                   => DownloadDisplayPhase.Preparing
+            };
+        }
+    }
+
+    /// <summary>状态徽章文案：按派生阶段解释当前等待位置。</summary>
+    public string StatusText => Phase switch
+    {
+        DownloadDisplayPhase.WaitingSubmit       => "等待提交",
+        DownloadDisplayPhase.WaitingAddConfirm   => "等待添加确认",
+        DownloadDisplayPhase.Preparing           => "准备中（未启动下载）",
+        DownloadDisplayPhase.PreparingLayout     => "整理路径中",
+        DownloadDisplayPhase.WaitingCheckStart   => "等待校验开始",
+        DownloadDisplayPhase.Checking            => "校验中",
+        DownloadDisplayPhase.WaitingResultStable => "等待结果稳定",
+        DownloadDisplayPhase.WaitingStopConfirm  => "等待停止确认",
+        DownloadDisplayPhase.WaitingStartConfirm => "等待启动确认",
+        DownloadDisplayPhase.IsolationMigrating  => "隔离迁移中",
+        DownloadDisplayPhase.Archiving           => "归档中",
+        DownloadDisplayPhase.Downloading         => "下载中",
+        DownloadDisplayPhase.PausedManually      => "已暂停（人工）",
+        DownloadDisplayPhase.PausedByDownloader  => "已暂停（下载器端停止）",
+        DownloadDisplayPhase.Paused              => "已暂停",
+        DownloadDisplayPhase.Completed           => "已完成",
+        DownloadDisplayPhase.Failed              => "失败",
+        DownloadDisplayPhase.Lost                => "任务丢失",
+        DownloadDisplayPhase.Replaced            => "已被替换",
+        _                                       => Phase.ToString()
+    };
+
+    /// <summary>是否展示进度：运行、暂停与受阻（失败/丢失）任务保留最后一次观察进度；未获取显示未知，不造 0%。</summary>
+    public bool ShowsProgress =>
+        Progress is not null &&
+        Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused
+               or DownloadTaskStatus.Failed or DownloadTaskStatus.Lost;
+
+    /// <summary>进度数值前缀：校验期的总进度是校验进度，不是所选内容完成度。</summary>
+    public string? ProgressCaption => Phase == DownloadDisplayPhase.Checking ? "校验 " : null;
+
+    /// <summary>进度旁的说明：复用校验受阻时，最后进度是观察值，不代表本轮校验已确认。</summary>
+    public string? ProgressNote =>
+        Status is DownloadTaskStatus.Failed && FailedStep == "复用校验"
+            ? "最后观察进度，不代表本轮校验已确认"
+            : null;
+
+    /// <summary>是否展示最后观察时间：活动与受阻任务展示数据新鲜度；完成与被替换由时间列说明，不重复展示。</summary>
+    public bool ShowsLastSync => LastSyncedAtUtc is not null &&
+                                 Status is not (DownloadTaskStatus.Completed or DownloadTaskStatus.Replaced);
+
+    /// <summary>
+    ///     路径决策说明：暂存/复用/隔离/接管解释保存根由来（含关联任务命名），避免只显示一个 .tasks
+    ///     目录让用户猜。正式路径无需解释，终态任务的暂存早已解决、不展示过期理由。
+    /// </summary>
+    public string? PathDecisionNote
+    {
+        get
+        {
+            if (!Status.IsActive() ||
+                PathDecisionKind is null or DownloadPathDecisionKinds.FinalRoot ||
+                string.IsNullOrWhiteSpace(PathDecisionReason)) return null;
+
+            return PathDecisionRelatedNaming is { } naming
+                ? $"{PathDecisionReason}（关联任务：{naming}）"
+                : PathDecisionReason;
+        }
+    }
+
+    /// <summary>状态徽章下的解释行：校验轮次、下载器端停止的原因边界与路径决策。</summary>
+    public IReadOnlyList<string> PhaseNotes
+    {
+        get
+        {
+            var notes = new List<string>();
+            if (VerificationStep is not null && VerificationRound > 0)
+                notes.Add($"复用校验第 {VerificationRound} 轮");
+            if (Phase == DownloadDisplayPhase.PausedByDownloader)
+                notes.Add("在下载器端观察到停止，原因未记录（可能为下载器内人工暂停或分享限制）");
+            if (PathDecisionNote is { } decision) notes.Add(decision);
+            return notes;
+        }
+    }
 }
 
 /// <summary>RSS 链接下载中单个条目的登记结果。</summary>

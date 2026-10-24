@@ -292,6 +292,8 @@ public sealed class DownloadService(
         {
             update.Status       = DownloadTaskStatus.Paused;
             update.IsUserPaused = true;
+            // 页面发起的人工暂停来源明确，覆盖此前可能存在的外部停止观察记录。
+            update.ExternalStopObservedAtUtc = null;
         }, cancellationToken);
     }
 
@@ -310,6 +312,7 @@ public sealed class DownloadService(
             {
                 update.Status       = DownloadTaskStatus.Downloading;
                 update.IsUserPaused = false;
+                update.ExternalStopObservedAtUtc = null;
             }, cancellationToken);
             return;
         }
@@ -320,6 +323,7 @@ public sealed class DownloadService(
         {
             update.Status       = DownloadTaskStatus.Downloading;
             update.IsUserPaused = false;
+            update.ExternalStopObservedAtUtc = null;
         }, cancellationToken);
     }
 
@@ -1428,6 +1432,28 @@ public sealed class DownloadService(
                 // 暂停确认窗口内只观察不补发：查询轮次与 pulse 不消耗暂停预算；旧意图无请求时间戳按已到期处理。
                 var pausedAt = timeProvider.GetUtcNow();
 
+                // 等待/发出停止确认期间同步本轮内容观察：校验已结束，进度语义是所选内容进度，
+                // 不得沿用上一轮校验进度。调度独立于类别判断：Unknown 保留旧进度与观察时间，
+                // 但采样安排不得跳过，否则停止确认退回空闲轮询节奏。
+                async Task SyncStopConfirmObservationAsync(DateTimeOffset? deferUntil)
+                {
+                    if (snapshot.Category is not (QbittorrentTorrentCategory.Downloading
+                                                  or QbittorrentTorrentCategory.Seeding))
+                    {
+                        if (deferUntil is { } due) await DeferObservationAsync(task.Id, task.Status, due, ct);
+                        return;
+                    }
+
+                    var observed = await WithSelectedContentProgressAsync(session, task, snapshot, ct);
+                    await UpdateTaskAsync(task.Id, task.Status, update =>
+                    {
+                        update.Progress        = observed.Progress;
+                        update.TotalSize       = observed.TotalSize;
+                        update.LastSyncedAtUtc = pausedAt;
+                        if (deferUntil is { } due) update.NextObservationAtUtc = due;
+                    }, ct);
+                }
+
                 if (intent.PauseRequestedAtUtc is { } requestedAt &&
                     pausedAt < requestedAt + timing.ControlConfirmationWindow)
                 {
@@ -1440,7 +1466,7 @@ public sealed class DownloadService(
 
                     // 风险采样按采样间隔继续，不等整个确认期限：窗口中途从做种转为下载的快照
                     // 必须被观察到（推迟到窗口末会跳过中途快照、漏记风险）；只有暂停补发等窗口过期。
-                    await DeferObservationAsync(task.Id, task.Status, pausedAt + timing.VerificationSampleInterval, ct);
+                    await SyncStopConfirmObservationAsync(pausedAt + timing.VerificationSampleInterval);
                     return;
                 }
 
@@ -1460,6 +1486,7 @@ public sealed class DownloadService(
                                                       UnverifiedWriteRisk = NextUnverifiedWriteRisk(intent, snapshot.Category)
                                                   }, ct);
                 await session.PauseAsync(task.InfoHash, ct);
+                await SyncStopConfirmObservationAsync(null);
                 logger.LogWarning("任务 {TaskId} 校验期间出现无法解释的运行状态，已发出暂停（第 {Attempts} 次）。",
                                   task.Id, intent.PauseAttempts + 1);
                 return;
@@ -1471,6 +1498,14 @@ public sealed class DownloadService(
                 await MarkFailedAsync(task.Id, task.Status, "复用校验",
                                       "校验确认前曾出现可能补写共享文件的运行，旧证据不可继续使用；任务已停止，请核对后重试。", ct);
                 return;
+        }
+
+        // 停止态快照确认先前的保护暂停已生效：清除待确认时间戳（暂停次数与风险台账保留），
+        // 展示不再停留「等待停止确认」；此后再次出现运行状态仍按台账与预算重新发出暂停。
+        if (intent.PauseRequestedAtUtc is not null)
+        {
+            intent = intent with { PauseRequestedAtUtc = null };
+            await SaveVerificationIntentAsync(task.Id, task.Status, intent, ct);
         }
 
         if (task.IsUserPaused) return;
@@ -1668,7 +1703,16 @@ public sealed class DownloadService(
                 }
 
                 await SaveVerificationIntentAsync(task.Id, task.Status, intent, ct);
-                    await DeferObservationAsync(task.Id, task.Status, now + timing.VerificationSampleInterval, ct);
+                // 稳定观察同步本轮内容进度与观察时间：退出校验后进度语义已从校验进度切回所选
+                // 内容进度，数值与时间必须同源更新，不保留上一轮校验进度伪装为新观察。
+                var observed = await WithSelectedContentProgressAsync(session, task, stable, ct);
+                await UpdateTaskAsync(task.Id, task.Status, update =>
+                {
+                    update.Progress             = observed.Progress;
+                    update.TotalSize            = observed.TotalSize;
+                    update.LastSyncedAtUtc      = now;
+                    update.NextObservationAtUtc = now + timing.VerificationSampleInterval;
+                }, ct);
                 return;
             }
         }
@@ -2009,8 +2053,13 @@ public sealed class DownloadService(
             // 接管的停止种子无法区分是“本应用停止添加后响应丢失”还是“用户/外部工具添加并暂停”：
             // 按人工暂停呈现，对账绝不自动启动；系统准备意图保留——用户显式恢复时
             // 由准备流程先补齐文件选择再启动，而不是绕过计划直接下载。
+            // 停止来源同样是外部观察，记录时间供界面区分解释。
             await UpdateTaskAsync(task.Id, task.Status,
-                                  update => { update.IsUserPaused = true; },
+                                  update =>
+                                  {
+                                      update.IsUserPaused              = true;
+                                      update.ExternalStopObservedAtUtc = timeProvider.GetUtcNow();
+                                  },
                                   cancellationToken);
 
         if (downloadFileService is not null && !string.IsNullOrWhiteSpace(task.DownloadRootPath) &&
@@ -2496,6 +2545,7 @@ public sealed class DownloadService(
                     update.FailedStep           = "下载器";
                     update.Error                = "下载器报告该任务出错或文件缺失，请检查下载器。";
                     update.NextObservationAtUtc = null;
+                    update.LastObservedCategory = snapshot.Category;
                 }, cancellationToken);
                 return;
 
@@ -2504,9 +2554,10 @@ public sealed class DownloadService(
                 // 待校验结束回到稳定状态后再继续。
                 await UpdateTaskAsync(taskId, currentStatus, update =>
                 {
-                    update.Progress        = snapshot.Progress;
-                    update.TotalSize       = snapshot.TotalSize;
-                    update.LastSyncedAtUtc = timeProvider.GetUtcNow();
+                    update.Progress             = snapshot.Progress;
+                    update.TotalSize            = snapshot.TotalSize;
+                    update.LastSyncedAtUtc      = timeProvider.GetUtcNow();
+                    update.LastObservedCategory = snapshot.Category;
                 }, cancellationToken);
                 return;
 
@@ -2516,9 +2567,10 @@ public sealed class DownloadService(
                 // 先持久化下载器已报告的完成进度；若随后文件整理失败，页面仍能区分“下载已完成、整理失败”。
                 await UpdateTaskAsync(taskId, currentStatus, update =>
                 {
-                    update.Progress        = snapshot.Progress;
-                    update.TotalSize       = snapshot.TotalSize;
-                    update.LastSyncedAtUtc = timeProvider.GetUtcNow();
+                    update.Progress             = snapshot.Progress;
+                    update.TotalSize            = snapshot.TotalSize;
+                    update.LastSyncedAtUtc      = timeProvider.GetUtcNow();
+                    update.LastObservedCategory = snapshot.Category;
                 }, cancellationToken);
                 await CompleteAsync(session, taskId, snapshot, currentStatus, cancellationToken);
                 return;
@@ -2535,14 +2587,20 @@ public sealed class DownloadService(
                     else
                     {
                         // 人工在下载器或页面暂停的任务必须保留暂停状态，对账绝不自动恢复；
-                        // 外部停止且系统未声明准备时同样按人工暂停保守处理。
-                        update.Status       = DownloadTaskStatus.Paused;
-                        update.IsUserPaused = true;
+                        // 外部停止且系统未声明准备时同样按人工暂停保守处理。首次观察到该停止时
+                        // 记录来源时间：页面暂停已置 Paused 不再改写，界面据此区分解释而非统一归为人工。
+                        if (update.Status != DownloadTaskStatus.Paused)
+                        {
+                            update.Status                    = DownloadTaskStatus.Paused;
+                            update.IsUserPaused              = true;
+                            update.ExternalStopObservedAtUtc = timeProvider.GetUtcNow();
+                        }
                     }
 
-                    update.Progress        = snapshot.Progress;
-                    update.TotalSize       = snapshot.TotalSize;
-                    update.LastSyncedAtUtc = timeProvider.GetUtcNow();
+                    update.Progress             = snapshot.Progress;
+                    update.TotalSize            = snapshot.TotalSize;
+                    update.LastSyncedAtUtc      = timeProvider.GetUtcNow();
+                    update.LastObservedCategory = snapshot.Category;
 
                     // 注意：不得清理 NextObservationAtUtc——选择/布局等待的到期时间可能尚未到期，
                     // 普通进度同步无权取消尚未收敛的等待（过期残留由 worker 只取未来时间兜底）。
@@ -2558,10 +2616,13 @@ public sealed class DownloadService(
 
                     // 下载已实际发生（可能是准备完成后恢复，也可能是用户在下载器内手动启动）：
                     // 系统准备暂停语义结束，用户手动启动优先。同样不清理未到期的观察时间。
-                    update.IsSystemPaused  = false;
-                    update.Progress        = snapshot.Progress;
-                    update.TotalSize       = snapshot.TotalSize;
-                    update.LastSyncedAtUtc = timeProvider.GetUtcNow();
+                    update.IsSystemPaused         = false;
+                    update.Progress               = snapshot.Progress;
+                    update.TotalSize              = snapshot.TotalSize;
+                    update.LastSyncedAtUtc        = timeProvider.GetUtcNow();
+                    update.LastObservedCategory   = snapshot.Category;
+                    // 恢复运行即推翻此前观察到的外部停止；再次外部停止会重新记录。
+                    update.ExternalStopObservedAtUtc = null;
                 }, cancellationToken);
                 return;
 

@@ -14,13 +14,19 @@ public sealed class DownloadTaskQueries(IDbContextFactory<ApplicationDbContext> 
         var tasks = await db.DownloadTasks.AsNoTracking()
                             .Include(task => task.FeedItem)
                             .Include(task => task.Subject)
+                            .Include(task => task.Files)
                             .ToListAsync(cancellationToken);
         // SQLite 不支持 DateTimeOffset 服务端排序，取回后内存排序并截取。
         tasks = tasks.OrderByDescending(task => task.CreatedAtUtc)
                      .Take(Math.Clamp(take, 1, 500))
                      .ToList();
 
-        var relatedIds = tasks.SelectMany(task => new[] { task.ReplacesTaskId, task.ReplacedByTaskId })
+        // 替换关系与路径决策都可能指向其他任务，统一反查命名快照供解释展示。
+        var relatedIds = tasks.SelectMany(task =>
+                               {
+                                   var decision = DownloadPathDecision.FromJson(task.PathDecision);
+                                   return new[] { task.ReplacesTaskId, task.ReplacedByTaskId, decision?.RelatedTaskId };
+                               })
                               .Where(value => value is not null)
                               .Select(value => value!.Value)
                               .Distinct()
@@ -37,6 +43,8 @@ public sealed class DownloadTaskQueries(IDbContextFactory<ApplicationDbContext> 
     {
         var ingredients   = TorrentNamingIngredients.FromJson(task.NamingIngredients);
         var archiveReview = DownloadArchiveReview.FromJson(task.ArchiveReview);
+        var intent        = DownloadVerificationIntent.FromJson(task.VerificationIntent);
+        var decision      = DownloadPathDecision.FromJson(task.PathDecision);
         return new DownloadTaskView
         {
             Id          = task.Id,
@@ -69,8 +77,26 @@ public sealed class DownloadTaskQueries(IDbContextFactory<ApplicationDbContext> 
             ReplacedByNaming = task.ReplacedByTaskId is { } replacedById
                 ? relatedNames.GetValueOrDefault(replacedById)
                 : null,
-            PreparationStage    = task.PreparationStage,
-            ArchiveReviewReason = archiveReview?.Reason
+            PreparationStage          = task.PreparationStage,
+            ArchiveReviewReason       = archiveReview?.Reason,
+            IsolationState            = task.IsolationState,
+            VerificationStep          = intent?.Step,
+            VerificationRound         = intent?.Round            ?? 0,
+            ObservedChecking          = intent?.ObservedChecking ?? false,
+            StopConfirmPending        = intent?.TimeoutStopRequestedAtUtc is not null ||
+                                        intent?.PauseRequestedAtUtc is not null,
+            ResultStabilizing         = intent?.StabilityObservedAtUtc is not null,
+            ExternalStopObservedAtUtc = task.ExternalStopObservedAtUtc,
+            LastSyncedAtUtc           = task.LastSyncedAtUtc,
+            LastObservedCategory      = task.LastObservedCategory,
+            PathDecisionKind          = decision?.Kind,
+            PathDecisionReason        = decision?.Reason,
+            PathDecisionRelatedTaskId = decision?.RelatedTaskId,
+            PathDecisionRelatedNaming = decision?.RelatedTaskId is { } decisionRelatedId
+                ? relatedNames.GetValueOrDefault(decisionRelatedId)
+                : null,
+            HasPendingFileMoves       = task.PendingSavePath is not null ||
+                                        task.Files.Any(file => file.PendingRenameTo is not null)
         };
     }
 }

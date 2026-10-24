@@ -149,6 +149,8 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
                   .HasDefaultValue(DownloadIsolationState.None);
             entity.Property(item => item.ArchiveReview);
             entity.Property(item => item.PathDecision);
+            entity.Property(item => item.ExternalStopObservedAtUtc);
+            entity.Property(item => item.LastObservedCategory).HasConversion<string>().HasMaxLength(32);
             // worker 按最早到期任务唤醒时扫描；仅索引时间列，活动状态过滤在查询中表达。
             entity.HasIndex(item => item.NextObservationAtUtc);
             entity.Property(item => item.PendingLayoutRequestCount).HasDefaultValue(0);
