@@ -12,7 +12,7 @@
 <br>
 
 <div>
-    <a href="https://github.com/banned2054/Banori/releases/tag/v0.2.1"><img alt="Version 0.2.1" src="https://img.shields.io/badge/version-0.2.1-blue"></a>
+    <a href="https://github.com/banned2054/Banori/releases/tag/v0.2.2"><img alt="Version 0.2.2" src="https://img.shields.io/badge/version-0.2.2-blue"></a>
     <a href="https://dotnet.microsoft.com/"><img alt=".NET 10" src="https://img.shields.io/badge/.NET-10.0-512BD4"></a>
     <a href="https://learn.microsoft.com/aspnet/core/blazor/"><img alt="Blazor" src="https://img.shields.io/badge/Blazor-Interactive_Server-7B2CBF"></a>
     <a href="https://learn.microsoft.com/ef/core/"><img alt="EF Core" src="https://img.shields.io/badge/EF_Core-10-2EA44F"></a>
@@ -84,7 +84,7 @@ GitHub Actions 在发布 GitHub Release 或手动运行 `Publish container image
 
 ```text
 ghcr.io/banned2054/banori:latest
-ghcr.io/banned2054/banori:v0.2.1
+ghcr.io/banned2054/banori:v0.2.2
 ```
 
 ### 数据持久化
