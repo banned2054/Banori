@@ -6,6 +6,19 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 	<base href="/"/>
 	<ResourcePreloader/>
+	<script>
+		// 首屏渲染前设定主题，避免深色下闪白；存储键与 MainLayout.razor.js 保持一致
+		(() => {
+			let stored = null;
+			try {
+				stored = localStorage.getItem('theme');
+			} catch {
+				// 存储不可用（如隐私模式限制）时按未存储处理，跟随系统
+			}
+			document.documentElement.dataset.bsTheme =
+				stored ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+		})();
+	</script>
 	<link rel="stylesheet" href="@Assets["lib/bootstrap/dist/css/bootstrap.min.css"]"/>
 	<link rel="stylesheet" href="@Assets["app.css"]"/>
 	<link rel="stylesheet" href="@Assets["Banori.styles.css"]"/>
@@ -19,6 +32,7 @@
 <ReconnectModal/>
 <script src="@Assets["_framework/blazor.web.js"]"></script>
 <script src="@Assets["Components/Account/Shared/PasskeySubmit.razor.js"]" type="module"></script>
+<script src="@Assets["Components/Layout/MainLayout.razor.js"]" type="module"></script>
 </body>
 
 </html>
