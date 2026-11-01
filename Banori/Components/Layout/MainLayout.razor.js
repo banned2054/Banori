@@ -65,5 +65,11 @@ window.addEventListener('storage', (event) => {
     }
 });
 
+// 增强导航按服务器返回的 HTML 同步文档属性，会移除 JS 动态设置的主题；
+// 导航完成后按 当前页手动选择 → 存储值 → 系统主题 重新应用
+Blazor.addEventListener('enhancedload', () => {
+    applyTheme(chosenTheme ?? getStoredTheme() ?? getSystemTheme());
+});
+
 // 预渲染 HTML 中的初始状态为浅色，模块加载后按实际主题同步
 syncToggleState();
