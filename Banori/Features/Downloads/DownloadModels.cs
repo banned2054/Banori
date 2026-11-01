@@ -622,3 +622,124 @@ public sealed record BulkDeletePrecheck(
     int  TaskCount,
     int  TorrentsInDownloader,
     bool DownloaderChecked);
+
+/// <summary>状态筛选分组：把派生显示阶段归并成与状态列徽章文案对齐的筛选选项。</summary>
+public enum DownloadStatusFilterGroup
+{
+    /// <summary>已登记意图，等待提交到下载器。</summary>
+    WaitingSubmit,
+
+    /// <summary>提交已发起，等待按 Hash 确认添加。</summary>
+    WaitingAddConfirm,
+
+    /// <summary>准备暂停下的路径整理、复用校验与各等待确认位置，含下载器端观察到的校验展示。</summary>
+    PreparingChecking,
+
+    /// <summary>下载器内真实下载或做种运行中。</summary>
+    Downloading,
+
+    /// <summary>人工或下载器端暂停，不在准备流程中。</summary>
+    Paused,
+
+    /// <summary>内容已完成，含归档移动尚未全部确认。</summary>
+    Completed,
+
+    Failed,
+
+    Lost,
+
+    Replaced
+}
+
+/// <summary>
+///     状态筛选选项与阶段归组：纯展示映射。DownloadTaskQueries 按同一口径构造 SQL 谓词，
+///     由等价性测试锁定两边一致。
+/// </summary>
+public static class DownloadStatusFilter
+{
+    public static IReadOnlyList<DownloadStatusFilterGroup> Choices { get; } =
+    [
+        DownloadStatusFilterGroup.WaitingSubmit,
+        DownloadStatusFilterGroup.WaitingAddConfirm,
+        DownloadStatusFilterGroup.PreparingChecking,
+        DownloadStatusFilterGroup.Downloading,
+        DownloadStatusFilterGroup.Paused,
+        DownloadStatusFilterGroup.Completed,
+        DownloadStatusFilterGroup.Failed,
+        DownloadStatusFilterGroup.Lost,
+        DownloadStatusFilterGroup.Replaced
+    ];
+
+    /// <summary>把派生显示阶段穷举归组；新增显示阶段时由编译器与兜底桶独占性测试提示补齐。</summary>
+    public static DownloadStatusFilterGroup GroupOf(DownloadDisplayPhase phase) => phase switch
+    {
+        DownloadDisplayPhase.WaitingSubmit                      => DownloadStatusFilterGroup.WaitingSubmit,
+        DownloadDisplayPhase.WaitingAddConfirm                  => DownloadStatusFilterGroup.WaitingAddConfirm,
+        DownloadDisplayPhase.Preparing or
+        DownloadDisplayPhase.PreparingLayout or
+        DownloadDisplayPhase.WaitingCheckStart or
+        DownloadDisplayPhase.Checking or
+        DownloadDisplayPhase.WaitingResultStable or
+        DownloadDisplayPhase.WaitingStopConfirm or
+        DownloadDisplayPhase.WaitingStartConfirm or
+        DownloadDisplayPhase.IsolationMigrating                 => DownloadStatusFilterGroup.PreparingChecking,
+        DownloadDisplayPhase.Downloading                        => DownloadStatusFilterGroup.Downloading,
+        DownloadDisplayPhase.PausedManually or
+        DownloadDisplayPhase.PausedByDownloader or
+        DownloadDisplayPhase.Paused                             => DownloadStatusFilterGroup.Paused,
+        DownloadDisplayPhase.Completed or
+        DownloadDisplayPhase.Archiving                          => DownloadStatusFilterGroup.Completed,
+        DownloadDisplayPhase.Failed                             => DownloadStatusFilterGroup.Failed,
+        DownloadDisplayPhase.Lost                               => DownloadStatusFilterGroup.Lost,
+        DownloadDisplayPhase.Replaced                           => DownloadStatusFilterGroup.Replaced,
+
+        // 兜底仅针对未命名的枚举值；新增命名阶段应由独占性测试提示归组。
+        _                                                       => DownloadStatusFilterGroup.Replaced
+    };
+
+    public static string Text(DownloadStatusFilterGroup group) => group switch
+    {
+        DownloadStatusFilterGroup.WaitingSubmit     => "等待提交",
+        DownloadStatusFilterGroup.WaitingAddConfirm => "等待添加确认",
+        DownloadStatusFilterGroup.PreparingChecking => "准备与校验中",
+        DownloadStatusFilterGroup.Downloading       => "下载中",
+        DownloadStatusFilterGroup.Paused            => "已暂停",
+        DownloadStatusFilterGroup.Completed         => "已完成（含归档中）",
+        DownloadStatusFilterGroup.Failed            => "失败",
+        DownloadStatusFilterGroup.Lost              => "丢失",
+        _                                           => "已替换"
+    };
+}
+
+/// <summary>下载任务列表查询条件：搜索关键词、状态分组多选与字幕语言多选；条件之间 AND，同组多选内 OR。</summary>
+public sealed record DownloadTaskListFilter
+{
+    /// <summary>默认每页行数；查询层钳制到 1..200。</summary>
+    public const int DefaultPageSize = 100;
+
+    /// <summary>搜索关键词：匹配条目名、种子原始名、字幕组与命名快照；忽略首尾空白，LIKE 通配符按字面处理。</summary>
+    public string SearchText { get; init; } = string.Empty;
+
+    /// <summary>状态分组多选；空集合表示全部状态。</summary>
+    public IReadOnlySet<DownloadStatusFilterGroup> StatusGroups { get; init; } =
+        new HashSet<DownloadStatusFilterGroup>();
+
+    /// <summary>字幕语言多选（空字符串哨兵 = 无语言任务）；空集合表示全部语言。</summary>
+    public IReadOnlySet<string> Languages { get; init; } = new HashSet<string>();
+
+    /// <summary>1 起始页码；超出有效范围时由查询层钳制并在结果中返回实际页码。</summary>
+    public int Page { get; init; } = 1;
+
+    public int PageSize { get; init; } = DefaultPageSize;
+}
+
+/// <summary>下载任务列表分页结果：当前页行、筛选后的完整总数与可选语言项（空字符串哨兵 = 存在无语言任务）。</summary>
+public sealed record DownloadTaskListPage(
+    IReadOnlyList<DownloadTaskView> Items,
+    int                             Page,
+    int                             PageSize,
+    int                             TotalCount,
+    IReadOnlyList<string>           Languages)
+{
+    public int TotalPages => Math.Max(1, (int)Math.Ceiling(TotalCount / (double)PageSize));
+}

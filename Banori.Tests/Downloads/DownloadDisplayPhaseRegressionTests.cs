@@ -255,7 +255,7 @@ public sealed class DownloadDisplayPhaseRegressionTests
     {
         var queries =
             new DownloadTaskQueries(harness.Provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>());
-        return Assert.Single(await queries.ListAsync(500), item => item.Id == taskId);
+        return Assert.Single((await queries.ListAsync(new DownloadTaskListFilter())).Items, item => item.Id == taskId);
     }
 
     private static async Task<Guid> CreateCandidateAsync(SchedulingHarness harness)

@@ -8,23 +8,75 @@ public sealed class DownloadTasksPageViewModel(
     DownloadIntakeService               intakeService,
     DownloadTaskQueries                 taskQueries,
     ILogger<DownloadTasksPageViewModel> logger,
-    IDownloadFileService?               fileService = null)
+    IDownloadFileService?               fileService = null) : IDisposable
 {
-    private readonly Dictionary<Guid, DownloadTaskFilesState> _fileStates = [];
+    private readonly Dictionary<Guid, DownloadTaskFilesState> _fileStates     = [];
+    private readonly HashSet<string>                          _languageFilter = [];
 
-    private readonly HashSet<Guid> _selectedIds         = [];
-    private          Guid[]        _bulkConfirmationIds = [];
-    private          long          _bulkRequestId;
+    private readonly HashSet<Guid> _selectedIds = [];
+
+    private readonly HashSet<DownloadStatusFilterGroup> _statusFilter        = [];
+    private          Guid[]                             _bulkConfirmationIds = [];
+    private          long                               _bulkRequestId;
 
     private bool _deleteFiles;
 
     /// <summary>面板勾选项：是否连下载器中的种子一起删除。</summary>
     private bool _deleteFromDownloader;
 
-    private long _deleteRequestId;
-    private bool _settingDeleteOptions;
+    private long                     _deleteRequestId;
+    private long                     _loadRequestId;
+    private int                      _pageNumber = 1;
+    private CancellationTokenSource? _searchDebounceCts;
+    private string                   _searchText = string.Empty;
+    private bool                     _settingDeleteOptions;
 
     public IReadOnlyList<DownloadTaskView> Tasks { get; private set; } = [];
+
+    /// <summary>
+    ///     搜索关键词输入：每次变化重置防抖定时器，停顿后回到第一页重新查询；空白视为不过滤。
+    ///     数据库查询在停顿前不会发出，新输入会取消未触发的定时与进行中的查询。
+    /// </summary>
+    public string SearchText
+    {
+        get => _searchText;
+        set
+        {
+            var text = value ?? string.Empty;
+            if (string.Equals(text, _searchText, StringComparison.Ordinal)) return;
+            _searchText = text;
+            ScheduleSearchReload();
+        }
+    }
+
+    /// <summary>测试注入：缩短防抖等待，避免用例真实挂起数百毫秒。</summary>
+    internal TimeSpan SearchDebounceDelay { get; set; } = TimeSpan.FromMilliseconds(300);
+
+    /// <summary>状态筛选分组多选；空集合表示全部状态。</summary>
+    public IReadOnlySet<DownloadStatusFilterGroup> StatusFilter => _statusFilter;
+
+    /// <summary>字幕语言筛选多选（空字符串哨兵 = 无语言任务）；空集合表示全部语言。</summary>
+    public IReadOnlySet<string> LanguageFilter => _languageFilter;
+
+    /// <summary>是否有生效中的筛选，用于展示清除入口与空态文案。</summary>
+    public bool HasActiveFilters => _searchText.Trim().Length > 0 ||
+                                    _statusFilter.Count       > 0 ||
+                                    _languageFilter.Count     > 0;
+
+    /// <summary>分页状态：页码为查询层钳制后的实际值，TotalCount 是筛选后的完整总数而不只当前页。</summary>
+    public int PageNumber { get; private set; } = 1;
+
+    public int PageSize   { get; private set; } = DownloadTaskListFilter.DefaultPageSize;
+    public int TotalCount { get; private set; }
+
+    public int TotalPages => Math.Max(1, (int)Math.Ceiling(TotalCount / (double)PageSize));
+
+    public bool HasPreviousPage => PageNumber > 1;
+
+    public bool HasNextPage => PageNumber < TotalPages;
+
+    /// <summary>可选字幕语言（覆盖全部历史任务，空字符串哨兵 = 存在无语言任务），按出现次数降序。</summary>
+    public IReadOnlyList<string> AvailableLanguages { get; private set; } = [];
 
     public bool    Loaded    { get; private set; }
     public bool    Busy      { get; private set; }
@@ -78,18 +130,126 @@ public sealed class DownloadTasksPageViewModel(
 
     public int SelectedCount => _selectedIds.Count;
 
+    // 表头全选只反映当前页：勾选只添加当前页 Id，取消只移除当前页 Id，
+    // 其他页与被筛选隐藏任务的已选状态不受影响；批量操作仍按明确选中的 Id 执行。
     public bool AllSelected => Tasks.Count > 0 && Tasks.All(task => _selectedIds.Contains(task.Id));
+
+    /// <summary>页面组件释放时取消未触发的防抖定时与进行中的防抖查询。</summary>
+    public void Dispose() => CancelSearchDebounce();
+
+    /// <summary>后台加载（防抖搜索）完成后的界面刷新回调；页面组件订阅后转 StateHasChanged。</summary>
+    public event Action? ResultsChanged;
 
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
-        Tasks = await taskQueries.ListAsync(cancellationToken : cancellationToken);
-        var selectedBefore = _selectedIds.ToHashSet();
-        _selectedIds.IntersectWith(Tasks.Select(task => task.Id));
-        if (!selectedBefore.SetEquals(_selectedIds)) InvalidateBulkPanel();
+        // 请求序号防止慢查询晚到覆盖较新的结果；防抖取消令牌同时中止过期的数据库查询。
+        // 选择集只由用户操作维护，不与当前页求交集：翻页或筛选隐藏的任务保留已选状态。
+        var requestId = ++_loadRequestId;
+        var page      = await taskQueries.ListAsync(BuildFilter(), cancellationToken);
+        if (requestId != _loadRequestId) return;
+        // 查询层钳制越界页后把实际页码同步回内部状态；过期请求已在上方返回，不会覆盖新状态。
+        Tasks              = page.Items;
+        PageNumber         = page.Page;
+        _pageNumber        = page.Page;
+        PageSize           = page.PageSize;
+        TotalCount         = page.TotalCount;
+        AvailableLanguages = page.Languages;
         var taskIds = Tasks.Select(task => task.Id).ToHashSet();
         foreach (var id in _fileStates.Keys.Where(id => !taskIds.Contains(id)).ToArray())
             _fileStates.Remove(id);
         Loaded = true;
+        ResultsChanged?.Invoke();
+    }
+
+    private DownloadTaskListFilter BuildFilter() => new()
+    {
+        SearchText   = _searchText,
+        StatusGroups = _statusFilter,
+        Languages    = _languageFilter,
+        Page         = _pageNumber
+    };
+
+    public async Task ToggleStatusFilterAsync(DownloadStatusFilterGroup group)
+    {
+        if (!_statusFilter.Remove(group)) _statusFilter.Add(group);
+        await ReloadFromFirstPageAsync();
+    }
+
+    public async Task ToggleLanguageFilterAsync(string language)
+    {
+        if (!_languageFilter.Remove(language)) _languageFilter.Add(language);
+        await ReloadFromFirstPageAsync();
+    }
+
+    /// <summary>清空搜索与全部多选筛选，回到第一页全量展示。</summary>
+    public async Task ClearFiltersAsync()
+    {
+        _searchText = string.Empty;
+        _statusFilter.Clear();
+        _languageFilter.Clear();
+        await ReloadFromFirstPageAsync();
+    }
+
+    public async Task GoToPageAsync(int page)
+    {
+        var target = Math.Clamp(page, 1, TotalPages);
+        if (target == _pageNumber && Loaded) return;
+        _pageNumber = target;
+        CancelSearchDebounce();
+        await LoadSafelyAsync(CancellationToken.None);
+    }
+
+    private async Task ReloadFromFirstPageAsync()
+    {
+        _pageNumber = 1;
+        CancelSearchDebounce();
+        await LoadSafelyAsync(CancellationToken.None);
+    }
+
+    /// <summary>搜索输入防抖：停顿后重新查询；新输入取消未触发的旧定时与进行中的查询（配合请求序号双保险）。</summary>
+    private void ScheduleSearchReload()
+    {
+        _pageNumber = 1;
+        CancelSearchDebounce();
+        _searchDebounceCts = new CancellationTokenSource();
+        _                  = ReloadAfterDelayAsync(_searchDebounceCts.Token);
+    }
+
+    private async Task ReloadAfterDelayAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(SearchDebounceDelay, cancellationToken);
+            await LoadSafelyAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private void CancelSearchDebounce()
+    {
+        _searchDebounceCts?.Cancel();
+        _searchDebounceCts?.Dispose();
+        _searchDebounceCts = null;
+    }
+
+    private async Task LoadSafelyAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await LoadAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "下载任务列表加载失败。");
+            Succeeded = false;
+            Message   = "加载下载任务列表失败，请重试。";
+            ResultsChanged?.Invoke();
+        }
     }
 
     /// <summary>详情以任务 Id 保存，摘要刷新不重新加载文件，也不重建正在编辑的草稿。</summary>
@@ -255,8 +415,9 @@ public sealed class DownloadTasksPageViewModel(
 
     public void ToggleSelectAll()
     {
-        if (AllSelected) _selectedIds.Clear();
-        else _selectedIds.UnionWith(Tasks.Select(task => task.Id));
+        var visibleIds = Tasks.Select(task => task.Id).ToList();
+        if (AllSelected) _selectedIds.ExceptWith(visibleIds);
+        else _selectedIds.UnionWith(visibleIds);
         InvalidateBulkPanel();
     }
 
@@ -406,6 +567,8 @@ public sealed class DownloadTasksPageViewModel(
         await RunOperationAsync(taskId,
                                 () => downloadService.DeleteAsync(taskId, deleteFromDownloader, deleteFiles,
                                                                   cancellationToken), "任务已删除。", cancellationToken);
+        // 单删成功后同步收敛选择集，批量计数不再包含已删任务；选择集不随刷新重建，靠这里保持准确。
+        if (Succeeded) _selectedIds.Remove(taskId);
     }
 
     /// <summary>上传种子登记：读取浏览器流后交给服务校验与去重，创建即等待提交。</summary>

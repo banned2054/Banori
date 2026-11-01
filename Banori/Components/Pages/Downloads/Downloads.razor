@@ -67,12 +67,70 @@
 {
 	<p>正在加载…</p>
 }
-else if (_vm.Tasks.Count == 0)
+else if (_vm.TotalCount == 0 && !_vm.HasActiveFilters)
 {
 	<p class="text-body-secondary">还没有下载任务。上传 .torrent 文件，或使用总览页的 RSS 链接下载。</p>
 }
 else
 {
+	<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+		<input class="form-control" style="max-width: 260px;" type="search" placeholder="搜索标题、字幕组"
+		       aria-label="搜索下载任务" @bind="_vm.SearchText" @bind:event="oninput"/>
+		<div class="position-relative">
+			<button type="button" class="btn dropdown-toggle @(_vm.StatusFilter.Count > 0 ? "btn-primary" : "btn-outline-secondary")"
+			        aria-expanded="@_statusPanelOpen" @onclick="ToggleStatusPanel">
+				状态@(_vm.StatusFilter.Count > 0 ? $"（{_vm.StatusFilter.Count}）" : string.Empty)
+			</button>
+			@if (_statusPanelOpen)
+			{
+				<div class="position-absolute bg-body border rounded shadow-sm p-2 mt-1 overflow-auto"
+				     style="z-index: 1055; min-width: 11rem; max-height: 20rem;">
+					@for (var i = 0; i < DownloadStatusFilter.Choices.Count; i++)
+					{
+						var group = DownloadStatusFilter.Choices[i];
+						<div class="form-check">
+							<input type="checkbox" class="form-check-input" id="status-filter-@i"
+							       checked="@_vm.StatusFilter.Contains(group)" @onchange="() => _vm.ToggleStatusFilterAsync(group)"/>
+							<label class="form-check-label" for="status-filter-@i">@DownloadStatusFilter.Text(group)</label>
+						</div>
+					}
+				</div>
+			}
+		</div>
+		<div class="position-relative">
+			<button type="button" class="btn dropdown-toggle @(_vm.LanguageFilter.Count > 0 ? "btn-primary" : "btn-outline-secondary")"
+			        aria-expanded="@_languagePanelOpen" @onclick="ToggleLanguagePanel">
+				字幕语言@(_vm.LanguageFilter.Count > 0 ? $"（{_vm.LanguageFilter.Count}）" : string.Empty)
+			</button>
+			@if (_languagePanelOpen)
+			{
+				<div class="position-absolute bg-body border rounded shadow-sm p-2 mt-1 overflow-auto"
+				     style="z-index: 1055; min-width: 8rem; max-height: 20rem;">
+					@for (var i = 0; i < _vm.AvailableLanguages.Count; i++)
+					{
+						var language = _vm.AvailableLanguages[i];
+						<div class="form-check">
+							<input type="checkbox" class="form-check-input" id="language-filter-@i"
+							       checked="@_vm.LanguageFilter.Contains(language)" @onchange="() => _vm.ToggleLanguageFilterAsync(language)"/>
+							<label class="form-check-label" for="language-filter-@i">@(language.Length == 0 ? "（无语言）" : language)</label>
+						</div>
+					}
+				</div>
+			}
+		</div>
+		@if (_vm.HasActiveFilters)
+		{
+			<button type="button" class="btn btn-outline-secondary" @onclick="_vm.ClearFiltersAsync">清除筛选</button>
+		}
+		<span class="ms-auto d-flex align-items-center gap-2">
+			<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(!_vm.HasPreviousPage)"
+			        @onclick="() => _vm.GoToPageAsync(_vm.PageNumber - 1)">上一页</button>
+			<span class="small text-body-secondary">第 @_vm.PageNumber / @_vm.TotalPages 页</span>
+			<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(!_vm.HasNextPage)"
+			        @onclick="() => _vm.GoToPageAsync(_vm.PageNumber + 1)">下一页</button>
+			<span class="small text-body-secondary">共 @_vm.TotalCount 个任务 · 本页 @_vm.Tasks.Count 个</span>
+		</span>
+	</div>
 	<div class="table-responsive">
 		<table class="table align-middle">
 			<thead>
@@ -93,6 +151,14 @@ else
 			</tr>
 			</thead>
 			<tbody>
+			@if (_vm.Tasks.Count == 0)
+			{
+				<tr>
+					<td colspan="@(_vm.BatchMode ? 7 : 6)" class="text-body-secondary">
+						没有符合筛选条件的任务。<button type="button" class="btn btn-link btn-sm p-0 align-baseline" @onclick="_vm.ClearFiltersAsync">清除筛选</button>
+					</td>
+				</tr>
+			}
 			@foreach (var task in _vm.Tasks)
 			{
 				<tr @key="task.Id">
@@ -330,16 +396,35 @@ else
 	private          DownloadTasksPageViewModel _vm  = null!;
 	private          PeriodicTimer?             _timer;
 	private          Task?                      _refreshLoop;
+	private          bool                       _statusPanelOpen;
+	private          bool                       _languagePanelOpen;
 
 	protected override void OnInitialized()
 	{
 		_vm = new DownloadTasksPageViewModel(DownloadService, IntakeService, TaskQueries, Logger, FileService);
+		_vm.ResultsChanged += OnResultsChanged;
 	}
+
+	/// <summary>后台防抖加载落幕后刷新界面；与事件处理器自身的渲染可能重复，无副作用。</summary>
+	private void OnResultsChanged() => _ = InvokeAsync(StateHasChanged);
 
 	protected override async Task OnInitializedAsync()
 	{
 		await _vm.LoadAsync(_cts.Token);
 		_refreshLoop = RefreshLoop();
+	}
+
+	/// <summary>两个筛选浮层互斥打开：点按钮切换开合，勾选选项不影响开合。</summary>
+	private void ToggleStatusPanel()
+	{
+		_statusPanelOpen   = !_statusPanelOpen;
+		_languagePanelOpen = false;
+	}
+
+	private void ToggleLanguagePanel()
+	{
+		_languagePanelOpen = !_languagePanelOpen;
+		_statusPanelOpen   = false;
 	}
 
 	/// <summary>页面打开期间限频重新查询持久化状态；页面关闭即停止，不影响后台任务。</summary>
@@ -505,6 +590,8 @@ else
 
 	public void Dispose()
 	{
+		_vm.ResultsChanged -= OnResultsChanged;
+		_vm.Dispose();
 		_cts.Cancel();
 		_cts.Dispose();
 		_timer?.Dispose();

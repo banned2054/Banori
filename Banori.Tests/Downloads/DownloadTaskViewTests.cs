@@ -335,7 +335,7 @@ public sealed class DownloadTaskViewTests
                 await db.SaveChangesAsync();
             }
 
-            var view = Assert.Single(await new DownloadTaskQueries(factory).ListAsync(), item => item.Id == taskId);
+            var view = Assert.Single((await new DownloadTaskQueries(factory).ListAsync(new DownloadTaskListFilter())).Items, item => item.Id == taskId);
 
             Assert.Equal(DownloadVerificationStep.Observing, view.VerificationStep);
             Assert.Equal(2, view.VerificationRound);
