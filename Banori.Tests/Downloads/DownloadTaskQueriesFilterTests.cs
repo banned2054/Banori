@@ -26,8 +26,8 @@ public sealed class DownloadTaskQueriesFilterTests
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
         await DownloadTaskListTestSeed.SeedAsync(harness, Enumerable.Range(0, 505)
                                                                     .Select(index => DownloadTaskListTestSeed.NewTask(
-                                                                             $"Bulk - {index:0000}",
-                                                                             DownloadTaskListTestSeed.At(index))));
+                                                                                 $"Bulk - {index:0000}",
+                                                                                 DownloadTaskListTestSeed.At(index))));
 
         var all = await QueryAsync(harness);
         Assert.Multiple(
@@ -92,8 +92,8 @@ public sealed class DownloadTaskQueriesFilterTests
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
         await DownloadTaskListTestSeed.SeedAsync(harness, Enumerable.Range(0, 5)
                                                                     .Select(index => DownloadTaskListTestSeed.NewTask(
-                                                                             $"Few - {index}",
-                                                                             DownloadTaskListTestSeed.At(index))));
+                                                                                 $"Few - {index}",
+                                                                                 DownloadTaskListTestSeed.At(index))));
 
         var beyond = await QueryAsync(harness, new DownloadTaskListFilter { Page = 99 });
         Assert.Multiple(
@@ -366,10 +366,10 @@ public sealed class DownloadTaskQueriesFilterTests
                                                                                 $"无语言 - {index:0000}",
                                                                                 DownloadTaskListTestSeed.At(index)))
                               .Concat(Enumerable.Range(0, 50).Select(index => DownloadTaskListTestSeed.NewTask(
-                                                                      $"有语言 - {index:0000}",
-                                                                      DownloadTaskListTestSeed.At(1000 + index),
-                                                                      ingredients : DownloadTaskListTestSeed
-                                                                         .Ingredients("VCB-Studio", "简"))))
+                                                                          $"有语言 - {index:0000}",
+                                                                          DownloadTaskListTestSeed.At(1000 + index),
+                                                                          ingredients : DownloadTaskListTestSeed
+                                                                             .Ingredients("VCB-Studio", "简"))))
                               .ToList();
         await DownloadTaskListTestSeed.SeedAsync(harness, tasks);
 

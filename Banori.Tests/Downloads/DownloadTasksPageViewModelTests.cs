@@ -183,8 +183,8 @@ public sealed class DownloadTasksPageViewModelTests
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
         await DownloadTaskListTestSeed.SeedAsync(harness, Enumerable.Range(0, 101)
                                                                     .Select(index => DownloadTaskListTestSeed.NewTask(
-                                                                             $"Sel - {index:0000}",
-                                                                             DownloadTaskListTestSeed.At(index))));
+                                                                                 $"Sel - {index:0000}",
+                                                                                 DownloadTaskListTestSeed.At(index))));
         var vm = CreateViewModel(harness);
         await vm.LoadAsync();
         Assert.Multiple(
@@ -227,8 +227,8 @@ public sealed class DownloadTasksPageViewModelTests
         await DownloadTaskListTestSeed.SeedAsync(harness,
                                                  Enumerable.Range(0, 100)
                                                            .Select(index => DownloadTaskListTestSeed.NewTask(
-                                                                    $"Sel - {index:0000}",
-                                                                    DownloadTaskListTestSeed.At(index)))
+                                                                        $"Sel - {index:0000}",
+                                                                        DownloadTaskListTestSeed.At(index)))
                                                            .Concat(failedTasks));
         var vm = CreateViewModel(harness);
         await vm.LoadAsync();
@@ -264,10 +264,10 @@ public sealed class DownloadTasksPageViewModelTests
         await DownloadTaskListTestSeed.SeedAsync(harness,
                                                  Enumerable.Range(1, 500)
                                                            .Select(index => DownloadTaskListTestSeed.NewTask(
-                                                                    $"Hit - {index:0000}",
-                                                                    DownloadTaskListTestSeed.At(index)))
+                                                                        $"Hit - {index:0000}",
+                                                                        DownloadTaskListTestSeed.At(index)))
                                                            .Prepend(DownloadTaskListTestSeed.NewTask("Old - 0001",
-                                                                        DownloadTaskListTestSeed.At(0))));
+                                                                             DownloadTaskListTestSeed.At(0))));
         var vm = CreateViewModel(harness);
         vm.SearchDebounceDelay = TimeSpan.FromMilliseconds(1);
         await vm.LoadAsync();
