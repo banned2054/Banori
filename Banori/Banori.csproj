@@ -11,13 +11,13 @@
 
 	<ItemGroup>
 		<ProjectReference Include="..\Banori.Core\Banori.Core.csproj" />
-		<PackageReference Include="Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore" Version="10.0.12" />
-		<PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.0.12" />
-		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
-		<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12" PrivateAssets="all" />
-		<PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.12" />
-		<PackageReference Include="Microting.EntityFrameworkCore.MySql" Version="10.0.12" />
-		<PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.13" />
+		<PackageReference Include="Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore" Version="10.0.14" />
+		<PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.0.14" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.14" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.14" PrivateAssets="all" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.14" />
+		<PackageReference Include="Microting.EntityFrameworkCore.MySql" Version="10.0.13" />
+		<PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
 		<PackageReference Include="Banned.Bangumi" Version="1.1.0" />
 		<PackageReference Include="Banned.Qbittorrent" Version="1.7.0" />
 	</ItemGroup>
