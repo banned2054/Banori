@@ -35,8 +35,8 @@ public sealed record DownloadFilePreview(
     string? Warning);
 
 /// <summary>
-///     复用候选：某归档目标路径上已存在同路径同大小的数据——外部种子文件（未登记）或受管承接对象
-///     （现任/休眠）。仅是线索：能否复用必须经停止状态的受控映射与 recheck 校验证实。
+///     复用候选：某归档目标路径上已有同路径同大小的受管或外部种子文件，不要求存在替换关系。
+///     仅是线索：能否复用必须经停止状态的受控映射与 recheck 校验证实，不授予替换权限。
 /// </summary>
 public readonly record struct ReuseCandidate(int FileIndex, string AbsolutePath, long Size, bool Managed);
 

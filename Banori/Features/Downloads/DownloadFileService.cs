@@ -200,9 +200,8 @@ public sealed class DownloadFileService(
     }
 
     /// <summary>
-    ///     枚举归档目标的复用候选：目标路径上精确相等且大小一致的数据——外部种子文件（未登记）或
-    ///     受管承接对象（现任成片/休眠数据）。父子重叠与大小不符不构成候选（前者无法映射，后者是
-    ///     不同压制的真实覆盖）。候选只是线索，能否复用必须经停止状态的受控映射与 recheck 校验证实。
+    ///     枚举归档目标上同路径同大小的复用候选，不依赖受管任务之间的替换关系；待确认布局不参与候选。
+    ///     父子重叠与大小不符不构成候选。候选只授权停止状态的受控映射与 recheck，不授予替换旧文件的权限。
     /// </summary>
     public async Task<IReadOnlyList<ReuseCandidate>> EnumerateReuseCandidatesAsync(
         IQbittorrentSession session, Guid taskId, IReadOnlyList<(int FileIndex, string TargetPath)> targets,
@@ -211,24 +210,53 @@ public sealed class DownloadFileService(
         await using var db          = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var             task        = await LoadAsync(db, taskId, cancellationToken);
         var             sizeByIndex = task.Files.ToDictionary(file => file.FileIndex, file => file.Size);
-        var             result      = new List<ReuseCandidate>();
+        var             result      = new Dictionary<int, ReuseCandidate>();
+        var others = await db.DownloadTasks.Include(value => value.Files).AsNoTracking()
+                             .Where(value => value.Id != task.Id).ToListAsync(cancellationToken);
+        var torrents      = await session.ListTorrentsAsync(null, cancellationToken);
+        var managedHashes = others.Select(value => value.InfoHash).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unstableHashes = others.Where(HasUnsettledReuseLayout).Select(value => value.InfoHash)
+                                   .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        unstableHashes.UnionWith(torrents.Where(torrent => torrent.IsMoving ||
+                                                           torrent.Category is QbittorrentTorrentCategory.Checking
+                                                                               or QbittorrentTorrentCategory.Error
+                                                                               or QbittorrentTorrentCategory.Unknown)
+                                         .Select(torrent => torrent.Hash));
 
-        foreach (var entry in await LoadReplacementAsideFilesAsync(db, task, cancellationToken))
+        foreach (var owner in others)
         {
-            var absolute = Join(entry.SavePath, entry.CurrentRelativePath);
-            foreach (var (index, target) in targets)
-                if (EqualPath(target, absolute) && sizeByIndex[index] == entry.Size)
-                    result.Add(new ReuseCandidate(index, absolute, entry.Size, true));
+            if (unstableHashes.Contains(owner.InfoHash)) continue;
+            var matchingFiles = owner.Files
+                                     .Where(file => targets.Any(target =>
+                                                                          sizeByIndex[target.FileIndex] == file.Size &&
+                                                                          EqualPath(target.TargetPath,
+                                                                                    Join(owner.SavePath,
+                                                                                         file.CurrentRelativePath))))
+                                     .ToList();
+            if (matchingFiles.Count == 0) continue;
+            var torrent = torrents.FirstOrDefault(value => string.Equals(value.Hash, owner.InfoHash,
+                                                                         StringComparison.OrdinalIgnoreCase));
+            if (torrent is not null && !SameRoot(torrent.SavePath, owner.SavePath)) continue;
+            var remoteFiles = torrent is null ? null : await session.ListFilesAsync(owner.InfoHash, cancellationToken);
+            foreach (var file in matchingFiles)
+            {
+                var absolute = Join(owner.SavePath, file.CurrentRelativePath);
+                if (remoteFiles is not null &&
+                    !remoteFiles.Any(remote => EqualPath(Join(owner.SavePath, remote.Path), absolute) &&
+                                               remote.Size == file.Size &&
+                                               (remote.Size <= 0 || remote.Progress >= 1 ||
+                                                !remote.IsSelectedForDownload))) continue;
+                foreach (var (index, target) in targets)
+                    if (EqualPath(target, absolute) && sizeByIndex[index] == file.Size)
+                        result[index] = new ReuseCandidate(index, target, file.Size, true);
+            }
         }
 
-        var others = await db.DownloadTasks.AsNoTracking().Where(value => value.Id != task.Id)
-                             .Select(value => new { value.Id, value.InfoHash }).ToListAsync(cancellationToken);
-        var managedHashes = others.Select(value => value.InfoHash).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var torrent in await session.ListTorrentsAsync(null, cancellationToken))
+        foreach (var torrent in torrents)
         {
-            if (string.Equals(torrent.Hash, task.InfoHash, StringComparison.OrdinalIgnoreCase)) continue;
-            // 受管种子只经承接对象（现任/休眠）参与候选；其余受管占用不是候选而是真实冲突，整体降级。
-            if (managedHashes.Contains(torrent.Hash)) continue;
+            if (string.Equals(torrent.Hash, task.InfoHash, StringComparison.OrdinalIgnoreCase) ||
+                unstableHashes.Contains(torrent.Hash) ||
+                managedHashes.Contains(torrent.Hash)) continue;
             try
             {
                 var root = Root(torrent.SavePath);
@@ -238,8 +266,7 @@ public sealed class DownloadFileService(
                     foreach (var (index, target) in targets)
                     {
                         if (!EqualPath(target, occupied) || file.Size != sizeByIndex[index]) continue;
-                        result.Add(new ReuseCandidate(index, occupied, file.Size, false));
-                        break;
+                        result.TryAdd(index, new ReuseCandidate(index, target, file.Size, false));
                     }
                 }
             }
@@ -249,8 +276,14 @@ public sealed class DownloadFileService(
             }
         }
 
-        return result;
+        return result.Values.ToList();
     }
+
+    private static bool HasUnsettledReuseLayout(DownloadTask task) =>
+        task.PendingSavePath is not null ||
+        task.Files.Any(file => file.PendingRenameFrom is not null || file.PendingRenameTo is not null) ||
+        task.VerificationIntent is not null ||
+        task.IsolationState != DownloadIsolationState.None;
 
     /// <summary>
     ///     在协调锁内执行持久化的逐文件校验布局：候选映射许可仅允许改名和校验；普通缺失文件进入正式目标，需要保护旧版的文件保留暂存路径。所有请求共用可恢复日志。
@@ -1039,11 +1072,11 @@ public sealed class DownloadFileService(
                     if (!PathsOverlap(target, path)) continue;
                     // 验证映射许可：仅绑定当前校验意图的候选精确路径放行同路径重叠，供受控映射执行，
                     // 不授权后续任何复用、归档或启动（已验证复用许可须凭校验通过的结果另行取得）。
-                    if (verificationMappingPaths is not null    &&
+                    if (verificationMappingPaths is not null &&
                         verificationMappingPaths.Contains(path) &&
-                        !hasPendingFileOperation                && targetSizes[target] == file.Size &&
-                        EqualPath(target, path))
-                        continue;
+                        !HasUnsettledReuseLayout(other) &&
+                        targetSizes[target] == file.Size &&
+                        EqualPath(target, path)) continue;
                     var matchingReplacementFile = !hasPendingFileOperation         && EqualPath(target, path) &&
                                                   targetSizes[target] == file.Size &&
                                                   HasVerifiedReuseEvidence(task, path, file.Size);
@@ -1076,10 +1109,17 @@ public sealed class DownloadFileService(
                     foreach (var target in targets)
                     {
                         if (!PathsOverlap(target, occupied)) continue;
-                        // 逐集承接放行覆盖等路径的迁让对象（交叉做种或休眠数据），与数据库侧同一集合。
-                        if (verificationMappingPaths is not null && verificationMappingPaths.Contains(occupied) &&
-                            EqualPath(target, occupied)          && targetSizes[target] == file.Size)
-                            continue;
+                        if (verificationMappingPaths is not null &&
+                            verificationMappingPaths.Contains(occupied) &&
+                            !other.IsMoving &&
+                            other.Category is not (QbittorrentTorrentCategory.Checking
+                                                   or QbittorrentTorrentCategory.Error
+                                                   or QbittorrentTorrentCategory.Unknown) &&
+                            (managedTask is null ||
+                             (!HasUnsettledReuseLayout(managedTask) &&
+                              (file.Size <= 0 || file.Progress >= 1 || !file.IsSelectedForDownload))) &&
+                            EqualPath(target, occupied) &&
+                            targetSizes[target] == file.Size) continue;
                         switch (managedTask)
                         {
                             // 复用证据驱动：本任务该文件经校验确认与占用方复用同一份数据时才共存；

@@ -1078,12 +1078,13 @@ public sealed class DownloadService(
                                  var relative = TorrentDownloadPolicy.GetRelativePath(torrent, file, isMultiFile);
                                  return new[]
                                  {
-                                     DownloadPathNamePolicy.JoinSavePath(candidateRoot, relative),
-                                     DownloadPathNamePolicy.JoinSavePath(candidateRoot,
-                                                                         $".tasks-{task.Id:N}/{relative}")
+                                     (Path: DownloadPathNamePolicy.JoinSavePath(candidateRoot, relative),
+                                      Size: file.Length),
+                                     (Path: DownloadPathNamePolicy.JoinSavePath(candidateRoot,
+                                                                                $".tasks-{task.Id:N}/{relative}"),
+                                      Size: file.Length)
                                  };
-                             })
-                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                             }).ToList();
 
         List<DownloadTask> others;
         await using (var db = await dbContextFactory.CreateDbContextAsync(ct))
@@ -1094,24 +1095,48 @@ public sealed class DownloadService(
 
         foreach (var other in others)
         {
-            var occupiedPaths = new List<string>();
-            if (other.Files.Count == 0) occupiedPaths.Add(other.SavePath);
+            var hasUnsettledLayout = other.PendingSavePath is not null ||
+                                     other.Files.Any(file => file.PendingRenameFrom is not null ||
+                                                             file.PendingRenameTo is not null) ||
+                                     other.VerificationIntent is not null ||
+                                     other.IsolationState != DownloadIsolationState.None;
+            var occupiedPaths = new List<(string Path, long? Size)>();
+            if (other.Files.Count == 0) occupiedPaths.Add((other.SavePath, null));
             foreach (var file in other.Files)
             {
-                occupiedPaths.Add(DownloadPathNamePolicy.JoinSavePath(other.SavePath, file.CurrentRelativePath));
+                occupiedPaths.Add((DownloadPathNamePolicy.JoinSavePath(other.SavePath, file.CurrentRelativePath),
+                                   file.Size));
                 foreach (var pending in new[] { file.PendingRenameFrom, file.PendingRenameTo }
                             .Where(value => value is not null))
-                    occupiedPaths.Add(DownloadPathNamePolicy.JoinSavePath(other.SavePath, pending!));
+                {
+                    occupiedPaths.Add((DownloadPathNamePolicy.JoinSavePath(other.SavePath, pending!), file.Size));
+                    if (other.PendingSavePath is not null)
+                        occupiedPaths.Add((DownloadPathNamePolicy.JoinSavePath(other.PendingSavePath, pending!),
+                                           file.Size));
+                }
+
                 if (other.PendingSavePath is null) continue;
-                occupiedPaths.Add(DownloadPathNamePolicy.JoinSavePath(other.PendingSavePath, file.CurrentRelativePath));
-                occupiedPaths.Add(DownloadPathNamePolicy.JoinSavePath(other.PendingSavePath,
-                                                                      file.OriginalRelativePath));
+                occupiedPaths.Add((DownloadPathNamePolicy.JoinSavePath(other.PendingSavePath, file.CurrentRelativePath),
+                                   file.Size));
+                occupiedPaths.Add((DownloadPathNamePolicy.JoinSavePath(other.PendingSavePath,
+                                                                       file.OriginalRelativePath), file.Size));
             }
 
-            if (occupiedPaths.Any(path => layout.Any(item => PathsOverlapAbsolute(item, path)) &&
-                                          (candidates is null || !candidates.ContainsKey(path)))) return true;
+            foreach (var occupied in occupiedPaths)
+            foreach (var item in layout)
+            {
+                if (!PathsOverlapAbsolute(item.Path, occupied.Path)) continue;
+                if (candidates is not null &&
+                    !hasUnsettledLayout &&
+                    EqualVerificationPath(item.Path, occupied.Path) &&
+                    item.Size == occupied.Size &&
+                    candidates.TryGetValue(occupied.Path, out var size) &&
+                    size == occupied.Size) continue;
+                return true;
+            }
         }
 
+        var managedHashes = others.Select(value => value.InfoHash).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var other in await session.ListTorrentsAsync(null, ct))
         {
             if (string.Equals(other.Hash, task.InfoHash, StringComparison.OrdinalIgnoreCase)) continue;
@@ -1121,10 +1146,18 @@ public sealed class DownloadService(
                 foreach (var file in await session.ListFilesAsync(other.Hash, ct))
                 {
                     var occupied = root + "/" + (file.Path ?? string.Empty).Trim().TrimStart('/');
-                    if (layout.Any(item => PathsOverlapAbsolute(item, occupied) &&
-                                           !(EqualVerificationPath(item, occupied)          && candidates is not null &&
-                                             candidates.TryGetValue(occupied, out var size) && size == file.Size)))
-                        return true;
+                    if (layout.Any(item => PathsOverlapAbsolute(item.Path, occupied) &&
+                                           !(candidates is not null &&
+                                             !other.IsMoving &&
+                                             other.Category is not (QbittorrentTorrentCategory.Checking
+                                                                    or QbittorrentTorrentCategory.Error
+                                                                    or QbittorrentTorrentCategory.Unknown) &&
+                                             (!managedHashes.Contains(other.Hash) ||
+                                              file.Size <= 0 || file.Progress >= 1 || !file.IsSelectedForDownload) &&
+                                             EqualVerificationPath(item.Path, occupied) &&
+                                             item.Size == file.Size &&
+                                             candidates.TryGetValue(occupied, out var size) &&
+                                             size == file.Size))) return true;
                 }
             }
             catch (ArgumentException)
