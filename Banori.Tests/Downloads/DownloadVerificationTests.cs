@@ -4,6 +4,7 @@ using Banori.Core.Downloads;
 using Banori.Core.Rules;
 using Banori.Core.Rules.Selection;
 using Banori.Core.Subjects;
+using Banori.Core.Torrents;
 using Banori.Data;
 using Banori.Features.Anime;
 using Banori.Features.Downloads;
@@ -218,18 +219,19 @@ public sealed partial class DownloadVerificationTests
 
         // 校验阶段进入 Checking：观察到 Checking 后才允许读取结果（fake 显式推进）。
         harness.Store.RecheckBehavior = FakeRecheckBehavior.EnterChecking;
-        await harness.ReconcileAsync(); // 映射：候选文件改名 onto 候选路径并发出 recheck（当轮进入 Checking）。
+        await harness.ReconcileAsync(); // 映射：候选文件改名 onto 候选路径并发出 recheck。
         Assert.Contains(task.InfoHash, harness.Store.RecheckCalls);
         var mapping = await harness.GetTaskAsync(taskId);
         var intent  = DownloadVerificationIntent.FromJson(mapping.VerificationIntent);
         Assert.NotNull(intent);
-        Assert.Equal(DownloadVerificationStep.Requested, intent.Step);
+        // 请求发出后立即观察：快速校验可能在下一个采样间隔前就结束，不能等空闲对账的第一采。
+        Assert.Equal(DownloadVerificationStep.Observing, intent.Step);
         Assert.Equal(1, intent.IssuedCount);
-        Assert.False(intent.ObservedChecking);
+        Assert.True(intent.ObservedChecking);
         Assert.Equal(DownloadPreparationStage.AwaitingVerification, mapping.PreparationStage);
         Assert.DoesNotContain(task.InfoHash, harness.Store.ResumeCalls);
 
-        await harness.ReconcileAsync(); // 观察位：本轮记录 ObservedChecking，不做任何决策。
+        await harness.ReconcileAsync(); // 观察位：校验持续中，不做任何决策。
         var observing = DownloadVerificationIntent.FromJson((await harness.GetTaskAsync(taskId)).VerificationIntent);
         Assert.NotNull(observing);
         Assert.True(observing.ObservedChecking);
@@ -242,10 +244,13 @@ public sealed partial class DownloadVerificationTests
         harness.Store.FinishRecheck(task.InfoHash);
         await harness.ReconcileAsync(); // 结论轮：全部通过 → 完成归档。
 
-        Assert.DoesNotContain(task.InfoHash, harness.Store.ResumeCalls);
         var reused = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Completed, reused.Status);
         Assert.Null(reused.VerificationIntent);
         Assert.False(reused.IsSystemPaused);
+        // 数据完整性确认后继续做种：完整且停止时恢复一次并重新通告 tracker（旧实现完成后不启动）。
+        Assert.Equal(1, harness.Store.ResumeCalls.Count(hash => hash == task.InfoHash));
+        Assert.Equal(1, harness.Store.ReannounceCalls.Count(hash => hash == task.InfoHash));
         await using (var db = await harness.CreateDbContextAsync())
         {
             var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
@@ -314,44 +319,45 @@ public sealed partial class DownloadVerificationTests
         Assert.Equal(externalFile.Path, harness.Store.FileIdentities[externalHash][0].Path);
     }
 
+    /// <summary>
+    ///     快速校验（qB 5.3 实测路径）：校验在两次采样之间完成、观察不到 Checking 时，凭请求前基线
+    ///     未完成 → 请求后停止态完成的完成见证自动完成并登记复用——不隔离、不重下、不补发。
+    /// </summary>
     [Fact]
-    public async Task Verification_FastRecheckNeverObserved_BoundedReissueThenHaltsUnconfirmed()
+    public async Task Verification_FastRecheckCompletesBetweenSamples_AutoCompletesAndRegistersReuse()
     {
         using var harness = await VerificationHarness.CreateAsync();
         var       taskId  = await harness.CreateUploadAsync(SingleFileTorrent());
         var       task    = await harness.GetTaskAsync(taskId);
-        var       target  = await ArchivalTargetAsync(harness, taskId);
-        SeedExternalOccupant(harness, target, 1024);
+        SeedExternalOccupant(harness, await ArchivalTargetAsync(harness, taskId), 1024);
 
-        // 快速校验：请求即完成，两次采样之间永远观察不到 Checking。
+        // 快速校验：请求即按磁盘上的完整数据应用真实结果，两次采样之间永远观察不到 Checking。
         harness.Store.RecheckBehavior = FakeRecheckBehavior.CompleteImmediately;
+        harness.Factory.SessionConfigurator = session => session.BeforeRecheckAsync = () =>
+        {
+            // 数据早已完整但 qB 仍按 0% 处理；只能在请求时刻播种进度，映射前候选零进度检查不得看到它。
+            harness.Store.FileIdentities[task.InfoHash] =
+                harness.Store.FileIdentities[task.InfoHash].Select(file => file with { Progress = 1.0 }).ToList();
+            return Task.CompletedTask;
+        };
 
         await harness.ReconcileAsync(); // 提交（候选根）。
-        await harness.ReconcileAsync(); // 映射 + 首次 recheck。
+        await harness.ReconcileAsync(); // 映射 + 首次 recheck（结果在两次采样之间应用）。
         Assert.Equal(1, harness.Store.RecheckCalls.Count(hash => hash == task.InfoHash));
+        await harness.ReconcileAsync(); // 完成见证 → 结果登记 → 收尾完成（Immediate 策略单样本稳定）。
 
-        // 固定时钟下截止时间不会流逝：测试直接把截止时间改为过去，模拟等待超时。
-        await ExpireVerificationDeadlineAsync(harness, taskId);
-        await harness.ReconcileAsync(); // 有界重发（第二次）。
-        Assert.Equal(2, harness.Store.RecheckCalls.Count(hash => hash == task.InfoHash));
-
-        await ExpireVerificationDeadlineAsync(harness, taskId);
-        await harness.ReconcileAsync(); // 仍无法归属本轮 → 校验执行未确认，停止自动推进。
-
-        // 不凭重复 100% 宣告通过，也不因漏采 Checking 断言数据损坏、删除数据或自动重新下载：
-        // 任务保持受阻待人工重试，意图保留供重试链使用。
-        var halted = await harness.GetTaskAsync(taskId);
-        Assert.Equal(DownloadTaskStatus.Failed, halted.Status);
-        Assert.Equal("复用校验", halted.FailedStep);
-        Assert.Contains("未确认", halted.Error);
-        Assert.Equal(DownloadIsolationState.None, halted.IsolationState);
-        Assert.NotNull(halted.VerificationIntent);
+        // 不再要求「永远未确认」：漏采 Checking 不代表校验未执行，基线未完成 → 停止态完成即可确认。
+        var completedTask = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Completed, completedTask.Status);
+        Assert.Null(completedTask.VerificationIntent);
+        Assert.Equal(DownloadIsolationState.None, completedTask.IsolationState);
+        Assert.Equal(1, harness.Store.RecheckCalls.Count(hash => hash == task.InfoHash)); // 见证先于补发。
         Assert.Empty(harness.Store.DeleteCalls);
-        Assert.Single(harness.Store.AddCalls);
+        Assert.Single(harness.Store.ResumeCalls);
         await using (var db = await harness.CreateDbContextAsync())
         {
             var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
-            Assert.Null(file.VerificationOutcome);
+            Assert.Equal(DownloadFileVerificationOutcomes.ReusedVerified, file.VerificationOutcome);
         }
     }
 
@@ -441,7 +447,9 @@ public sealed partial class DownloadVerificationTests
         await harness.ReconcileAsync(); // 结论轮。
 
         Assert.DoesNotContain(task.InfoHash, harness.Store.PauseCalls);
-        Assert.DoesNotContain(task.InfoHash, harness.Store.ResumeCalls);
+        // 数据已确认完整：停止态下恢复一次做种并通告 tracker，而不是把完成等同于停止。
+        Assert.Equal(1, harness.Store.ResumeCalls.Count(hash => hash == task.InfoHash));
+        Assert.Equal(1, harness.Store.ReannounceCalls.Count(hash => hash == task.InfoHash));
         var reused = await harness.GetTaskAsync(taskId);
         Assert.Equal(DownloadTaskStatus.Completed, reused.Status);
         Assert.Null(reused.VerificationIntent);
@@ -484,7 +492,9 @@ public sealed partial class DownloadVerificationTests
         Assert.Equal(DownloadIsolationState.None, reused.IsolationState);
         Assert.Equal(DownloadTaskStatus.Completed, reused.Status);
         Assert.Null(reused.VerificationIntent);
-        Assert.DoesNotContain(task.InfoHash, harness.Store.ResumeCalls);
+        // 校验通过后继续做种：停止态下恢复一次并重新通告 tracker。
+        Assert.Equal(1, harness.Store.ResumeCalls.Count(hash => hash == task.InfoHash));
+        Assert.Equal(1, harness.Store.ReannounceCalls.Count(hash => hash == task.InfoHash));
         await using (var db = await harness.CreateDbContextAsync())
         {
             var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
@@ -564,11 +574,14 @@ public sealed partial class DownloadVerificationTests
     private static async Task<Guid?> IncumbentVideoFileIdAsync(VerificationHarness harness, Guid taskId)
     {
         await using var db = await harness.CreateDbContextAsync();
-        var subjectId = await db.DownloadTasks.Where(value => value.Id == taskId)
-                                .Select(value => value.SubjectId).FirstAsync();
-        if (subjectId is null) return null;
+        var task = await db.DownloadTasks.Where(value => value.Id == taskId)
+                             .Select(value => new { value.SubjectId, value.SiteSource }).FirstAsync();
+        if (task.SubjectId is not { } subjectId) return null;
+        var sourceScope = SourceScopes.FromSiteSource(task.SiteSource);
         var row = await db.EpisodeVersions.AsNoTracking()
-                          .Where(value => value.SubjectId == subjectId && value.IncumbentVideoFileId != null)
+                          .Where(value => value.SubjectId   == subjectId   &&
+                                          value.SourceScope == sourceScope &&
+                                          value.IncumbentVideoFileId != null)
                           .ToListAsync();
         return row.SingleOrDefault()?.IncumbentVideoFileId;
     }

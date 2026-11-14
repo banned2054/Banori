@@ -64,12 +64,38 @@ public sealed class FakeTorrentStore
     /// <summary>
     ///     recheck 行为模型。默认 RecordOnly：只记录调用、不改变任何状态——未显式配置的测试
     ///     绝不能因为 fake 凭空推进校验而变绿。EnterChecking 模拟校验阶段（经 FinishRecheck 推进结束）；
-    ///     CompleteImmediately 模拟「快速校验」：请求与完成发生在两次采样之间，永远观察不到 Checking。
+    ///     EnterResumeDataChecking 模拟恢复数据校验（不是内容校验）；CompleteImmediately 模拟「快速校验」：
+    ///     请求与完成发生在两次采样之间，永远观察不到 Checking，但按 FileIdentities 应用真实校验结果
+    ///     （qB 5.3 实测：stopped 添加不会自动校验，快速 recheck 直接从旧状态变最终结果）。
     /// </summary>
     public FakeRecheckBehavior RecheckBehavior { get; set; } = FakeRecheckBehavior.RecordOnly;
 
-    /// <summary>处于校验阶段的种子：SnapshotFor 报告 Checking，直到测试调用 FinishRecheck。</summary>
+    /// <summary>处于校验阶段的种子：SnapshotFor 报告 Checking（默认原始状态 checkingDL），直到测试调用 FinishRecheck。</summary>
     public HashSet<string> Rechecking { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    ///     处于恢复数据校验的种子：SnapshotFor 报告 Checking + checkingResumeData。qB 5.3 实测：
+    ///     checkingResumeData 是添加/启动/重启产物，不是内容校验；它不改变 progress/pieces_have。
+    /// </summary>
+    public HashSet<string> ResumeDataChecking { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    ///     覆盖种子 pieces_have（模拟此前中断校验保留的部分结果）；未设置的种子按整体进度推导。
+    ///     recheck 应用结果时移除覆盖——此后 pieces 与校验结果一致。
+    /// </summary>
+    public Dictionary<string, long> PiecesHaveOverrides { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    ///     recheck 请求后 pieces 已同步清零、尚未恢复的种子：GetTorrentPropertiesAsync 首读返回 0，
+    ///     之后恢复为校验结果（qB 5.3 实测的「先掉 0、后恢复」序列）。
+    /// </summary>
+    internal HashSet<string> PiecesDropped { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    ///     覆盖快照的 qB 原始状态字符串（如 checkingResumeData）：用于区分数据校验与恢复数据校验。
+    ///     未设置的种子 RawState 为 null，按旧语义处理。
+    /// </summary>
+    public Dictionary<string, string> RawStates { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     ///     改名 onto 已存在路径的策略：Remap 按已验收语义直接改路径映射；Reject 模拟拒绝该操作的
@@ -106,6 +132,7 @@ public sealed class FakeTorrentStore
     public List<(string Hash, bool DeleteFiles)> DeleteCalls { get; } = [];
     public List<(string Hash, IReadOnlyCollection<int> Indices, bool Download)> SelectionCalls { get; } = [];
     public List<string> RecheckCalls { get; } = [];
+    public List<string> ReannounceCalls { get; } = [];
 
     /// <summary>放行延迟的选择变更：一次性应用到文件身份。</summary>
     public void CompleteSelections()
@@ -123,11 +150,37 @@ public sealed class FakeTorrentStore
     public void FinishRecheck(string hash, bool intoError = false)
     {
         Rechecking.Remove(hash);
+        ResumeDataChecking.Remove(hash);
         if (Torrents.TryGetValue(hash, out var snapshot))
             Torrents[hash] = snapshot with
             {
                 Category = intoError ? QbittorrentTorrentCategory.Error : snapshot.Category
             };
+    }
+
+    /// <summary>
+    ///     应用一次 recheck 的真实校验结果（qB 5.3 实测语义）：按 FileIdentities 推导整包进度与剩余量，
+    ///     全部选中文件完整则 progress=1、amount_left=0、completion_on 赋值（raw 由快照按停止态+满进度
+    ///     推导为 stoppedUP）；部分缺失则按文件均值给出不完整结果。pieces 先同步清零（首读可见），
+    ///     之后恢复为本结果。
+    /// </summary>
+    public void ApplyRecheckResult(string hash)
+    {
+        PiecesDropped.Add(hash);
+        PiecesHaveOverrides.Remove(hash);
+        if (!Torrents.TryGetValue(hash, out var snapshot)) return;
+        var files         = FileIdentities.TryGetValue(hash, out var identities) ? identities : null;
+        var complete      = files is { Count: > 0 } && files.All(file => file.Size <= 0 || file.Progress >= 1.0);
+        var progress      = complete ? 1.0
+                            : files is { Count: > 0 } ? files.Average(file => file.Progress)
+                            : snapshot.Progress;
+        Torrents[hash] = snapshot with
+        {
+            Progress     = progress,
+            AmountLeft   = complete ? 0 : (long)Math.Round(snapshot.TotalSize * (1 - progress)),
+            Completed    = complete ? snapshot.TotalSize : (long)Math.Round(snapshot.TotalSize * progress),
+            CompletionOn = complete ? DateTimeOffset.UtcNow : snapshot.CompletionOn
+        };
     }
 
     public void CompleteMoves()
@@ -167,10 +220,16 @@ public enum FakeRecheckBehavior
     /// <summary>只记录调用，不改变状态（默认；未配置的测试不得因 fake 凭空推进校验而通过）。</summary>
     RecordOnly,
 
-    /// <summary>进入 Checking 阶段，由测试调用 FinishRecheck 决定结束与结果。</summary>
+    /// <summary>进入 Checking 阶段（原始状态 checkingDL），由测试调用 FinishRecheck 决定结束与结果。</summary>
     EnterChecking,
 
-    /// <summary>快速校验：请求即完成，两次采样之间永远观察不到 Checking（未确认路径测试）。</summary>
+    /// <summary>进入恢复数据校验（checkingResumeData）：不是内容校验，进度与 pieces 均不变。</summary>
+    EnterResumeDataChecking,
+
+    /// <summary>
+    ///     快速校验：请求即按 FileIdentities 应用真实校验结果，两次采样之间永远观察不到 Checking
+    ///     （qB 5.3 实测：64MB 完整数据 recheck 直接 stoppedDL → stoppedUP）。
+    /// </summary>
     CompleteImmediately
 }
 
@@ -211,6 +270,12 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     /// <summary>启动请求失败，用于验证已持久化的启动意图可恢复。</summary>
     public Exception? ResumeException { get; set; }
 
+    /// <summary>
+    ///     设置后 Resume 先在远端生效（移除停止状态）再抛出传输异常：模拟「已生效但响应丢失」，
+    ///     供启动恢复验证「先观察、不盲目重发」。
+    /// </summary>
+    public bool ResumeApplyThenThrowTransport { get; set; }
+
     /// <summary>Resume 已在远端生效后的回调，用于模拟响应丢失或分享限制立即停止。</summary>
     public Func<Task>? AfterResumeAsync { get; set; }
 
@@ -219,6 +284,21 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
 
     /// <summary>FindTorrents 前回调：确定性挂起预检/查询，用于测试迟到结果处理。</summary>
     public Func<IReadOnlyCollection<string>, Task>? BeforeFindTorrentsAsync { get; set; }
+
+    /// <summary>设置后 RecheckTorrent 抛出该异常，模拟请求发送失败（请求可能已被接收，无法确认）。</summary>
+    public Exception? RecheckException { get; set; }
+
+    /// <summary>设置后 GetTorrentProperties 抛出该异常，模拟 pieces 属性查询失败（回退到快照基线证据）。</summary>
+    public Exception? PropertiesException { get; set; }
+
+    /// <summary>设置后 GetTorrentProperties 返回 null，模拟下载器未返回属性。</summary>
+    public bool DropProperties { get; set; }
+
+    /// <summary>RecheckTorrent 发出前回调：在请求时刻确定性修改磁盘数据/校验状态（映射检查之后、结果应用之前）。</summary>
+    public Func<Task>? BeforeRecheckAsync { get; set; }
+
+    /// <summary>设置后 Reannounce 抛出该异常；只影响 tracker 通告，不得否定已确认的数据完整性。</summary>
+    public Exception? ReannounceException { get; set; }
 
     public string ServerVersion => "v5.0.0-fake";
 
@@ -343,19 +423,51 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         return Task.CompletedTask;
     }
 
-    public Task RecheckTorrentAsync(string infoHash, CancellationToken cancellationToken = default)
+    public async Task RecheckTorrentAsync(string infoHash, CancellationToken cancellationToken = default)
     {
         store.RecheckCalls.Add(infoHash);
+        if (BeforeRecheckAsync is not null) await BeforeRecheckAsync();
         switch (store.RecheckBehavior)
         {
             case FakeRecheckBehavior.EnterChecking :
                 store.Rechecking.Add(infoHash);
                 break;
+            case FakeRecheckBehavior.EnterResumeDataChecking :
+                // 恢复数据校验：不是内容校验，不改变进度与 pieces。
+                store.ResumeDataChecking.Add(infoHash);
+                break;
             case FakeRecheckBehavior.CompleteImmediately :
-                // 快速校验：校验阶段在两次采样之间开始并结束，快照永远观察不到 Checking。
+                // 快速校验：校验阶段在两次采样之间开始并结束，快照观察不到 Checking；
+                // 按 FileIdentities 应用真实结果（未播种数据时结果仍是不完整，绝不凭空推进）。
+                store.ApplyRecheckResult(infoHash);
                 break;
         }
 
+        if (RecheckException is not null) throw RecheckException;
+    }
+
+    public Task<TorrentPropertiesSnapshot?> GetTorrentPropertiesAsync(
+        string infoHash, CancellationToken cancellationToken = default)
+    {
+        if (PropertiesException is not null) throw PropertiesException;
+        if (DropProperties || !store.Torrents.TryGetValue(infoHash, out var snapshot))
+            return Task.FromResult<TorrentPropertiesSnapshot?>(null);
+
+        // qB 5.3 实测：recheck 请求后 pieces_have 同步清零（首读可见），之后恢复为校验结果。
+        const long piecesNum = 256;
+        long piecesHave = store.PiecesHaveOverrides.TryGetValue(infoHash, out var overridden)
+            ? overridden
+            : (long)Math.Round(snapshot.Progress * piecesNum);
+        if (store.PiecesDropped.Remove(infoHash)) piecesHave = 0;
+        return Task.FromResult<TorrentPropertiesSnapshot?>(new TorrentPropertiesSnapshot(
+            piecesHave, piecesNum, snapshot.TotalSize,
+            (long)Math.Round(snapshot.TotalSize * snapshot.Progress), snapshot.CompletionOn));
+    }
+
+    public Task ReannounceAsync(string infoHash, CancellationToken cancellationToken = default)
+    {
+        store.ReannounceCalls.Add(infoHash);
+        if (ReannounceException is not null) throw ReannounceException;
         return Task.CompletedTask;
     }
 
@@ -384,8 +496,18 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
 
     public async Task ResumeAsync(string infoHash, CancellationToken cancellationToken = default)
     {
-        if (ResumeException is not null) throw ResumeException;
+        // 先登记尝试再抛出：测试必须能区分「未尝试 Resume」与「已尝试但失败」。
         store.ResumeCalls.Add(infoHash);
+        if (ResumeApplyThenThrowTransport)
+        {
+            // 远端已生效再抛传输异常：模拟「已生效但响应丢失」，由后续快照观察确认。
+            store.Paused.Remove(infoHash);
+            store.StoppedAdds.Remove(infoHash);
+            if (AfterResumeAsync is not null) await AfterResumeAsync();
+            throw new QbittorrentException("模拟启动请求响应丢失。");
+        }
+
+        if (ResumeException is not null) throw ResumeException;
         store.Paused.Remove(infoHash);
         store.StoppedAdds.Remove(infoHash);
         if (AfterResumeAsync is not null) await AfterResumeAsync();
@@ -454,6 +576,9 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         store.Files.Remove(infoHash);
         store.FileIdentities.Remove(infoHash);
         store.Rechecking.Remove(infoHash);
+        store.ResumeDataChecking.Remove(infoHash);
+        store.PiecesHaveOverrides.Remove(infoHash);
+        store.PiecesDropped.Remove(infoHash);
         store.Paused.Remove(infoHash);
         store.StoppedAdds.Remove(infoHash);
         return Task.CompletedTask;
@@ -472,15 +597,37 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     {
         var snapshot = store.Torrents[hash];
         var category = snapshot.Category;
-        // 校验阶段优先报告：进度可能临时波动，不推进冲突计划。
-        if (store.Rechecking.Contains(hash)) return snapshot with { Category = QbittorrentTorrentCategory.Checking };
+        // 校验阶段优先报告：进度可能临时波动，不推进冲突计划。内容校验默认原始状态 checkingDL；
+        // 恢复数据校验（checkingResumeData）按 qB 5.3 实测单独建模。RawStates 覆盖优先于推导。
+        if (store.Rechecking.Contains(hash) || store.ResumeDataChecking.Contains(hash))
+            return snapshot with
+            {
+                Category   = QbittorrentTorrentCategory.Checking,
+                RawState   = RawStateFor(hash, store.Rechecking.Contains(hash) ? "checkingDL" : "checkingResumeData"),
+                AmountLeft = DerivedAmountLeft(snapshot)
+            };
         // 做种被暂停对应 qB 的 stoppedUP：映射后同样是 Stopped（完成程度由进度独立判定）。
         if ((store.StoppedAdds.Contains(hash) && category == QbittorrentTorrentCategory.Downloading) ||
             (store.Paused.Contains(hash) && category is QbittorrentTorrentCategory.Downloading
                                                      or QbittorrentTorrentCategory.Seeding))
             category = QbittorrentTorrentCategory.Stopped;
-        return snapshot with { Category = category };
+        // 停止态的原始状态按完成度推导（stoppedUP / stoppedDL）；AmountLeft 未设置按剩余比例推导。
+        var rawState = category == QbittorrentTorrentCategory.Stopped
+            ? RawStateFor(hash, snapshot.Progress >= 1.0 ? "stoppedUP" : "stoppedDL")
+            : RawStateFor(hash, snapshot.RawState);
+        return snapshot with
+        {
+            Category   = category,
+            RawState   = rawState,
+            AmountLeft = DerivedAmountLeft(snapshot)
+        };
     }
+
+    private string? RawStateFor(string hash, string? derived) =>
+        store.RawStates.TryGetValue(hash, out var rawState) ? rawState : derived;
+
+    private static long? DerivedAmountLeft(TorrentSnapshot snapshot) =>
+        snapshot.AmountLeft ?? (long)Math.Round(snapshot.TotalSize * (1 - snapshot.Progress));
 }
 
 /// <summary>每次创建新会话，共享同一个下载器存储；模拟 qBittorrent 独立于应用进程运行。</summary>

@@ -154,6 +154,28 @@ public static class DownloadVerificationStep
 
     /// <summary>复用结果与启动意图已落库，等待确认 Resume；重启仍须核对同一布局。</summary>
     public const string ReadyToRun = "ReadyToRun";
+
+    /// <summary>
+    ///     校验未确认：已多次请求仍未观察到校验阶段、请求连续发送失败、停止后证据不可用或结果长期无法稳定。
+    ///     任务保持暂停、不隔离、不删数据；保留候选与意图，等待人工「重新校验」。
+    /// </summary>
+    public const string Unconfirmed = "Unconfirmed";
+}
+
+/// <summary>recheck 请求的发送状态：用于区分「请求可能未被接收」与「已发出但结果未观察」。</summary>
+public static class DownloadVerificationRequestState
+{
+    /// <summary>尚未发出（人工重新校验后等待下一轮对账）。</summary>
+    public const string NotSent = "NotSent";
+
+    /// <summary>请求即将发出或发送结果未知：不能据此断言未发送。</summary>
+    public const string Unknown = "Unknown";
+
+    /// <summary>请求已成功返回；是否已生效仍由后续快照观察确认。</summary>
+    public const string Sent = "Sent";
+
+    /// <summary>请求抛出下载器/网络异常：请求可能已被接收，不能断言未发送。</summary>
+    public const string SendFailed = "SendFailed";
 }
 
 /// <summary>逐文件校验结果。仅描述「该次映射未通过或不能确认」，不证明字节内容不同（可能是边界分片、配套缺失或映射问题）。</summary>
@@ -204,6 +226,67 @@ public sealed record DownloadVerificationIntent
 
     /// <summary>本轮是否已观察到 Checking；新一轮请求时重置为 false。</summary>
     public bool ObservedChecking { get; init; }
+
+    /// <summary>
+    ///     本轮请求的发送状态（见 <see cref="DownloadVerificationRequestState" />）。旧意图为 null 时按旧语义处理；
+    ///     SendFailed 不消耗 IssuedCount，Unknown 不能断言请求未发送。
+    /// </summary>
+    public string? RequestState { get; init; }
+
+    /// <summary>连续发送失败次数（成功发出后清零）；达到上限转为校验未确认态。</summary>
+    public int SendFailureCount { get; init; }
+
+    /// <summary>最近一次发送失败的异常信息，仅用于诊断，不据此断言请求未发送。</summary>
+    public string? LastRequestError { get; init; }
+
+    /// <summary>本轮首次观察到的 qB 原始状态（如 checkingDL/checkingUP/checkingResumeData）；用于区分数据校验与恢复数据校验。</summary>
+    public string? ObservedRawState { get; init; }
+
+    /// <summary>
+    ///     本轮 recheck 请求尝试锚点：发送前与请求状态一起落库，发送异常也保留。
+    ///     请求前基线按同一时间/轮次绑定，补发前重新捕获，完成见证不会串轮。
+    /// </summary>
+    public DateTimeOffset? RecheckAttemptedAtUtc { get; init; }
+
+    /// <summary>
+    ///     本轮请求前快照基线（进度、剩余量、完成时间、原始状态与轮次锚点）。null 表示旧意图
+    ///     或请求前无法读取快照：此时不启用完成见证，保持「观察 Checking 或未确认」的旧语义。
+    /// </summary>
+    public DownloadVerificationBaseline? Baseline { get; init; }
+
+    /// <summary>
+    ///     请求前发现下载器已有校验/移动时的等待起点；持续超过校验启动窗口仍无法开始本轮请求时
+    ///     转校验未确认（不隔离），避免把外部校验当成本轮证据。
+    /// </summary>
+    public DateTimeOffset? PreRequestCheckingSinceUtc { get; init; }
+
+    /// <summary>
+    ///     仅提示：请求后观察到 checkingResumeData 的时间。恢复数据校验不是内容校验，不设
+    ///     ObservedChecking/完成见证，也不参与任何推进判定。
+    /// </summary>
+    public DateTimeOffset? ResumeDataSeenAtUtc { get; init; }
+
+    /// <summary>
+    ///     本轮完成见证种类（见 <see cref="DownloadVerificationCompletionEvidence" />）；null 表示尚未取得。
+    ///     见证只证明本轮校验执行后的完整性方向，逐文件复用/缺失结论仍由结果读取与稳定窗口决定。
+    /// </summary>
+    public string? CompletionEvidenceKind { get; init; }
+
+    /// <summary>本轮完成见证的观察时间；只用于展示与诊断，不参与推进。</summary>
+    public DateTimeOffset? CompletionEvidenceAtUtc { get; init; }
+
+    /// <summary>
+    ///     创建本意图的 DownloadService 实例 Id。重启后发现意图来自其他实例时，本轮基线/校验观察/
+    ///     见证与请求锚点全部作废（保留候选映射），下一轮重新捕获基线并重发——重启后的完成状态可能
+    ///     来自旧 resume data，不得凭旧基线判定本轮结果。
+    /// </summary>
+    public Guid? ObserverInstanceId { get; init; }
+
+    /// <summary>
+    ///     recheck 请求后立即查询 pieces，基线 pieces_have 大于 0 而现在掉落（qB 同步清空分片）时记录；
+    ///     这是「请求已被该 hash 接收并开始重新校验」的最可靠证据，可替代 Checking 观察作为本轮执行证据。
+    /// </summary>
+    public DateTimeOffset? RecheckAppliedAtUtc { get; init; }
 
     /// <summary>本轮首次观察到 Checking 的时间；单轮校验总上限从此起算。</summary>
     public DateTimeOffset? CheckStartedAtUtc { get; init; }
@@ -270,6 +353,149 @@ public sealed record DownloadVerificationIntent
         try
         {
             return JsonSerializer.Deserialize<DownloadVerificationIntent>(json, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+}
+
+/// <summary>
+///     发 recheck 前的请求前快照基线：只用于把「请求后完整性的变化」绑定到本轮尝试，
+///     不能单独作为完成证据（已完成种子再次 recheck 可能完全不变）。
+/// </summary>
+public sealed record DownloadVerificationBaseline(
+    double                     Progress,
+    long?                      AmountLeft,
+    long?                      Completed,
+    DateTimeOffset?            CompletionOn,
+    long                       TotalSize,
+    QbittorrentTorrentCategory Category,
+    string?                    RawState,
+    bool                       IsMoving,
+    DateTimeOffset             CapturedAtUtc,
+    DateTimeOffset             AttemptAtUtc,
+    int                        Round,
+    long?                      PiecesHave = null,
+    long?                      PiecesNum  = null);
+
+/// <summary>
+///     请求前后的完整性方向：未完成→完成证明本轮校验执行并补齐/确认了数据；
+///     完成→完整性下降证明本轮校验确实执行且发现了缺失。两者都不能单独证明逐文件结果。
+/// </summary>
+public static class DownloadVerificationCompletionEvidence
+{
+    /// <summary>请求前未完成，请求后停止态完成：可作为「本轮校验已执行并完成」的替代证据。</summary>
+    public const string BaselineIncompleteToComplete = "BaselineIncompleteToComplete";
+
+    /// <summary>请求前已完成，请求后停止态完整性下降：证明本轮校验确实执行并发现缺失。</summary>
+    public const string BaselineCompleteToIncomplete = "BaselineCompleteToIncomplete";
+}
+
+/// <summary>完成/启动恢复的目的：数据完整（恢复做种）或候选已验证（继续下载缺失文件）。</summary>
+public static class DownloadRunPurposes
+{
+    /// <summary>数据完整性已确认（Status=Completed），恢复做种。</summary>
+    public const string Seeding = "Seeding";
+
+    /// <summary>候选复用已确认、整包未完成：恢复缺失文件的下载。</summary>
+    public const string ContinueDownload = "ContinueDownload";
+}
+
+/// <summary>
+///     启动恢复子状态：只描述「启动请求是否发出、是否已观察到运行」，绝不改写任务状态、
+///     FailedStep/Error/CompletedAtUtc，也绝不触发重新校验、隔离或重新下载。
+/// </summary>
+public static class DownloadRunStates
+{
+    /// <summary>无需恢复（不落库：null 即表示没有待恢复的启动）。</summary>
+    public const string NotRequired = "NotRequired";
+
+    /// <summary>启动请求已发出，等待观察下载器是否真的运行。</summary>
+    public const string AwaitingConfirm = "AwaitingConfirm";
+
+    /// <summary>启动请求抛出异常/响应丢失，可能已生效：先观察，不盲目重发。</summary>
+    public const string ResponseUnknown = "ResponseUnknown";
+
+    /// <summary>已观察到 Seeding/Downloading 运行（Seeding 为终值记录；ContinueDownload 观察后清记录）。</summary>
+    public const string ConfirmedRunning = "ConfirmedRunning";
+
+    /// <summary>有界自动重试耗尽，可人工恢复（页面「恢复做种/继续下载」）。</summary>
+    public const string FailedRetryable = "FailedRetryable";
+
+    /// <summary>用户暂停了任务，不自动恢复。</summary>
+    public const string UserPaused = "UserPaused";
+
+    /// <summary>下载器端停止（Sent 后停止、外部停止或种子已消失），不自动拉起。</summary>
+    public const string DownloaderStopped = "DownloaderStopped";
+}
+
+/// <summary>启动请求的发送结果：用于区分「已确认送达」与「响应丢失，不能断言未发送」。</summary>
+public static class DownloadRunRequestOutcomes
+{
+    /// <summary>请求成功返回；是否已生效仍由快照观察确认。</summary>
+    public const string Sent = "Sent";
+
+    /// <summary>请求异常或响应丢失：可能已被接收，先观察再决定是否重试。</summary>
+    public const string Unknown = "Unknown";
+
+    /// <summary>下载器明确拒绝（如种子已不存在）。</summary>
+    public const string Rejected = "Rejected";
+}
+
+/// <summary>
+///     完成/验证后的启动恢复子状态 JSON：记录 Resume 请求是否发出、响应是否未知、是否观察到运行、
+///     有界重试次数与最后观察。Purpose=Seeding 只出现在 Completed；Purpose=ContinueDownload 只出现在
+///     已验证但内容未全部完成的任务。数据完整性由 Status/CompletedAtUtc/VerificationOutcome 表达，
+///     本记录的任何失败都不得改写状态或 FailedStep/Error。
+/// </summary>
+public sealed record DownloadRunRecovery
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public string Purpose { get; init; } = DownloadRunPurposes.Seeding;
+
+    public string State { get; init; } = DownloadRunStates.AwaitingConfirm;
+
+    /// <summary>已发出的 Resume 请求次数（人工恢复与自动重试共用同一预算上限）。</summary>
+    public int AttemptCount { get; init; }
+
+    /// <summary>最近一次 Resume 请求时间（journal-first：落库先于发送）。</summary>
+    public DateTimeOffset? RequestedAtUtc { get; init; }
+
+    /// <summary>最近一次请求结果（Sent/Unknown/Rejected）；Unknown 不能断言未发送。</summary>
+    public string? RequestOutcome { get; init; }
+
+    /// <summary>首次观察到运行（Seeding/Downloading）的时间；非空后永不再自动 Resume。</summary>
+    public DateTimeOffset? ObservedRunningAtUtc { get; init; }
+
+    /// <summary>最近一次观察时间（含停止态观察）。</summary>
+    public DateTimeOffset? LastObservedAtUtc { get; init; }
+
+    /// <summary>最近一次观察到的下载器端类别。</summary>
+    public string? ObservedCategory { get; init; }
+
+    /// <summary>最近一次请求异常信息，仅用于诊断，不据此断言失败。</summary>
+    public string? LastRequestError { get; init; }
+
+    /// <summary>进入当前状态的简短原因（外部停止、种子消失、预算耗尽等），供界面解释。</summary>
+    public string? Reason { get; init; }
+
+    /// <summary>最近一次 Reannounce 尝试时间（仅 Seeding 确认运行后 best-effort）。</summary>
+    public DateTimeOffset? ReannounceAttemptedAtUtc { get; init; }
+
+    /// <summary>最近一次 Reannounce 失败信息；只影响 tracker 可达性，不参与状态转移。</summary>
+    public string? LastReannounceError { get; init; }
+
+    public string ToJson() => JsonSerializer.Serialize(this, JsonOptions);
+
+    public static DownloadRunRecovery? FromJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<DownloadRunRecovery>(json, JsonOptions);
         }
         catch (JsonException)
         {

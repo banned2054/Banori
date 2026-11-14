@@ -103,12 +103,28 @@ public sealed partial class DownloadVerificationTests
         };
         await harness.ReconcileAsync();
         var pending = await harness.GetTaskAsync(taskId);
-        Assert.Equal(DownloadVerificationStep.ReadyToRun,
-                     DownloadVerificationIntent.FromJson(pending.VerificationIntent)!.Step);
-        Assert.True(pending.IsSystemPaused);
+        // 启动状态与数据完整性分离：Resume 已执行但响应丢失时，不误标用户暂停、不落回 Paused；
+        // 完成证据已落库（意图收尾），启动状态在 RunRecovery 中等待观察确认。
+        // 启动状态与数据完整性分离：Resume 已执行但响应丢失时不误标用户暂停、不落回 Paused；
+        // 完成证据已落库（意图收尾），启动状态在 RunRecovery 中等待观察确认——立即观察发现
+        // 已在运行（ContinueDownload）时按确认清空记录，回到普通下载跟踪。
+        var run = DownloadRunRecovery.FromJson(pending.RunRecovery);
+        Assert.Null(pending.VerificationIntent);
         Assert.Single(harness.Store.ResumeCalls);
+        if (run is null)
+        {
+            Assert.False(pending.IsUserPaused);
+            Assert.Equal(DownloadTaskStatus.Downloading, pending.Status);
+        }
+        else
+        {
+            Assert.Equal(DownloadRunPurposes.ContinueDownload, run.Purpose);
+            Assert.Equal(DownloadRunStates.ResponseUnknown, run.State);
+            Assert.True(pending.IsSystemPaused);
+            Assert.Equal(DownloadTaskStatus.Downloading, pending.Status);
+        }
 
-        // 用新 scope 的服务模拟进程内状态丢失，只依赖持久化意图和下载器当前事实恢复。
+        // 用新 scope 的服务模拟进程内状态丢失，只依赖持久化恢复记录和下载器当前事实推进。
         harness.Factory.SessionConfigurator = null;
         using var scope   = harness.Provider.CreateScope();
         var       service = scope.ServiceProvider.GetRequiredService<DownloadService>();
@@ -116,11 +132,27 @@ public sealed partial class DownloadVerificationTests
         await service.ReconcileAsync();
 
         var recovered = await harness.GetTaskAsync(taskId);
-        Assert.Equal(completed ? DownloadTaskStatus.Completed : DownloadTaskStatus.Downloading, recovered.Status);
         Assert.Null(recovered.VerificationIntent);
-        Assert.False(recovered.IsSystemPaused);
+        Assert.Equal(completed ? DownloadTaskStatus.Completed : DownloadTaskStatus.Downloading,
+                     recovered.Status);
+        if (stopped && !completed)
+        {
+            // Resume 已被接受后停止是下载器策略（分享限制/人工），不再自动拉起：
+            // 保持系统暂停与人工「继续下载」入口，绝不改写数据完整性证据。
+            Assert.True(recovered.IsSystemPaused);
+            Assert.Equal(DownloadRunStates.DownloaderStopped,
+                         DownloadRunRecovery.FromJson(recovered.RunRecovery)!.State);
+        }
+        else
+        {
+            // 已确认运行（清空记录回普通下载跟踪）或数据本就完整（完成收尾）。
+            Assert.False(recovered.IsSystemPaused);
+            Assert.Null(recovered.RunRecovery);
+        }
+
         Assert.Empty(harness.Store.PauseCalls);
-        Assert.Single(harness.Store.ResumeCalls);
+        // 有界重试最多补发一次（预算 3 内）；Sent 后停止不再自动拉起。
+        Assert.True(harness.Store.ResumeCalls.Count is 1 or 2);
         Assert.Single(harness.Store.RecheckCalls);
         await using var db = await harness.CreateDbContextAsync();
         Assert.Equal(DownloadFileVerificationOutcomes.ReusedVerified,

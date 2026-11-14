@@ -2,6 +2,7 @@ using Banned.Qbittorrent;
 using Banned.Qbittorrent.Models.Enums;
 using Banned.Qbittorrent.Models.Requests;
 using Banned.Qbittorrent.Models.Torrent;
+using Banned.Qbittorrent.Utils;
 
 namespace Banori.Integrations.Qbittorrent;
 
@@ -28,7 +29,10 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
                 Rename         = string.IsNullOrWhiteSpace(rename) ? null : rename,
                 // qB 5.x 认 stopped、4.x 认 paused，客户端按服务器版本择一发送，这里同时声明两种开关。
                 PausedEnabled  = startStopped,
-                StoppedEnabled = startStopped
+                StoppedEnabled = startStopped,
+                // 复用校验依赖真实 recheck：skip_checking 会让 qB 跳过哈希校验并假定数据完整，
+                // 既毁掉「请求前未完成 → 请求后完成」的基线证据，也可能把空目录判成已完成。
+                SkipCheckingEnabled = false
             };
             return await client.Torrent.AddTorrent(request, cancellationToken);
         }
@@ -97,6 +101,19 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
     public Task RecheckTorrentAsync(string infoHash, CancellationToken cancellationToken = default) =>
         client.Torrent.RecheckTorrent(NormalizeHash(infoHash), cancellationToken);
 
+    public async Task<TorrentPropertiesSnapshot?> GetTorrentPropertiesAsync(
+        string infoHash, CancellationToken cancellationToken = default)
+    {
+        var properties = await client.Torrent.GetTorrentGenericProperties(NormalizeHash(infoHash), cancellationToken);
+        if (properties is null) return null;
+        return new TorrentPropertiesSnapshot(properties.PiecesHave, properties.PiecesNum,
+                                             properties.TotalSize, properties.TotalDownloaded,
+                                             properties.CompletionDate);
+    }
+
+    public Task ReannounceAsync(string infoHash, CancellationToken cancellationToken = default) =>
+        client.Torrent.ReannounceTorrent(NormalizeHash(infoHash), cancellationToken);
+
     public Task SetLocationAsync(string infoHash, string savePath, CancellationToken cancellationToken = default) =>
         client.Torrent.SetTorrentLocation(NormalizeHash(infoHash), savePath, cancellationToken);
 
@@ -137,7 +154,19 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
             info.Progress  ?? 0,
             info.TotalSize ?? 0, info.SavePath ?? string.Empty,
             info.TagList   ?? [],
-            string.Equals(info.State?.ToString(), "Moving", StringComparison.OrdinalIgnoreCase));
+            string.Equals(info.State?.ToString(), "Moving", StringComparison.OrdinalIgnoreCase),
+            // 仅 checking 系列（checkingDL/checkingUP/checkingResumeData）在 qB 4.x/5.x 字符串相同；
+            // 停止态字符串是 5.x 形态（stoppedUP/stoppedDL），4.x 原始值实为 pausedUP/pausedDL。
+            // RawState 只用于展示与 checkingResumeData 判定，不用于停止态判定（停止态由
+            // IsStoppedComplete 以 Progress+AmountLeft 兜底），因此统一采用 V5 字符串不失配业务语义。
+            info.State is { } state ? StringUtils.TorrentState2StringV5(state) : null,
+            info.AmountLeft,
+            info.Completed,
+            info.CompletionOn,
+            info.ContentPath,
+            info.AddedOn,
+            info.LastActivity,
+            info.SeedingTime);
 
     private static string NormalizeHash(string hash) => hash.Trim().ToLowerInvariant();
 }

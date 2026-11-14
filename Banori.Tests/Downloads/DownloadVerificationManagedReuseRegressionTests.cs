@@ -71,7 +71,9 @@ public sealed partial class DownloadVerificationTests
         Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
         Assert.Null(completed.VerificationIntent);
         Assert.Null(completed.ArchiveReview);
-        Assert.Empty(harness.Store.ResumeCalls);
+        // 复用通过后继续做种：停止态下恢复一次并重新通告 tracker（共享候选仍保持只读，无需移动/删除）。
+        Assert.Equal(1, harness.Store.ResumeCalls.Count(hash => hash == task.InfoHash));
+        Assert.Equal(1, harness.Store.ReannounceCalls.Count(hash => hash == task.InfoHash));
         Assert.Empty(harness.Store.SetLocationCalls);
         Assert.Empty(harness.Store.DeleteCalls);
         Assert.DoesNotContain(harness.Store.RenameFileCalls, call => call.Hash == ManagedOwnerHash);

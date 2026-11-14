@@ -83,4 +83,13 @@ public sealed class DownloadTimingPolicy
 
     /// <summary>recheck 请求总次数（初次加一次有界补发）；跨轮次累计。</summary>
     public int MaxRecheckIssues { get; init; } = 2;
+
+    /// <summary>连续 recheck 请求发送失败的上限；达到后按「校验请求发送失败」的未确认态退出自动推进。</summary>
+    public int MaxRecheckSendFailures { get; init; } = 3;
+
+    /// <summary>
+    ///     启动恢复（做种/继续下载）允许发出的 Resume 请求总次数（初次加有界自动重试）；
+    ///     只对响应未知（RequestOutcome=Unknown）自动重试，耗尽后转可人工恢复的 FailedRetryable。
+    /// </summary>
+    public int MaxRunResumeAttempts { get; init; } = 3;
 }

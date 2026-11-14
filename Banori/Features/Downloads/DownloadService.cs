@@ -69,6 +69,14 @@ public sealed class DownloadService(
     /// </summary>
     private readonly DownloadTimingPolicy timing = timingPolicy ?? DownloadTimingPolicy.Immediate;
 
+    /// <summary>
+    ///     本进程的观察者 Id：写入校验意图的 ObserverInstanceId。DownloadService 按对账轮次创建
+    ///     （Scoped，worker 每轮解析新实例），实例级 Id 会把每一轮都误判为重启；重启作废必须以
+    ///     进程生命周期为单位——应用重启后新进程发现意图来自其他实例，即作废本轮请求前基线、
+    ///     校验观察、完成见证与请求锚点（保留候选映射），下一轮重新捕获基线并重发。
+    /// </summary>
+    private static readonly Guid processInstanceId = Guid.NewGuid();
+
 
     /// <summary>一轮对账：提交待提交任务、核对未确认与下载中任务。下载器未启用或未配置时静默跳过。</summary>
     public async Task ReconcileAsync(CancellationToken cancellationToken = default)
@@ -305,6 +313,31 @@ public sealed class DownloadService(
         if (task.Status != DownloadTaskStatus.Paused || !task.IsUserPaused)
             throw new InvalidOperationException("只有人工暂停的任务可以恢复。");
 
+        // 校验未确认后的人工恢复等价于重新发起一轮校验：重置证据与请求台账、轮次 +1，
+        // 候选映射与文件原样保留；下一轮对账立即重发 recheck，不隔离、不重下。未确认任务
+        // 处于系统暂停，不直接启动下载器——先保持停止完成校验，通过后才恢复做种。
+        if (DownloadVerificationIntent.FromJson(task.VerificationIntent) is
+            { Step: DownloadVerificationStep.Unconfirmed } unconfirmed)
+        {
+            await SaveVerificationIntentAsync(taskId, task.Status, ResetUnconfirmedRound(unconfirmed),
+                                              cancellationToken);
+            await UpdateTaskAsync(taskId, task.Status, update =>
+            {
+                update.Status                    = DownloadTaskStatus.Downloading;
+                update.IsSystemPaused            = true;
+                update.IsUserPaused              = false;
+                update.ExternalStopObservedAtUtc = null;
+                update.PreparationStage          = DownloadPreparationStage.AwaitingVerification;
+                update.FailedStep                = null;
+                update.Error                     = null;
+                update.NextObservationAtUtc      = timeProvider.GetUtcNow() + timing.PreparationSampleInterval;
+            }, cancellationToken);
+            logger.LogInformation("任务 {TaskId} 从校验未确认恢复：候选与文件保留，下一轮对账重发 recheck。",
+                                  taskId);
+            return;
+        }
+
+
         // 准备流程未完成时，恢复只解除人工暂停：不直接启动下载器——否则落选文件会绕过
         // 文件选择计划直接开始下载。任务回到待准备状态，由对账继续推进并在准备完成后启动。
         if (task.IsSystemPaused)
@@ -352,6 +385,32 @@ public sealed class DownloadService(
             update.SelectionRequestCount       = 0;
             update.NextObservationAtUtc        = null;
         }, cancellationToken);
+    }
+
+    /// <summary>人工重新校验：保留候选映射、文件与种子，只重置本轮证据并等待下一轮重发 recheck；不隔离、不重下。</summary>
+    public async Task ReverifyAsync(Guid taskId, CancellationToken cancellationToken = default)
+    {
+        using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
+        var       task              = await LoadTaskAsync(taskId, cancellationToken);
+        var       intent            = DownloadVerificationIntent.FromJson(task.VerificationIntent);
+        if (task.Status != DownloadTaskStatus.Paused               ||
+            task.IsolationState != DownloadIsolationState.None     ||
+            intent?.Step != DownloadVerificationStep.Unconfirmed)
+            throw new InvalidOperationException("只有校验未确认的任务可以重新校验。");
+
+        await SaveVerificationIntentAsync(taskId, task.Status, ResetUnconfirmedRound(intent), cancellationToken);
+        await UpdateTaskAsync(taskId, task.Status, update =>
+        {
+            update.Status               = DownloadTaskStatus.Downloading;
+            update.IsSystemPaused       = true;
+            update.IsUserPaused         = false;
+            update.PreparationStage     = DownloadPreparationStage.AwaitingVerification;
+            update.FailedStep           = null;
+            update.Error                = null;
+            update.NextObservationAtUtc = null;
+        }, cancellationToken);
+        logger.LogInformation("任务 {TaskId} 已重新校验：保留候选与文件，重置本轮证据等待重发 recheck。",
+                              taskId);
     }
 
     /// <summary>
@@ -1080,7 +1139,10 @@ public sealed class DownloadService(
         var intent = new DownloadVerificationIntent
         {
             Round         = 1, Step = DownloadVerificationStep.Mapping, CreatedAtUtc = timeProvider.GetUtcNow(),
-            CandidateRoot = candidateRoot, Files = files
+            CandidateRoot = candidateRoot, Files = files,
+            // 意图在本进程创建，写入当前进程实例 Id：重启作废守卫要求 owner 非空才会比较实例归属，
+            // 若生产创建路径不落值，守卫恒不触发，旧基线与见证会被重启后的进程静默沿用。
+            ObserverInstanceId = processInstanceId
         };
         return (candidateRoot, intent.ToJson());
     }
@@ -1207,9 +1269,15 @@ public sealed class DownloadService(
     }
 
     private async Task SaveVerificationIntentAsync(
-        Guid taskId, DownloadTaskStatus expectedStatus, DownloadVerificationIntent intent, CancellationToken ct) =>
+        Guid taskId, DownloadTaskStatus expectedStatus, DownloadVerificationIntent intent, CancellationToken ct)
+    {
+        // 旧数据/旧路径产生的意图可能缺少 ObserverInstanceId：空 id 只说明创建时未记录归属，
+        // 并不能证明它来自其他进程，因此按「本进程新建」补写当前实例 Id 即可。
+        // 已有非空且不同的 id 表示确实来自其他进程实例，保持原值交给重启作废守卫处理，不得改写。
+        if (intent.ObserverInstanceId is null) intent = intent with { ObserverInstanceId = processInstanceId };
         await UpdateTaskAsync(taskId, expectedStatus,
                               update => update.VerificationIntent = intent.ToJson(), ct);
+    }
 
     /// <summary>
     ///     推迟本任务的下一次观察：等待确认窗口或采样间隔到期。到期时间持久化，重启后仍按此调度；
@@ -1271,22 +1339,319 @@ public sealed class DownloadService(
     private static DownloadVerificationIntent ResetRoundEvidence(
         DownloadVerificationIntent intent, string step) => intent with
     {
-        Step                      = step,
-        ObservedChecking          = false,
+        Step                       = step,
+        ObservedChecking           = false,
         RecheckRequestedAtUtc      = null,
-        DeadlineUtc               = null,
+        RecheckAttemptedAtUtc      = null,
+        Baseline                   = null,
+        PreRequestCheckingSinceUtc = null,
+        ResumeDataSeenAtUtc        = null,
+        CompletionEvidenceKind     = null,
+        CompletionEvidenceAtUtc    = null,
+        DeadlineUtc                = null,
         MovingObservedAtUtc        = null,
         CheckStartedAtUtc          = null,
         LastCheckProgressAtUtc     = null,
         LastCheckProgress          = null,
-        StabilitySample           = null,
+        StabilitySample            = null,
         StabilityStartedAtUtc      = null,
         StabilityObservedAtUtc     = null,
         StabilitySampleAtUtc       = null,
         StabilitySampleCount       = 0,
         TimeoutStopRequestedAtUtc  = null,
-        TimeoutStopAttempts        = 0
+        TimeoutStopAttempts        = 0,
+        ObservedRawState           = null,
+        RecheckAppliedAtUtc        = null
     };
+
+    /// <summary>
+    ///     未确认任务重新发起校验的重置：作废上一轮证据与请求台账、轮次 +1，保留候选映射、
+    ///     保存根与文件；下一轮从「尚未发出」重发。人工「重新校验」与未确认后的人工恢复共用。
+    /// </summary>
+    private static DownloadVerificationIntent ResetUnconfirmedRound(DownloadVerificationIntent intent) =>
+        ResetRoundEvidence(intent, DownloadVerificationStep.Requested) with
+        {
+            Round            = intent.Round + 1,
+            RequestState     = DownloadVerificationRequestState.NotSent,
+            SendFailureCount = 0,
+            LastRequestError = null
+        };
+
+    /// <summary>
+    ///     recheck 的发送与请求状态证据：发送前先做请求前门控（下载器已在校验/移动时同一轮不重发），
+    ///     捕获并落库请求前基线 + 请求状态（Unknown）与尝试锚点，再发送。发送抛 qB/网络异常时不冒泡、
+    ///     不消耗 IssuedCount，保留基线与锚点按采样间隔重试；连续失败达到上限转校验未确认。
+    ///     发送成功后才登记 IssuedCount/请求时间/启动窗口，并立即查询一次快照——快速校验可能在下一个
+    ///     采样间隔前就结束。立即观察只接受 checkingDL/checkingUP；checkingResumeData 只记录提示。
+    /// </summary>
+    private async Task IssueRecheckAndObserveAsync(
+        IQbittorrentSession session, DownloadTask task, DownloadVerificationIntent intent, CancellationToken ct)
+    {
+        var now      = timeProvider.GetUtcNow();
+        var snapshot = await TryFindSnapshotAsync(session, task.InfoHash, ct);
+
+        // 请求前门控：即将发送时下载器已有校验/移动，本轮绝不叠加请求，也不把这段外部校验归为本轮证据。
+        // 等待起点随意图持久化；同一轮不重发，超过校验启动窗口仍无法开始才转未确认（不隔离）。
+        if (snapshot is { Category: QbittorrentTorrentCategory.Checking } or { IsMoving: true })
+        {
+            if (IsResumeDataRawState(snapshot.RawState))
+                intent = intent with { ResumeDataSeenAtUtc = intent.ResumeDataSeenAtUtc ?? now };
+            var waitingSince = intent.PreRequestCheckingSinceUtc ?? now;
+            if (now - waitingSince >= timing.CheckingStartWindow)
+            {
+                await EnterVerificationUnconfirmedAsync(
+                    task, intent,
+                    "请求前下载器已有校验尚未结束，无法开始本轮校验；未改动任何文件，可重新校验或核对下载器。", ct);
+                return;
+            }
+
+            var waiting = intent with
+            {
+                Step                       = DownloadVerificationStep.Requested,
+                PreRequestCheckingSinceUtc = waitingSince
+            };
+            await SaveVerificationIntentAsync(task.Id, task.Status, waiting, ct);
+            await UpdateTaskAsync(task.Id, task.Status,
+                                  update =>
+                                  {
+                                      update.NextObservationAtUtc =
+                                          now + timing.PreparationSampleInterval;
+                                      update.PreparationStage = DownloadPreparationStage.AwaitingVerification;
+                                  }, ct);
+            logger.LogInformation("任务 {TaskId} 请求前门控：下载器已有校验/移动尚未结束，本轮不发送 recheck。",
+                                  task.Id);
+            return;
+        }
+
+        // 请求前基线包含 pieces_have/pieces_num：qB 在 recheck 请求后同步清零 pieces，再恢复为校验结果，
+        // 基线大于 0 是识别「请求已被该 hash 接收」的前提。查询失败不阻断发送，回退到快照基线见证。
+        var baselineProperties = await TryGetPropertiesAsync(session, task.InfoHash, ct);
+        var baseline = snapshot is null
+            ? null
+            : new DownloadVerificationBaseline(snapshot.Progress, snapshot.AmountLeft, snapshot.Completed,
+                                               snapshot.CompletionOn, snapshot.TotalSize, snapshot.Category,
+                                               snapshot.RawState, snapshot.IsMoving, now, now, intent.Round,
+                                               baselineProperties?.PiecesHave, baselineProperties?.PiecesNum);
+        var prepared = ResetRoundEvidence(intent, DownloadVerificationStep.Requested) with
+        {
+            RequestState          = DownloadVerificationRequestState.Unknown,
+            RecheckAttemptedAtUtc = now,
+            Baseline              = baseline,
+            LastRequestError      = null
+        };
+        await SaveVerificationIntentAsync(task.Id, task.Status, prepared, ct);
+
+        try
+        {
+            await session.RecheckTorrentAsync(task.InfoHash, ct);
+        }
+        catch (Exception exception) when (IsRecheckTransportFailure(exception, ct))
+        {
+            var failureCount = prepared.SendFailureCount + 1;
+            var failed = prepared with
+            {
+                RequestState     = DownloadVerificationRequestState.SendFailed,
+                SendFailureCount = failureCount,
+                LastRequestError = exception.Message
+            };
+            if (failureCount >= timing.MaxRecheckSendFailures)
+            {
+                await EnterVerificationUnconfirmedAsync(
+                    task, failed,
+                    "校验请求连续发送失败（网络或下载器异常，无法确认请求是否已被下载器接收），校验执行未确认；"
+                    + "未改动任何文件，可重新校验或核对下载器。", ct);
+                return;
+            }
+
+            await SaveVerificationIntentAsync(task.Id, task.Status, failed, ct);
+            await UpdateTaskAsync(task.Id, task.Status,
+                                  update =>
+                                  {
+                                      update.NextObservationAtUtc =
+                                          timeProvider.GetUtcNow() + timing.PreparationSampleInterval;
+                                      update.PreparationStage = DownloadPreparationStage.AwaitingVerification;
+                                  }, ct);
+            logger.LogWarning(exception,
+                              "任务 {TaskId} 的 recheck 请求发送失败（连续第 {Failures} 次），保留请求预算等待重试。",
+                              task.Id, failureCount);
+            return;
+        }
+
+        var issuedAt = timeProvider.GetUtcNow();
+        var issued = prepared with
+        {
+            RequestState           = DownloadVerificationRequestState.Sent,
+            SendFailureCount       = 0,
+            IssuedCount            = prepared.IssuedCount + 1,
+            RecheckRequestedAtUtc  = issuedAt,
+            DeadlineUtc            = issuedAt + timing.CheckingStartWindow
+        };
+
+        // 请求后立即读取 pieces：基线大于 0 而现在掉落（或明显下降）证明请求已被该 hash 接收并开始
+        // 重新校验——比 HTTP 200 与 checking 采样可靠。查询失败/为空不阻断，回退到基线见证。
+        var appliedProperties = await TryGetPropertiesAsync(session, task.InfoHash, ct);
+        if (appliedProperties is { } applied && baseline?.PiecesHave is { } baselinePieces &&
+            applied.PiecesHave < baselinePieces)
+            issued = issued with { RecheckAppliedAtUtc = issuedAt };
+
+        // 发出请求后的立即观察：只接受 checkingDL/checkingUP 作为本轮内容校验证据；checkingResumeData
+        // 只校验恢复数据，仅记录提示时间，不设 ObservedChecking。观察失败只告警，不退整轮。
+        var observed = await TryFindSnapshotAsync(session, task.InfoHash, ct);
+        if (observed is { Category: QbittorrentTorrentCategory.Checking })
+        {
+            if (IsDataCheckingRawState(observed.RawState))
+                issued = issued with
+                {
+                    ObservedChecking       = true,
+                    Step                   = DownloadVerificationStep.Observing,
+                    CheckStartedAtUtc      = issuedAt,
+                    LastCheckProgressAtUtc = issuedAt,
+                    LastCheckProgress      = observed.Progress,
+                    ObservedRawState       = observed.RawState
+                };
+            else if (IsResumeDataRawState(observed.RawState))
+                issued = issued with { ResumeDataSeenAtUtc = issuedAt };
+        }
+
+        await SaveVerificationIntentAsync(task.Id, task.Status, issued, ct);
+        await UpdateTaskAsync(task.Id, task.Status,
+                              update =>
+                              {
+                                  update.NextObservationAtUtc = issuedAt + timing.PreparationSampleInterval;
+                                  update.PreparationStage     = DownloadPreparationStage.AwaitingVerification;
+                              }, ct);
+        logger.LogInformation("任务 {TaskId} 已发出 recheck 请求（第 {Issued} 次，发送状态 {State}，立即观察{Observed}）。",
+                              task.Id, issued.IssuedCount, issued.RequestState,
+                              issued.ObservedChecking ? "到校验中" : "未进入校验");
+    }
+
+    /// <summary>请求发送期间的查询失败不得把整轮对账变成异常：按未观察到处理，由后续窗口与预算推进。</summary>
+    private async Task<TorrentSnapshot?> TryFindSnapshotAsync(
+        IQbittorrentSession session, string infoHash, CancellationToken ct)
+    {
+        try
+        {
+            return (await session.FindTorrentsAsync([infoHash], ct)).SingleOrDefault();
+        }
+        catch (Exception exception) when (IsRecheckTransportFailure(exception, ct))
+        {
+            logger.LogWarning(exception, "查询 recheck 请求后的种子快照失败，按未观察到校验阶段处理。");
+            return null;
+        }
+    }
+
+    /// <summary>pieces 属性查询失败不得阻断校验流程：返回 null，由调用方回退到快照基线证据。</summary>
+    private async Task<TorrentPropertiesSnapshot?> TryGetPropertiesAsync(
+        IQbittorrentSession session, string infoHash, CancellationToken ct)
+    {
+        try
+        {
+            return await session.GetTorrentPropertiesAsync(infoHash, ct);
+        }
+        catch (Exception exception) when (IsRecheckTransportFailure(exception, ct) ||
+                                          exception is NotSupportedException or InvalidOperationException)
+        {
+            logger.LogWarning(exception, "查询种子 pieces 属性失败，回退到快照基线证据。");
+            return null;
+        }
+    }
+
+    /// <summary>qB/网络传输失败：请求可能已被接收，业务不得据此断言未发送；用户取消不在此列。</summary>
+    private static bool IsRecheckTransportFailure(Exception exception, CancellationToken ct) =>
+        exception is QbittorrentException or HttpRequestException or IOException ||
+        (exception is OperationCanceledException && !ct.IsCancellationRequested);
+
+    /// <summary>
+    ///     普通采样只允许 checkingDL/checkingUP 证明本次数据校验；checkingResumeData 只校验恢复数据，
+    ///     不能当作内容校验证据。RawState 缺失（旧意图或未提供原始状态的会话）保持原有归属语义。
+    /// </summary>
+    private static bool IsDataCheckingRawState(string? rawState) =>
+        string.IsNullOrWhiteSpace(rawState)                                                    ||
+        string.Equals(rawState, "checkingDL", StringComparison.OrdinalIgnoreCase)              ||
+        string.Equals(rawState, "checkingUP", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>checkingResumeData 只校验恢复数据（添加/启动/重启产物），任何时刻都不作内容校验证据。</summary>
+    private static bool IsResumeDataRawState(string? rawState) =>
+        string.Equals(rawState, "checkingResumeData", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    ///     完成见证评估（先于补发）：请求前基线 + 本轮请求锚点 + 停止态快照的完整性方向变化。
+    ///     基线未完成 → 请求后停止态完成 = 本轮校验执行并补齐/确认数据；基线已完成 → 请求后完整性
+    ///     下降 = 本轮校验确实执行且发现缺失（此时不得登记复用，进入结果读取确认缺失）。
+    ///     RecheckApplied（pieces 掉落）可替代 Checking 观察作为「本轮执行」证据：之后停止态完整
+    ///     成立完成见证、停止态 pieces 不完整确认缺失。基线完整 → 仍完整不构成任何证据。
+    ///     见证只给出方向；逐文件结论仍由结果读取、映射一致性与稳定窗口核对决定。
+    /// </summary>
+    private async Task<string?> TryEvaluateCompletionEvidenceAsync(
+        IQbittorrentSession session, DownloadTask task, TorrentSnapshot snapshot,
+        DownloadVerificationIntent intent, CancellationToken ct)
+    {
+        if (intent.Baseline is not { } baseline || intent.RecheckAttemptedAtUtc is null) return null;
+        if (intent.RequestState is null or DownloadVerificationRequestState.NotSent) return null;
+        if (snapshot is not { Category: QbittorrentTorrentCategory.Stopped, IsMoving: false }) return null;
+        if (intent.TimeoutStopRequestedAtUtc is not null) return null;
+
+        // 共享写入风险未排除时不得用停止态完成充数：风险已记录、或有暂停记录但风险未知都保持不可证。
+        if (intent.UnverifiedWriteRisk == true || intent is { PauseAttempts: > 0, UnverifiedWriteRisk: null })
+            return null;
+
+        var properties = await TryGetPropertiesAsync(session, task.InfoHash, ct);
+        var piecesIncomplete = properties is { } value && value.PiecesNum > 0 && value.PiecesHave < value.PiecesNum;
+        if (IsStoppedComplete(snapshot))
+        {
+            // 基线完整 → 仍完整：无法把当前完成归因于本轮请求，保持未确认（原因文案另行区分）。
+            if (baseline.Progress >= 1.0 && intent.RecheckAppliedAtUtc is null) return null;
+            return DownloadVerificationCompletionEvidence.BaselineIncompleteToComplete;
+        }
+
+        // 完整性下降：基线已完成（progress<1 / amount_left 增大 / raw UP→DL），或 pieces 已证明
+        // 本轮执行且当前 pieces 不完整（部分恢复的校验结果）。
+        var directionDown =
+            (snapshot.Progress < 1.0 && IsBaselineComplete(baseline))                          ||
+            (snapshot.AmountLeft is > 0 && baseline.AmountLeft is not > 0)                     ||
+            (string.Equals(baseline.RawState, "stoppedUP", StringComparison.OrdinalIgnoreCase) &&
+             string.Equals(snapshot.RawState, "stoppedDL", StringComparison.OrdinalIgnoreCase)) ||
+            (intent.RecheckAppliedAtUtc is not null && piecesIncomplete);
+        return directionDown ? DownloadVerificationCompletionEvidence.BaselineCompleteToIncomplete : null;
+    }
+
+    /// <summary>停止态完成：raw stoppedUP，或进度满且剩余量归零（completion_on 只作辅助，不作必要条件）。</summary>
+    private static bool IsStoppedComplete(TorrentSnapshot snapshot) =>
+        string.Equals(snapshot.RawState, "stoppedUP", StringComparison.OrdinalIgnoreCase) ||
+        (snapshot.Progress >= 1.0 && snapshot.AmountLeft is null or 0);
+
+    /// <summary>请求前基线是否已是完整状态；用于区分「无法归因的完成」与「从未观察到校验」的未确认原因。</summary>
+    private static bool IsBaselineComplete(DownloadVerificationBaseline baseline) =>
+        baseline.Progress >= 1.0 && baseline.AmountLeft is null or 0;
+
+    /// <summary>
+    ///     进入校验未确认态：保持暂停、不隔离、不删种、不重下；保留候选映射与意图（Step=Unconfirmed），
+    ///     清空自动观察调度，等待人工「重新校验」。人工暂停标志原样保留——用户已要求停止时，
+    ///     未确认不得把任务改写为可自动重新校验的系统暂停。恢复/归档职责一律不在此处触发。
+    /// </summary>
+    private async Task EnterVerificationUnconfirmedAsync(
+        DownloadTask task, DownloadVerificationIntent intent, string error, CancellationToken ct)
+    {
+        var unconfirmed = VoidStabilitySamples(intent) with
+        {
+            Step                = DownloadVerificationStep.Unconfirmed,
+            DeadlineUtc         = null,
+            MovingObservedAtUtc = null
+        };
+        logger.LogWarning("任务 {TaskId} 复用校验未确认：{Error}", task.Id, error);
+        await using var db      = await dbContextFactory.CreateDbContextAsync(ct);
+        var             tracked = await db.DownloadTasks.SingleAsync(value => value.Id == task.Id, ct);
+        if (tracked.Status is not (DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused)) return;
+
+        tracked.Status               = DownloadTaskStatus.Paused;
+        tracked.IsSystemPaused       = true;
+        tracked.PreparationStage     = DownloadPreparationStage.AwaitingVerification;
+        tracked.VerificationIntent   = unconfirmed.ToJson();
+        tracked.FailedStep           = "复用校验";
+        tracked.Error                = error.Length > 1000 ? error[..1000] : error;
+        tracked.NextObservationAtUtc = null;
+        await db.SaveChangesAsync(ct);
+    }
 
     /// <summary>
     ///     活跃校验的推进驱动。快照无法区分「谁启动了运行」，校验期出现无法解释的运行状态一律先暂停；
@@ -1298,10 +1663,42 @@ public sealed class DownloadService(
                                                 TorrentSnapshot?    snapshot, DownloadVerificationIntent intent,
                                                 CancellationToken   ct)
     {
+        // 校验未确认是等待人工「重新校验」的终点，不是自动推进态：空闲对账不得重发 recheck、
+        // 重置证据或绕过人工确认，否则任务会在无人工介入时反复进退。
+        if (intent.Step == DownloadVerificationStep.Unconfirmed) return;
         var loaded = await LoadTaskWithFilesAsync(task.Id, ct);
         if (loaded?.Status is not (DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused)) return;
         task = loaded;
         var readyToRun = intent.Step == DownloadVerificationStep.ReadyToRun;
+
+        // 重启作废：意图来自其他进程实例时，本轮请求前基线、校验观察、完成见证与请求锚点全部作废
+        // （保留候选映射），回到「尚未发出」，下一轮重新捕获基线并重发。重启后的完成状态可能来自
+        // 旧 resume data，不得凭旧基线判定完成，也不得凭重启后的部分进度判定缺失。
+        if (intent.ObserverInstanceId is { } owner && owner != processInstanceId)
+        {
+            if (intent.Step == DownloadVerificationStep.Mapping)
+            {
+                // 映射阶段尚未发出 recheck：只接管实例归属，映射与首次请求按原流程继续。
+                var adopted = intent with { ObserverInstanceId = processInstanceId };
+                await SaveVerificationIntentAsync(task.Id, task.Status, adopted, ct);
+            }
+            else
+            {
+                var invalidated = ResetRoundEvidence(intent, DownloadVerificationStep.Requested) with
+                {
+                    ObserverInstanceId = processInstanceId,
+                    RequestState       = DownloadVerificationRequestState.NotSent,
+                    SendFailureCount   = 0,
+                    LastRequestError   = null
+                };
+                await SaveVerificationIntentAsync(task.Id, task.Status, invalidated, ct);
+                await DeferObservationAsync(task.Id, task.Status,
+                                            timeProvider.GetUtcNow() + timing.PreparationSampleInterval, ct);
+                logger.LogInformation(
+                    "任务 {TaskId} 的校验意图来自其他应用实例，本轮证据已作废，下一轮重新捕获基线并重发。", task.Id);
+                return;
+            }
+        }
 
         if (snapshot is null)
         {
@@ -1416,8 +1813,10 @@ public sealed class DownloadService(
 
             // 已作废轮次的残留校验不可归属任何请求（作废未伴随停止请求记录时首遇即发出）：
             // 停止确认的期限与预算接管——窗口内等待、有界补发、耗尽受阻；停稳后由补发路径
-            // 重新发起可信校验，不得无限等待一个已作废的校验自然结束。
+            // 重新发起可信校验，不得无限等待一个已作废的校验自然结束。重新校验待发/发送结果未知
+            // 时不能把 Checking 当成已作废残留，否则会误停可能正是本次请求的校验。
             if (intent is { Step: DownloadVerificationStep.Requested, RecheckRequestedAtUtc: null } &&
+                intent.RequestState is null or DownloadVerificationRequestState.Sent           &&
                 intent.TimeoutStopRequestedAtUtc is null)
             {
                 await IssueTimeoutStopAsync();
@@ -1425,15 +1824,18 @@ public sealed class DownloadService(
             }
 
             // 请求前观察到的外部校验不能充当本轮请求的完成证据：只归属本轮请求的 Checking 记为证据。
+            // checkingResumeData 不是内容校验证据；无原始状态的旧意图/会话保持原有语义。
             if (intent.Step != DownloadVerificationStep.Mapping &&
-                intent is { IssuedCount: > 0, RecheckRequestedAtUtc: not null, ObservedChecking: false })
+                intent is { IssuedCount: > 0, RecheckRequestedAtUtc: not null, ObservedChecking: false } &&
+                IsDataCheckingRawState(snapshot.RawState))
                 intent = intent with
                 {
                     ObservedChecking       = true,
                     Step                   = DownloadVerificationStep.Observing,
                     CheckStartedAtUtc      = intent.CheckStartedAtUtc ?? now,
                     LastCheckProgressAtUtc = intent.LastCheckProgressAtUtc ?? now,
-                    LastCheckProgress      = intent.LastCheckProgress ?? snapshot.Progress
+                    LastCheckProgress      = intent.LastCheckProgress ?? snapshot.Progress,
+                    ObservedRawState       = snapshot.RawState
                 };
 
             // 校验进行中：退出校验前积累的稳定样本已作废（再次校验后的旧结果不再有效）。
@@ -1603,58 +2005,74 @@ public sealed class DownloadService(
                 return;
             }
 
-            // 映射确认完成：先落库本轮请求记录（作废上一轮观察与稳定样本），再发出 recheck。
-            var requested = ResetRoundEvidence(intent, DownloadVerificationStep.Requested) with
-            {
-                IssuedCount           = intent.IssuedCount + 1,
-                RecheckRequestedAtUtc = timeProvider.GetUtcNow(),
-                DeadlineUtc           = timeProvider.GetUtcNow() + timing.CheckingStartWindow
-            };
-            await SaveVerificationIntentAsync(task.Id, task.Status, requested, ct);
-            await UpdateTaskAsync(task.Id, task.Status,
-                                  update => update.PreparationStage = DownloadPreparationStage.AwaitingVerification,
-                                  ct);
-            await session.RecheckTorrentAsync(task.InfoHash, ct);
+            // 映射确认完成：统一走「先落库请求状态、发送、立即观察」路径（首次与补发共用）。
+            await IssueRecheckAndObserveAsync(session, task, intent, ct);
             return;
         }
 
         if (!intent.ObservedChecking)
         {
-            // 尚未观察到 Checking：校验启动窗口内持续快速观察（不因非 Checking 立即下结论，也不睡到窗口末）；
-            // 窗口过期且有界预算未耗尽时补发一次并重置本轮证据；仍无则保留「校验执行未确认」——
-            // 不凭重复 100% 证明校验执行，也不因漏采 Checking 断言数据损坏、删除数据或自动重新下载。
-            if (intent.DeadlineUtc is { } deadline && now < deadline)
+            // 先见证、后补发：请求前基线到请求后停止态的完整性方向变化（或 pieces 掉落证明请求已
+            // 被接收）可证明本轮校验已执行，快速校验完全躲过状态采样时也无需补发——补发会让新基线
+            // 变成「已完成」，永久失去见证。
+            var evidence = await TryEvaluateCompletionEvidenceAsync(session, task, snapshot, intent, ct);
+            if (evidence is not null)
+            {
+                intent = intent with
+                {
+                    ObservedChecking        = true,
+                    Step                    = DownloadVerificationStep.Observing,
+                    CompletionEvidenceKind  = evidence,
+                    CompletionEvidenceAtUtc = now,
+                    CheckStartedAtUtc       = intent.CheckStartedAtUtc ?? intent.RecheckRequestedAtUtc ?? now,
+                    LastCheckProgressAtUtc  = intent.LastCheckProgressAtUtc ?? now,
+                    LastCheckProgress       = intent.LastCheckProgress ?? snapshot.Progress
+                };
+                await SaveVerificationIntentAsync(task.Id, task.Status, intent, ct);
+                logger.LogInformation(
+                    "任务 {TaskId} 未观察到校验阶段，凭请求前基线与停止态完整性变化（{Evidence}）确认本轮校验已执行。",
+                    task.Id, evidence);
+            }
+
+            // 人工重新校验后尚未发出：下一轮立即重发，不再等待启动窗口。
+            else if (intent.RequestState == DownloadVerificationRequestState.NotSent)
+            {
+                await IssueRecheckAndObserveAsync(session, task, intent, ct);
+                return;
+            }
+
+            // 尚未观察到 Checking 且未取得见证：校验启动窗口内持续快速观察（不因非 Checking 立即下结论，
+            // 也不睡到窗口末）；窗口过期且有界预算未耗尽时补发一次并重置本轮证据；仍无则保留「校验执行
+            // 未确认」——不凭重复 100% 证明校验执行，也不因漏采 Checking 断言数据损坏、删除数据或自动重新下载。
+            else if (intent.DeadlineUtc is { } deadline && now < deadline)
             {
                 await DeferObservationAsync(task.Id, task.Status, now + timing.PreparationSampleInterval, ct);
                 return;
             }
-
-            if (intent.IssuedCount < timing.MaxRecheckIssues)
+            else if (intent.IssuedCount < timing.MaxRecheckIssues)
             {
-                var reissued = ResetRoundEvidence(intent, DownloadVerificationStep.Requested) with
-                {
-                    IssuedCount           = intent.IssuedCount + 1,
-                    RecheckRequestedAtUtc = now,
-                    DeadlineUtc           = now + timing.CheckingStartWindow
-                };
-                await SaveVerificationIntentAsync(task.Id, task.Status, reissued, ct);
-                await session.RecheckTorrentAsync(task.InfoHash, ct);
+                await IssueRecheckAndObserveAsync(session, task, intent, ct);
                 return;
             }
-
-            await MarkFailedAsync(task.Id, task.Status, "复用校验",
-                                  "多次请求校验后仍未观察到校验阶段，本轮校验执行未确认，已停止自动推进；请核对下载器后人工重试（重试将放弃复用并转为独立下载）。",
-                                  ct);
-            return;
+            else
+            {
+                // 原因文案区分：基线已完整时当前完成无法归因于本轮请求，与「从未观察到校验」分别提示。
+                var unconfirmedError = intent.Baseline is { } baseline && IsBaselineComplete(baseline)
+                    ? "请求前数据已是完整状态，无法把当前完成归因于本轮校验请求，本轮校验执行未确认；"
+                      + "未改动任何文件，可重新校验或核对下载器。"
+                    : "多次请求校验后仍未观察到校验阶段，校验执行未确认；未改动任何文件，可重新校验或核对下载器。";
+                await EnterVerificationUnconfirmedAsync(task, intent, unconfirmedError, ct);
+                return;
+            }
         }
 
         // 本轮校验曾被主动停止（无进展或单轮上限到期后发出的停止请求）：校验执行情况已不可确认——
         // 停止后读到的文件结果可能是中断时刻的部分结果或旧快照，既不能登记复用，也不能确认缺失。
         if (!readyToRun && intent is { ObservedChecking: true, TimeoutStopRequestedAtUtc: not null })
         {
-            await MarkFailedAsync(task.Id, task.Status, "复用校验",
-                                  "校验因到期被主动停止，本轮校验执行未确认，已停止自动推进；请核对下载器后人工重试（重试将放弃复用并转为独立下载）。",
-                                  ct);
+            await EnterVerificationUnconfirmedAsync(
+                task, intent,
+                "校验因到期被主动停止，本轮校验执行未确认；未改动任何文件，可重新校验或核对下载器。", ct);
             return;
         }
 
@@ -1758,8 +2176,9 @@ public sealed class DownloadService(
             {
                 if (now - (intent.StabilityObservedAtUtc ?? now) >= timing.ResultStabilityMaxWindow)
                 {
-                    await MarkFailedAsync(task.Id, task.Status, "复用校验",
-                                          "校验后的文件结果长时间无法稳定确认，已停止自动推进，请核对下载器后人工重试。", ct);
+                    await EnterVerificationUnconfirmedAsync(
+                        task, intent,
+                        "校验后的文件结果长时间无法稳定确认，未改动任何文件，可重新校验或核对下载器。", ct);
                     return;
                 }
 
@@ -1808,6 +2227,8 @@ public sealed class DownloadService(
             var retiredOwnerIds = new List<Guid>();
             if (tracked.SubjectId is { } verificationSubjectId)
             {
+                // 复用校验只切换本任务来源登记的待完成优胜；其他来源的 Pending 与现任不参与。
+                var sourceScope = SourceScopes.FromSiteSource(tracked.SiteSource);
                 var verifiedFileIds = tracked.Files
                                              .Where(file => file.VerificationOutcome ==
                                                             DownloadFileVerificationOutcomes.ReusedVerified)
@@ -1815,6 +2236,7 @@ public sealed class DownloadService(
                                              .ToHashSet();
                 var pendingRows = await db.EpisodeVersions
                                           .Where(row => row.SubjectId          == verificationSubjectId &&
+                                                        row.SourceScope        == sourceScope        &&
                                                         row.PendingVideoFileId != null)
                                           .ToListAsync(ct);
                 var previousIncumbents = new List<Guid>();

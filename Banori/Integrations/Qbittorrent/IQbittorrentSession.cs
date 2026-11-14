@@ -16,7 +16,11 @@ public enum QbittorrentTorrentCategory
     Unknown
 }
 
-/// <summary>对账所需的种子快照，与 qBittorrent 模型解耦。</summary>
+/// <summary>
+///     对账所需的种子快照，与 qBittorrent 模型解耦。除业务类别外保留部分原始字段：
+///     RawState 用于区分数据校验与恢复数据校验，其余字段只用于解释与交叉核对，
+///     不单独作为「本轮 recheck 已完成」的证据。
+/// </summary>
 public sealed record TorrentSnapshot(
     string                     Hash,
     string                     Name,
@@ -25,7 +29,26 @@ public sealed record TorrentSnapshot(
     long                       TotalSize,
     string                     SavePath,
     IReadOnlyList<string>      Tags,
-    bool                       IsMoving = false);
+    bool                       IsMoving       = false,
+    string?                    RawState       = null,
+    long?                      AmountLeft     = null,
+    long?                      Completed      = null,
+    DateTimeOffset?            CompletionOn   = null,
+    string?                    ContentPath    = null,
+    DateTimeOffset?            AddedOn        = null,
+    DateTimeOffset?            LastActivity   = null,
+    TimeSpan?                  SeedingTime    = null);
+
+/// <summary>
+///     种子属性快照（torrents/properties 的子集）：pieces_have 在 recheck 请求后被 qB 同步清零再恢复，
+///     是「本轮 recheck 已被该 hash 接收」的最可靠信号；不受状态刷新缓存影响。
+/// </summary>
+public sealed record TorrentPropertiesSnapshot(
+    long             PiecesHave,
+    long             PiecesNum,
+    long             TotalSize,
+    long             TotalDone,
+    DateTimeOffset?  CompletionDate);
 
 /// <summary>qB 文件身份；Index 是协议返回的稳定 index，不是列表顺序。</summary>
 /// <param name="Progress">文件级下载进度（0-1）；校验期间可能临时波动。</param>
@@ -79,9 +102,18 @@ public interface IQbittorrentSession : IAsyncDisposable
                                       bool   download, CancellationToken        cancellationToken = default) =>
         throw new NotSupportedException("会话不支持设置文件下载选择。");
 
+    /// <summary>读取种子属性快照（pieces_have/pieces_num 等）；失败或种子不存在返回 null，调用方回退到快照基线证据。</summary>
+    Task<TorrentPropertiesSnapshot?> GetTorrentPropertiesAsync(
+        string infoHash, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("会话不支持种子属性查询。");
+
     /// <summary>请求重新校验种子已有数据（recheck）。校验是异步阶段，结果以快照的校验状态与进度为准。</summary>
     Task RecheckTorrentAsync(string infoHash, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("会话不支持重新校验。");
+
+    /// <summary>请求向 tracker 重新通告种子；只影响做种可达性，与本地数据完整性正交，失败不得否定校验结果。</summary>
+    Task ReannounceAsync(string infoHash, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("会话不支持重新通告 tracker。");
 
     /// <summary>请求移动整个种子的保存目录；调用成功不代表移动完成，应随后确认种子快照。</summary>
     Task SetLocationAsync(string infoHash, string savePath, CancellationToken cancellationToken = default) =>
