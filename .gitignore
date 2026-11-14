@@ -10,3 +10,11 @@ debug.log
 .zcode/
 .code-review-graph/
 .zcodeignore
+
+# E2E 测试运行产物（s1/s2/smoke-tmp 整目录忽略）
+.e2e/s1/
+.e2e/s2/
+.e2e/smoke-tmp/
+# smoke 仅保留人工记录 qb-notes.md，其余产物忽略
+.e2e/smoke/*
+!.e2e/smoke/qb-notes.md

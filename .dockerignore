@@ -2,6 +2,7 @@
 .github
 .vs
 .zcode
+.e2e
 **/bin
 **/obj
 **/TestResults
