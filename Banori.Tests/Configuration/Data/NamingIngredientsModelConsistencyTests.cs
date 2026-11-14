@@ -60,7 +60,10 @@ public sealed class NamingIngredientsModelConsistencyTests
 
         var migration = assembly.Migrations.Keys.Last();
         // 迁移序列里必须同时能看到文件表与其后的逐集登记表迁移；新增迁移后更新这里的最新迁移名。
-        Assert.Contains("AddDownloadTaskObservedCategory", migration);
+        // 新增 AddDownloadRunRecovery（启动恢复子状态列）后，最新迁移从 AddSourceScopes 顺延。
+        Assert.Contains("AddDownloadRunRecovery", migration);
+        Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddSourceScopes"));
+        Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddDownloadTaskObservedCategory"));
         Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddDownloadExternalStopProvenance"));
         Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddDataVerificationAndArchiveEvidence"));
         var fileEntity = db.Model.FindEntityType(typeof(DownloadTaskFile));
@@ -70,12 +73,36 @@ public sealed class NamingIngredientsModelConsistencyTests
                                                         .SequenceEqual(["DownloadTaskId", "FileIndex"]));
         Assert.Equal(DeleteBehavior.Cascade, Assert.Single(fileEntity.GetForeignKeys()).DeleteBehavior);
 
-        // 每集登记表：Subject + 集数唯一，文件引用不设外键（承接回退由清理逻辑负责）。
+        // 每集登记表：Subject + 集数 + 来源作用域唯一，文件引用不设外键（承接回退由清理逻辑负责）。
         var episodeEntity = db.Model.FindEntityType(typeof(EpisodeVersion));
         Assert.NotNull(episodeEntity);
         Assert.Contains(episodeEntity.GetIndexes(),
                         index => index.IsUnique && index.Properties.Select(property => property.Name)
-                                                        .SequenceEqual(["SubjectId", "Episode"]));
+                                                        .SequenceEqual(["SubjectId", "Episode", "SourceScope"]));
         Assert.Empty(episodeEntity.GetForeignKeys());
+
+        // 预选按来源拆组：同组可以每个来源各一行；FeedItem 只加普通索引供来源过滤。
+        var candidateEntity = db.Model.FindEntityType(typeof(CandidateSelection));
+        Assert.NotNull(candidateEntity);
+        Assert.Contains(candidateEntity.GetIndexes(),
+                        index => index.IsUnique && index.Properties.Select(property => property.Name)
+                                                        .SequenceEqual(["SubjectId", "MediaType", "Episode", "SourceScope"]));
+        var feedEntity = db.Model.FindEntityType(typeof(FeedItem));
+        Assert.NotNull(feedEntity);
+        Assert.Contains(feedEntity.GetIndexes(),
+                        index => !index.IsUnique && index.Properties.Select(property => property.Name)
+                                                         .SequenceEqual(["SubjectId", "MediaType", "Episode", "SourceScope"]));
+
+        var sourceScopeProperties = db.Model.GetEntityTypes()
+                                            .SelectMany(entity => entity.GetProperties())
+                                            .Where(property => property.Name == "SourceScope")
+                                            .ToList();
+        Assert.Equal(3, sourceScopeProperties.Count);
+        Assert.All(sourceScopeProperties, property =>
+        {
+            Assert.Equal(50, property.GetMaxLength());
+            Assert.False(property.IsNullable);
+            Assert.Equal("(legacy)", property.GetDefaultValue());
+        });
     }
 }

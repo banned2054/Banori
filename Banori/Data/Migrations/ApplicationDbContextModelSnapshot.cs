@@ -285,6 +285,9 @@ namespace Banori.Data.Migrations
                     b.Property<Guid?>("ReplacesTaskId")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("RunRecovery")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("SavePath")
                         .IsRequired()
                         .HasMaxLength(1000)

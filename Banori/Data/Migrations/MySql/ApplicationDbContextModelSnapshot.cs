@@ -290,6 +290,9 @@ namespace Banori.Data.Migrations.MySql
                     b.Property<Guid?>("ReplacesTaskId")
                         .HasColumnType("char(36)");
 
+                    b.Property<string>("RunRecovery")
+                        .HasColumnType("longtext");
+
                     b.Property<string>("SavePath")
                         .IsRequired()
                         .HasMaxLength(1000)

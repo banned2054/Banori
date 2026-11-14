@@ -151,6 +151,8 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.Property(item => item.PreparationStage).HasConversion<string>().HasMaxLength(32)
                   .HasDefaultValue(DownloadPreparationStage.None);
             entity.Property(item => item.VerificationIntent);
+            // 启动恢复子状态：与 VerificationIntent 同形（可空 JSON、无长度限制、无默认值、无索引）。
+            entity.Property(item => item.RunRecovery);
             entity.Property(item => item.IsolationState).HasConversion<string>().HasMaxLength(32)
                   .HasDefaultValue(DownloadIsolationState.None);
             entity.Property(item => item.ArchiveReview);

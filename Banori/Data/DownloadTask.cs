@@ -83,6 +83,14 @@ public sealed class DownloadTask
     /// </summary>
     public string? VerificationIntent { get; set; }
 
+    /// <summary>
+    ///     完成/验证后的启动恢复子状态 JSON：记录 Resume 请求是否发出、响应是否未知、是否观察到运行、
+    ///     有界重试次数与最后观察。Purpose=Seeding 只出现在 Completed；Purpose=ContinueDownload 只出现在
+    ///     已验证但内容未全部完成的任务。数据完整性由 Status/CompletedAtUtc/VerificationOutcome 表达，
+    ///     本字段的任何失败都不得改写状态或 FailedStep/Error。
+    /// </summary>
+    public string? RunRecovery { get; set; }
+
     /// <summary>隔离流程状态（放弃复用、转为任务专属根独立下载）；默认 None。</summary>
     public DownloadIsolationState IsolationState { get; set; }
 
