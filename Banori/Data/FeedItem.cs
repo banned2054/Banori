@@ -1,4 +1,5 @@
 using Banori.Core.Rules;
+using Banori.Core.Torrents;
 using Banori.Features.Subscriptions;
 
 namespace Banori.Data;
@@ -42,6 +43,12 @@ public sealed class FeedItem
 
     /// <summary>命名要素 JSON：生成 NamingPreview 时的模板与令牌值；登记下载任务时随任务落库。</summary>
     public string? NamingIngredients { get; set; }
+
+    /// <summary>
+    ///     来源作用域：由订阅 RSS 地址推导，同来源的条目才在同一竞争组内比较。
+    ///     迁移前的旧行保持 <see cref="SourceScopes.Legacy" />，回填服务证明来源后才迁出。
+    /// </summary>
+    public string SourceScope { get; set; } = SourceScopes.Legacy;
 
     public SelectionOutcome SelectionOutcome { get; set; }
 }

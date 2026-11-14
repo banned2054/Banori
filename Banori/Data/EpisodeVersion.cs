@@ -1,7 +1,9 @@
+using Banori.Core.Torrents;
+
 namespace Banori.Data;
 
 /// <summary>
-///     每集版本登记：一个 Subject + 集数一行，独立于任务级替换字段记录「当前可播放现任」与
+///     每集版本登记：一个 Subject + 集数 + 来源作用域一行，独立于任务级替换字段记录「当前可播放现任」与
 ///     「待完成优胜」两个视频文件引用。新任务胜出时写 Pending；新任务完成时把 Incumbent 切到
 ///     新文件并保留 Superseded 供单级回退。任务可以只被承接部分集数，反之一个旧任务的集数可
 ///     分别由多个新任务接替；引用不设外键，任务删除时由清理逻辑显式回退。
@@ -17,6 +19,9 @@ public sealed class EpisodeVersion
 
     /// <summary>记录时的媒体类型快照（SingleEpisode/Movie 等），仅作解释，不参与身份匹配。</summary>
     public string MediaType { get; set; } = string.Empty;
+
+    /// <summary>来源作用域：每个来源各自一行，三槽指针只在同源行内读写；旧行保持 <see cref="SourceScopes.Legacy" />。</summary>
+    public string SourceScope { get; set; } = SourceScopes.Legacy;
 
     /// <summary>当前可播放现任的视频文件（所属任务已完成且整理成功）。</summary>
     public Guid? IncumbentVideoFileId { get; set; }

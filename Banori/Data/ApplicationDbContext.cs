@@ -1,3 +1,4 @@
+using Banori.Core.Torrents;
 using Banori.Features.Downloads;
 using Banori.Features.Subscriptions;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
@@ -115,11 +116,16 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.Property(item => item.Reason).HasMaxLength(1000).IsRequired();
             entity.Property(item => item.NamingPreview).HasMaxLength(1000);
             entity.Property(item => item.NamingIngredients);
+            // 来源维度：旧行由默认值落入 legacy 隔离域；未知 RSS 另有哨兵，写入永不使用 NULL。
+            entity.Property(item => item.SourceScope).HasMaxLength(50).IsRequired()
+                  .HasDefaultValue(SourceScopes.Legacy);
             // 显式默认值：存量行升级时必须得到合法枚举值，空字符串会破坏字符串转换读取。
             entity.Property(item => item.SelectionOutcome).HasConversion<string>().HasMaxLength(32)
                   .HasDefaultValue(SelectionOutcome.None);
             entity.HasIndex(item => new { item.SubscriptionId, item.StableId }).IsUnique();
             entity.HasIndex(item => new { item.SubjectId, item.Episode, item.Status });
+            // 同来源的条目过滤；旧索引保留供既有查询继续使用。
+            entity.HasIndex(item => new { item.SubjectId, item.MediaType, item.Episode, item.SourceScope });
             entity.HasOne(item => item.Subscription).WithMany(item => item.FeedItems)
                   .HasForeignKey(item => item.SubscriptionId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(item => item.Subject).WithMany(item => item.FeedItems)
@@ -200,8 +206,11 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.HasKey(item => item.Id);
             entity.Property(item => item.MediaType).HasMaxLength(50).IsRequired();
             entity.Property(item => item.Episode).HasPrecision(18, 4);
+            // 来源维度：每个来源各自一行，三槽指针只在同源行内读写。
+            entity.Property(item => item.SourceScope).HasMaxLength(50).IsRequired()
+                  .HasDefaultValue(SourceScopes.Legacy);
             // 文件引用不设外键：承接方任务删除时由清理逻辑回退引用，而不是级联清除登记。
-            entity.HasIndex(item => new { item.SubjectId, item.Episode }).IsUnique();
+            entity.HasIndex(item => new { item.SubjectId, item.Episode, item.SourceScope }).IsUnique();
         });
 
         builder.Entity<CandidateSelection>(entity =>
@@ -212,8 +221,11 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.Property(item => item.RankingBasis).HasMaxLength(500).IsRequired();
             entity.Property(item => item.NamingSnapshot).HasMaxLength(1000).IsRequired();
             entity.Property(item => item.IntentFailedReason).HasMaxLength(1000);
+            // 来源维度：每个来源各自保留一条当前优胜选择；旧行保持 legacy 隔离域。
+            entity.Property(item => item.SourceScope).HasMaxLength(50).IsRequired()
+                  .HasDefaultValue(SourceScopes.Legacy);
             // 每个同集分组只保留一条当前优胜选择。
-            entity.HasIndex(item => new { item.SubjectId, item.MediaType, item.Episode }).IsUnique();
+            entity.HasIndex(item => new { item.SubjectId, item.MediaType, item.Episode, item.SourceScope }).IsUnique();
             entity.HasIndex(item => item.IntentTaskId);
             entity.HasOne(item => item.Subject).WithMany()
                   .HasForeignKey(item => item.SubjectId).OnDelete(DeleteBehavior.Cascade);

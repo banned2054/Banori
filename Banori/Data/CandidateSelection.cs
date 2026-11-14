@@ -1,7 +1,9 @@
+using Banori.Core.Torrents;
+
 namespace Banori.Data;
 
 /// <summary>
-///     同集组的当前优胜选择，每组一条（组键唯一）。
+///     同集组的当前优胜选择，每个来源每组一条（组键含来源作用域）。
 ///     IntentTaskId 为空表示下载意图尚未登记，是“选择已落库、意图未创建”中断窗口的恢复依据；
 ///     IntentFailedReason 非空表示登记失败待人工处理，恢复扫描不再自动重试。
 /// </summary>
@@ -17,6 +19,9 @@ public sealed class CandidateSelection
     public string MediaType { get; set; } = string.Empty;
 
     public decimal Episode { get; set; }
+
+    /// <summary>组键的来源维度：每个来源各自保留一条当前优胜选择；旧行保持 <see cref="SourceScopes.Legacy" />。</summary>
+    public string SourceScope { get; set; } = SourceScopes.Legacy;
 
     public Guid WinnerFeedItemId { get; set; }
 

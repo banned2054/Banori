@@ -115,14 +115,15 @@ public sealed class RemoveOneShotSubscriptionMigrationTests
                     Id     = Guid.NewGuid(), SubscriptionId              = oneShotSubscriptionId,
                     Status = RefreshWorkStatus.Succeeded, RequestedAtUtc = timestamp
                 });
-                db.CandidateSelections.Add(new CandidateSelection
-                {
-                    Id               = Guid.NewGuid(), SubjectId = 42, MediaType = "SingleEpisode", Episode = 1,
-                    WinnerFeedItemId = oneShotItemWithTaskId, RuleVersion = 1, RankingBasis = "测试优胜",
-                    NamingSnapshot   = "命名快照", SelectedAtUtc = timestamp
-                });
                 // 先落库 EF 实体（订阅条目等是任务行的外键来源）。
                 await db.SaveChangesAsync();
+                // 当前模型已映射 SourceScope，而存量库停在迁移之前：预选行同样用原生 SQL 复原。
+                await db.Database.ExecuteSqlRawAsync("""
+                                                     INSERT INTO "CandidateSelections"
+                                                         ("Id", "SubjectId", "MediaType", "Episode", "WinnerFeedItemId",
+                                                          "RuleVersion", "RankingBasis", "NamingSnapshot", "SelectedAtUtc")
+                                                     VALUES ({0}, 42, 'SingleEpisode', 1, {1}, 1, '测试优胜', '命名快照', {2})
+                                                     """, Guid.NewGuid(), oneShotItemWithTaskId, timestamp);
                 // 当前模型已映射 ActiveFlag 计算列而存量库没有该列，任务行同样用原生 SQL 复原。
                 await db.Database.ExecuteSqlRawAsync("""
                                                      INSERT INTO "DownloadTasks"
