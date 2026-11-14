@@ -363,7 +363,7 @@ public sealed partial class DownloadVerificationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Verification_ResumeFailureKeepsRecoverableIntentAndEvidence(bool invalidate)
+    public async Task Verification_ResumeFailureKeepsRecoverableRunAndEvidence(bool invalidate)
     {
         using var harness = await VerificationHarness.CreateAsync();
         var       taskId  = await CreatePartialCandidateAsync(harness);
@@ -380,30 +380,45 @@ public sealed partial class DownloadVerificationTests
             session => session.ResumeException = new IOException("Resume interrupted");
         await harness.ReconcileAsync();
         var held = await harness.GetTaskAsync(taskId);
-        Assert.Equal(DownloadVerificationStep.ReadyToRun,
-                     DownloadVerificationIntent.FromJson(held.VerificationIntent)!.Step);
+        // 启动状态与数据完整性分离：Resume 失败绝不误标用户暂停、绝不改写验证证据；
+        // 候选已验证（意图收尾），启动转入 RunRecovery 等待观察确认与有界重试。
+        Assert.Equal(DownloadTaskStatus.Downloading, held.Status);
         Assert.True(held.IsSystemPaused);
+        Assert.False(held.IsUserPaused);
+        Assert.Null(held.VerificationIntent);
+        var run = DownloadRunRecovery.FromJson(held.RunRecovery);
+        Assert.NotNull(run);
+        Assert.Equal(DownloadRunPurposes.ContinueDownload, run.Purpose);
+        Assert.Equal(DownloadRunStates.ResponseUnknown, run.State);
         harness.Factory.SessionConfigurator = null;
         if (invalidate)
         {
+            // 布局随后被外部改动：启动恢复路径绝不借此触发隔离、删除或重新校验——
+            // 那是普通对账的职责；启动恢复只更新自己的记录，文件与证据保持原样。
             harness.Store.FileIdentities[task.InfoHash] = harness.Store.FileIdentities[task.InfoHash]
                                                                  .Select(file => file with { Size = 999 }).ToList();
-            await harness.ReconcileAsync();
-            Assert.Equal(DownloadIsolationState.Deleting, (await harness.GetTaskAsync(taskId)).IsolationState);
-            for (var i = 0; i < 7; i++) await harness.ReconcileAsync();
-            await using var db = await harness.CreateDbContextAsync();
-            Assert.Equal(DownloadFileVerificationOutcomes.ReuseUnverified,
-                         (await db.DownloadTaskFiles.SingleAsync(f => f.DownloadTaskId == taskId && f.FileIndex == 0))
-                        .VerificationOutcome);
-            Assert.Equal(TaskRootOf(harness, taskId), (await harness.GetTaskAsync(taskId)).SavePath);
-            Assert.Contains(harness.Store.RenameFileCalls,
-                            call => call.Hash == task.InfoHash && call.NewPath.StartsWith("Media/Anime/"));
+            for (var i = 0; i < 6; i++) await harness.ReconcileAsync();
+            var stalled = await harness.GetTaskAsync(taskId);
+            Assert.NotEqual(DownloadIsolationState.Deleting, stalled.IsolationState);
+            Assert.Null(stalled.FailedStep);
+            Assert.Single(harness.Store.RecheckCalls);
+            Assert.DoesNotContain(harness.Store.DeleteCalls, call => call.Hash == task.InfoHash);
+            // 后续一次自动重试成功即确认运行并清空记录（回普通下载跟踪）；未确认时保留待恢复记录。
+            var stalledRun = DownloadRunRecovery.FromJson(stalled.RunRecovery);
+            Assert.True(stalledRun is null ||
+                        stalledRun.State is DownloadRunStates.FailedRetryable or DownloadRunStates.DownloaderStopped);
+            Assert.True(stalled.RunRecovery is null ? !stalled.IsSystemPaused : stalled.IsSystemPaused);
         }
 
-        await harness.ReconcileAsync();
-        Assert.Null((await harness.GetTaskAsync(taskId)).VerificationIntent);
-        Assert.Single(harness.Store.ResumeCalls);
+        for (var i = 0; i < 3; i++) await harness.ReconcileAsync();
+        var settled = await harness.GetTaskAsync(taskId);
+        // 有界自动重试（预算 ≤ MaxRunResumeAttempts）耗尽后不再自动重发；无论记录是否已确认清空，
+        // 任务都不转失败、不误标用户暂停、不触发重新校验或删除。
+        Assert.True(harness.Store.ResumeCalls.Count <= 3);
         Assert.Single(harness.Store.RecheckCalls);
+        Assert.DoesNotContain(harness.Store.DeleteCalls, call => call.Hash == task.InfoHash);
+        Assert.NotEqual(DownloadTaskStatus.Failed, settled.Status);
+        Assert.False(settled.IsUserPaused);
     }
 
     [Fact]

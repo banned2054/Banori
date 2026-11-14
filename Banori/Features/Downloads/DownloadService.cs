@@ -92,7 +92,10 @@ public sealed class DownloadService(
                             .Where(task => task.Status == DownloadTaskStatus.PendingSubmit ||
                                            task.Status == DownloadTaskStatus.Submitting    ||
                                            task.Status == DownloadTaskStatus.Downloading   ||
-                                           task.Status == DownloadTaskStatus.Paused)
+                                           task.Status == DownloadTaskStatus.Paused        ||
+                                           // 完成后仍在观察窗口内的做种恢复：完成与做种恢复分离推进。
+                                           task.Status == DownloadTaskStatus.Completed && task.RunRecovery != null &&
+                                           task.NextObservationAtUtc != null)
                             .ToListAsync(cancellationToken);
             // 存在被替换墓碑时清理环仍需执行：全部任务静默（完成/被替换）不能让冗余种子无限滞留。
             hasRetiredCleanup = await db.DownloadTasks.AsNoTracking()
@@ -224,7 +227,9 @@ public sealed class DownloadService(
             }
 
         var reconcileHashes = tasks
-                             .Where(task => task.Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused)
+                             .Where(task => task.Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused ||
+                                            // 做种恢复观察也需要快照；运行中的种子必须能被找到。
+                                            task is { Status: DownloadTaskStatus.Completed, RunRecovery: not null })
                              .Select(task => task.InfoHash)
                              .ToList();
         var foundByHash = (await session.FindTorrentsAsync(reconcileHashes, cancellationToken))
@@ -232,7 +237,10 @@ public sealed class DownloadService(
                          .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
         foreach (var task in tasks.Where(task => task.Status is DownloadTaskStatus.Downloading
-                                                             or DownloadTaskStatus.Paused))
+                                                             or DownloadTaskStatus.Paused             ||
+                                                 task is { Status: DownloadTaskStatus.Completed,
+                                                           RunRecovery: not null,
+                                                           NextObservationAtUtc: not null }))
             try
             {
                 // 未到观察时间的任务本轮跳过：等待可见性/确认窗口或采样间隔，不产生查询推进与请求。
@@ -303,6 +311,19 @@ public sealed class DownloadService(
             update.IsUserPaused = true;
             // 页面发起的人工暂停来源明确，覆盖此前可能存在的外部停止观察记录。
             update.ExternalStopObservedAtUtc = null;
+            // 活跃的启动恢复随人工暂停一并停止自动重试：记录保留为 UserPaused（不删除），
+            // 供页面解释「为什么没启动」，人工恢复后由对账按既有预算继续有界启动。
+            if (DownloadRunRecovery.FromJson(task.RunRecovery) is
+                { State: DownloadRunStates.AwaitingConfirm or DownloadRunStates.ResponseUnknown } activeRun)
+            {
+                var pausedRun = activeRun with
+                {
+                    State             = DownloadRunStates.UserPaused,
+                    Reason            = "用户暂停了任务；不自动恢复",
+                    LastObservedAtUtc = timeProvider.GetUtcNow()
+                };
+                update.RunRecovery = pausedRun.ToJson();
+            }
         }, cancellationToken);
     }
 
@@ -1654,6 +1675,300 @@ public sealed class DownloadService(
     }
 
     /// <summary>
+    ///     完成/验证后的启动恢复：先按快照计算应然状态。已运行直接确认；用户暂停与下载器端外部停止
+    ///     不自动拉起；仍停止时 journal-first 落库 AwaitingConfirm 再发 Resume，并立即观察一次。
+    ///     返回写盘后的恢复记录；null 表示无需保留记录（ContinueDownload 已确认运行并清空）。
+    ///     任何失败都绝不改写 Status/FailedStep/Error/CompletedAtUtc，绝不重新校验、隔离或重新下载。
+    /// </summary>
+    private async Task<DownloadRunRecovery?> StartRunWithRecoveryAsync(
+        IQbittorrentSession session, DownloadTask task, TorrentSnapshot stable, string purpose, CancellationToken ct)
+    {
+        var now = timeProvider.GetUtcNow();
+        if (task.IsUserPaused)
+        {
+            var paused = new DownloadRunRecovery
+            {
+                Purpose           = purpose,
+                State             = DownloadRunStates.UserPaused,
+                LastObservedAtUtc = now,
+                ObservedCategory  = stable.Category.ToString(),
+                Reason            = "任务处于人工暂停；对账不会自动启动"
+            };
+            await SaveRunRecoveryAsync(task.Id, task.Status, paused, null, ct);
+            return paused;
+        }
+
+        if (stable.Category is QbittorrentTorrentCategory.Seeding or QbittorrentTorrentCategory.Downloading)
+            return await ConfirmRunRunningAsync(session, task, purpose, stable, null, ct);
+
+        // 校验/移动/错误快照不构成启动条件：不请求、不记录，交由既有校验/对账路径处理。
+        if (stable.Category != QbittorrentTorrentCategory.Stopped) return null;
+
+        if (task.ExternalStopObservedAtUtc is not null)
+        {
+            var stopped = new DownloadRunRecovery
+            {
+                Purpose           = purpose,
+                State             = DownloadRunStates.DownloaderStopped,
+                LastObservedAtUtc = now,
+                ObservedCategory  = stable.Category.ToString(),
+                Reason            = "启动前已观察到下载器端外部停止；不自动拉起"
+            };
+            await SaveRunRecoveryAsync(task.Id, task.Status, stopped, null, ct);
+            return stopped;
+        }
+
+        return await IssueRunResumeAsync(session, task, purpose, null, ct);
+    }
+
+    /// <summary>
+    ///     journal-first 发出一次 Resume：请求台账先落库（AwaitingConfirm + 请求时间 + Unknown），再发送，
+    ///     并立即观察一次——快速生效时无需等下一轮。响应丢失不断言失败：转 ResponseUnknown 由观察确认。
+    /// </summary>
+    private async Task<DownloadRunRecovery> IssueRunResumeAsync(
+        IQbittorrentSession session, DownloadTask task, string purpose,
+        DownloadRunRecovery? previous, CancellationToken ct)
+    {
+        var now      = timeProvider.GetUtcNow();
+        var recovery = new DownloadRunRecovery
+        {
+            Purpose        = purpose,
+            State          = DownloadRunStates.AwaitingConfirm,
+            AttemptCount   = (previous?.AttemptCount ?? 0) + 1,
+            RequestedAtUtc = now,
+            RequestOutcome = DownloadRunRequestOutcomes.Unknown,
+            Reason         = previous?.Reason
+        };
+        // journal-first：崩溃后仍能看到「启动待确认」，重启后按记录继续观察。
+        await SaveRunRecoveryAsync(task.Id, task.Status, recovery,
+                                   now + timing.ControlConfirmationWindow, ct);
+
+        try
+        {
+            await session.ResumeAsync(task.InfoHash, ct);
+            recovery = recovery with { RequestOutcome = DownloadRunRequestOutcomes.Sent };
+        }
+        catch (Exception exception) when (exception is QbittorrentNotFoundException or QbittorrentBadRequestException)
+        {
+            // 下载器明确拒绝（种子已不存在等）：与「响应丢失」分开记录，转终态等待人工核对，
+            // 不再自动重试；文件与任务状态保持原样。
+            recovery = recovery with
+            {
+                State            = DownloadRunStates.DownloaderStopped,
+                RequestOutcome   = DownloadRunRequestOutcomes.Rejected,
+                Reason           = "下载器明确拒绝启动请求（种子可能已被删除）",
+                LastRequestError = exception.Message
+            };
+            logger.LogWarning(exception, "任务 {TaskId} 启动请求被下载器拒绝，转待人工核对。", task.Id);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException ||
+                                          !ct.IsCancellationRequested)
+        {
+            recovery = recovery with
+            {
+                State            = DownloadRunStates.ResponseUnknown,
+                RequestOutcome   = DownloadRunRequestOutcomes.Unknown,
+                LastRequestError = exception.Message
+            };
+            logger.LogWarning(exception, "任务 {TaskId} 启动请求响应丢失（第 {Attempt} 次），转入观察确认。",
+                              task.Id, recovery.AttemptCount);
+        }
+
+        // 立即观察一次：已运行即确认，无需再等确认窗口。
+        var observed = await TryFindSnapshotAsync(session, task.InfoHash, ct);
+        if (observed is { Category: QbittorrentTorrentCategory.Seeding or QbittorrentTorrentCategory.Downloading })
+            return await ConfirmRunRunningAsync(session, task, purpose, observed, recovery, ct);
+
+        await SaveRunRecoveryAsync(task.Id, task.Status, recovery,
+                                   now + timing.ControlConfirmationWindow, ct);
+        return recovery;
+    }
+
+    /// <summary>
+    ///     观察到运行：ContinueDownload 清空记录（连同系统暂停）回到普通下载跟踪；Seeding 记录
+    ///     ConfirmedRunning 并 best-effort 通告 tracker——通告失败只记录，绝不否定数据完整性、不重新校验。
+    /// </summary>
+    private async Task<DownloadRunRecovery?> ConfirmRunRunningAsync(
+        IQbittorrentSession session, DownloadTask task, string purpose, TorrentSnapshot snapshot,
+        DownloadRunRecovery? current, CancellationToken ct)
+    {
+        var now = timeProvider.GetUtcNow();
+        if (purpose == DownloadRunPurposes.ContinueDownload)
+        {
+            await SaveRunRecoveryAsync(task.Id, task.Status, null, null, ct);
+            logger.LogInformation("任务 {TaskId} 已观察到下载运行，启动恢复记录已清空，回到普通下载跟踪。", task.Id);
+            return null;
+        }
+
+        var recovery = (current ?? new DownloadRunRecovery { Purpose = purpose }) with
+        {
+            State                = DownloadRunStates.ConfirmedRunning,
+            ObservedRunningAtUtc = current?.ObservedRunningAtUtc ?? now,
+            LastObservedAtUtc    = now,
+            ObservedCategory     = snapshot.Category.ToString()
+        };
+        try
+        {
+            await session.ReannounceAsync(task.InfoHash, ct);
+            recovery = recovery with { ReannounceAttemptedAtUtc = now };
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException ||
+                                          !ct.IsCancellationRequested)
+        {
+            recovery = recovery with { LastReannounceError = exception.Message };
+            logger.LogWarning(exception, "任务 {TaskId} 做种恢复后通告 tracker 失败；不影响已确认的数据完整性。",
+                              task.Id);
+        }
+
+        await SaveRunRecoveryAsync(task.Id, task.Status, recovery, null, ct);
+        return recovery;
+    }
+
+    /// <summary>
+    ///     启动恢复的观察推进：只对 AwaitingConfirm/ResponseUnknown 状态动作。观察到运行即确认；
+    ///     Sent 后停止是下载器策略（分享限制/人工），不再自动拉起；响应未知按确认窗口先观察、有界重试；
+    ///     用户暂停停自动。绝不调用 recheck，绝不写 FailedStep/Error/CompletedAtUtc。
+    /// </summary>
+    private async Task AdvanceRunRecoveryAsync(
+        IQbittorrentSession session, DownloadTask task, TorrentSnapshot? snapshot,
+        DownloadRunRecovery recovery, CancellationToken cancellationToken)
+    {
+        // 用户解除人工暂停后（人工「恢复」把任务交回系统），按既有预算继续有界启动。
+        if (recovery.State == DownloadRunStates.UserPaused                     &&
+            task is { Status: DownloadTaskStatus.Downloading, IsUserPaused: false })
+        {
+            await IssueRunResumeAsync(session, task, recovery.Purpose, recovery, cancellationToken);
+            return;
+        }
+
+        if (recovery.State is not (DownloadRunStates.AwaitingConfirm or DownloadRunStates.ResponseUnknown))
+        {
+            // 终态记录不再自动推进；清掉残留的到期时间，worker 恢复空闲节奏。
+            if (task.NextObservationAtUtc is not null)
+                await UpdateTaskAsync(task.Id, task.Status,
+                                      update => update.NextObservationAtUtc = null, cancellationToken);
+            return;
+        }
+
+        var now = timeProvider.GetUtcNow();
+        if (task is { Status: DownloadTaskStatus.Downloading, IsUserPaused: true })
+        {
+            await SaveRunRecoveryAsync(task.Id, task.Status, recovery with
+            {
+                State             = DownloadRunStates.UserPaused,
+                Reason            = "用户暂停了任务；不自动恢复",
+                LastObservedAtUtc = now
+            }, null, cancellationToken);
+            return;
+        }
+
+        switch (snapshot)
+        {
+            case null :
+                // 种子已消失：只记录，不改任务状态、不清理文件。
+                await SaveRunRecoveryAsync(task.Id, task.Status, recovery with
+                {
+                    State             = DownloadRunStates.DownloaderStopped,
+                    Reason            = "下载器中已无该种子",
+                    LastObservedAtUtc = now,
+                    ObservedCategory  = null
+                }, null, cancellationToken);
+                return;
+            case { IsMoving: true } or { Category: QbittorrentTorrentCategory.Checking } :
+                // 校验/移动期间绝不 recheck、不隔离、不下载：只推迟观察。
+                await UpdateTaskAsync(task.Id, task.Status,
+                                      update => update.NextObservationAtUtc =
+                                          now + timing.PreparationSampleInterval, cancellationToken);
+                return;
+            case { Category: QbittorrentTorrentCategory.Error } :
+                await SaveRunRecoveryAsync(task.Id, task.Status, recovery with
+                {
+                    State             = DownloadRunStates.FailedRetryable,
+                    Reason            = "下载器报告任务出错；文件保持原样，可人工恢复",
+                    LastObservedAtUtc = now,
+                    ObservedCategory  = snapshot.Category.ToString()
+                }, null, cancellationToken);
+                return;
+            case { Category: QbittorrentTorrentCategory.Seeding or QbittorrentTorrentCategory.Downloading } :
+                await ConfirmRunRunningAsync(session, task, recovery.Purpose, snapshot, recovery,
+                                             cancellationToken);
+                return;
+        }
+
+        // 停止态：Sent 后停止是下载器策略或人工，不再自动拉起；Unknown 按确认窗口先观察再决定。
+        if (recovery.RequestOutcome == DownloadRunRequestOutcomes.Sent)
+        {
+            await SaveRunRecoveryAsync(task.Id, task.Status, recovery with
+            {
+                State             = DownloadRunStates.DownloaderStopped,
+                Reason            = "启动请求已被接受后停止（下载器策略或人工）；不自动再次拉起",
+                LastObservedAtUtc = now,
+                ObservedCategory  = snapshot.Category.ToString()
+            }, null, cancellationToken);
+            return;
+        }
+
+        if (recovery.ObservedRunningAtUtc is not null ||
+            now < (recovery.RequestedAtUtc ?? now) + timing.ControlConfirmationWindow)
+        {
+            // 响应未知：确认窗口内只观察，不盲目重发；已观察到运行则永不再自动 Resume。
+            await UpdateTaskAsync(task.Id, task.Status,
+                                  update => update.NextObservationAtUtc = recovery.ObservedRunningAtUtc is not null
+                                      ? null
+                                      : (recovery.RequestedAtUtc ?? now) + timing.ControlConfirmationWindow,
+                                  cancellationToken);
+            return;
+        }
+
+        if (recovery.AttemptCount >= timing.MaxRunResumeAttempts)
+        {
+            await SaveRunRecoveryAsync(task.Id, task.Status, recovery with
+            {
+                State             = DownloadRunStates.FailedRetryable,
+                Reason            = $"启动请求 {recovery.AttemptCount} 次仍未确认生效；已停止自动重试，可人工恢复",
+                LastObservedAtUtc = now,
+                ObservedCategory  = snapshot.Category.ToString()
+            }, null, cancellationToken);
+            return;
+        }
+
+        await IssueRunResumeAsync(session, task, recovery.Purpose, recovery, cancellationToken);
+    }
+
+    /// <summary>启动恢复记录落库：recovery 为 null 时原子清空（ContinueDownload 确认运行后回到普通跟踪）。</summary>
+    private async Task SaveRunRecoveryAsync(
+        Guid taskId, DownloadTaskStatus expectedStatus, DownloadRunRecovery? recovery,
+        DateTimeOffset? nextObservationAtUtc, CancellationToken cancellationToken)
+    {
+        await UpdateTaskAsync(taskId, expectedStatus, update =>
+        {
+            update.RunRecovery          = recovery?.ToJson();
+            update.NextObservationAtUtc = nextObservationAtUtc;
+            // 记录清空即回到普通下载跟踪：系统暂停的启动等待语义结束。
+            if (recovery is null) update.IsSystemPaused = false;
+        }, cancellationToken);
+    }
+
+    /// <summary>
+    ///     人工恢复启动：完整任务恢复做种，部分完成继续下载；单次请求、失败即回，不重新校验、
+    ///     不隔离、不重新添加种子。只接受 FailedRetryable/DownloaderStopped；待观察状态交给对账推进。
+    /// </summary>
+    public async Task ResumeRunAsync(Guid taskId, CancellationToken cancellationToken = default)
+    {
+        using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
+        var       task              = await LoadTaskAsync(taskId, cancellationToken);
+        var       recovery          = DownloadRunRecovery.FromJson(task.RunRecovery);
+        if (recovery is null ||
+            recovery.State is not (DownloadRunStates.FailedRetryable or DownloadRunStates.DownloaderStopped))
+            throw new InvalidOperationException("只有启动未恢复的任务可以人工恢复。");
+
+        await using var session = await sessionFactory.CreateAsync(cancellationToken);
+        var result = await IssueRunResumeAsync(session, task, recovery.Purpose, recovery, cancellationToken);
+        logger.LogInformation("任务 {TaskId} 人工恢复启动已发出（{RunState}），等待对账观察确认。",
+                              taskId, result.State);
+    }
+
+    /// <summary>
     ///     活跃校验的推进驱动。快照无法区分「谁启动了运行」，校验期出现无法解释的运行状态一律先暂停；
     ///     人工暂停意图保留（IsUserPaused 全程不动）。完成证据：当前轮次观察到 Checking 且结束、
     ///     映射未变、无移动、无错误，并在停止状态读取文件结果。仅做种收尾的暂停不单独作废证据；
@@ -2267,25 +2582,55 @@ public sealed class DownloadService(
             await db.SaveChangesAsync(ct);
         }
 
-        // 完整任务直接完成，保留分享限制或外部停止；部分完成只在仍停止时启动独立缺集。
+        // 完整任务：数据完整性已确认，停止态下恢复做种一次并 best-effort 通告 tracker，
+        // 随后进入完成归档；分享限制造成的再次停止由完成状态吸收，不会形成重复启动。
+        // 部分完成：只在仍停止时启动独立缺集的下载。
         // ReadyToRun 已在运行表示上次 Resume 已生效（可能丢响应），不能先暂停再重复启动。
-        if (!allSelectedComplete && stable.Category == QbittorrentTorrentCategory.Stopped)
-            await session.ResumeAsync(task.InfoHash, ct);
+        // 数据完整性已确认；启动（做种/继续下载）交由启动恢复 journal-first 推进：
+        // 先落库恢复记录再发 Resume，任何失败都不改写状态、FailedStep/Error 与完成证据。
+        var recovery = await StartRunWithRecoveryAsync(session, task, stable,
+                                                       allSelectedComplete
+                                                           ? DownloadRunPurposes.Seeding
+                                                           : DownloadRunPurposes.ContinueDownload, ct);
+        if (recovery is { State: DownloadRunStates.AwaitingConfirm or DownloadRunStates.ResponseUnknown } &&
+            !allSelectedComplete)
+        {
+            // 部分完成的启动待确认：保持系统暂停与观察窗口，确认运行后清记录回到普通下载跟踪；
+            // 绝不落回用户暂停语义。
+            await UpdateTaskAsync(task.Id, task.Status, update =>
+            {
+                update.VerificationIntent   = null;
+                update.PreparationStage     = DownloadPreparationStage.ReadyToRun;
+                update.LastSyncedAtUtc      = timeProvider.GetUtcNow();
+            }, ct);
+            logger.LogInformation("任务 {TaskId} 复用校验候选全部通过；下载启动待确认（{RunState}），保持系统暂停继续观察。",
+                                  task.Id, recovery.State);
+            return;
+        }
+
         await UpdateTaskAsync(task.Id, task.Status, update =>
         {
             update.IsSystemPaused       = false;
             update.VerificationIntent   = null;
             update.PreparationStage     = DownloadPreparationStage.ReadyToRun;
             update.LastSyncedAtUtc      = timeProvider.GetUtcNow();
-            update.NextObservationAtUtc = null;
+            // 启动待确认的完整任务保留 StartRun 写入的观察时间：完成与做种恢复分离推进。
+            if (recovery is null ||
+                recovery.State is not (DownloadRunStates.AwaitingConfirm or DownloadRunStates.ResponseUnknown))
+                update.NextObservationAtUtc = null;
         }, ct);
         if (allSelectedComplete)
             await ApplySnapshotAsync(task.Id, task.Status, stable with { Progress = 1.0 }, session, ct);
+        // 完成收尾（归档/改名）可能清掉调度：启动待确认的完整任务重新落上观察时间，
+        // 保证 Completed+RunRecovery 进入对账任务集继续观察做种是否恢复。
+        if (allSelectedComplete && recovery is { State: DownloadRunStates.AwaitingConfirm or DownloadRunStates.ResponseUnknown })
+            await UpdateTaskAsync(task.Id, DownloadTaskStatus.Completed,
+                                  update => update.NextObservationAtUtc =
+                                      timeProvider.GetUtcNow() + timing.ControlConfirmationWindow, ct);
         logger.LogInformation(allSelectedComplete
                                   ? "任务 {TaskId} 复用校验全部通过，已确认内容完整并进入完成归档。"
                                   : "任务 {TaskId} 复用校验候选全部通过，其余文件继续下载。", task.Id);
     }
-
     private static IReadOnlyDictionary<int, string> CandidateRelativePaths(DownloadVerificationIntent intent)
     {
         var result = new Dictionary<int, string>();
@@ -2573,9 +2918,20 @@ public sealed class DownloadService(
     private async Task ReconcileTrackedAsync(
         IQbittorrentSession session, DownloadTask task, TorrentSnapshot? snapshot, CancellationToken cancellationToken)
     {
-        // 路由优先级：隔离恢复 → 活跃校验 → 普通缺失/接管/命名/完成处理。
+        // 路由优先级：启动恢复 → 隔离恢复 → 活跃校验 → 普通缺失/接管/命名/完成处理。
         // 隔离中 hash 暂时消失是正常中间态，绝不标 Lost；校验意图活跃期间不得进入普通
         // 命名、完成判定或现任切换——候选路径上的共享数据未经证实不得写入。
+        // 启动恢复路由：已完成任务的做种恢复观察，与部分完成任务的下载启动确认；
+        // 这些任务不适用 ApplySnapshotAsync 的普通状态推进，也绝不写 FailedStep/Error。
+        if (DownloadRunRecovery.FromJson(task.RunRecovery) is { } runRecovery &&
+            (task is { Status: DownloadTaskStatus.Completed, NextObservationAtUtc: not null } ||
+             task is { Status: DownloadTaskStatus.Downloading, IsSystemPaused: true } &&
+                 runRecovery.Purpose == DownloadRunPurposes.ContinueDownload))
+        {
+            await AdvanceRunRecoveryAsync(session, task, snapshot, runRecovery, cancellationToken);
+            return;
+        }
+
         if (task.IsolationState != DownloadIsolationState.None)
         {
             await AdvanceIsolationAsync(session, task, snapshot, cancellationToken);
