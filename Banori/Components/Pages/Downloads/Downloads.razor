@@ -186,9 +186,15 @@ else
 					</td>
 					<td>
 						<span class="badge @StatusClass(task.Phase)">@task.StatusText</span>
+						<div class="small text-body-secondary">@task.WaitingForText</div>
 						@foreach (var note in task.PhaseNotes)
 						{
 							<div class="small text-body-secondary">@note</div>
+						}
+						<div class="small text-body-secondary">下一步：@task.NextStepText</div>
+						@if (task.NextObservationAtUtc is { } nextObservation && !task.Status.IsFinal())
+						{
+							<div class="small text-body-secondary">下次观察 @nextObservation.ToLocalTime().ToString("HH:mm:ss")</div>
 						}
 					</td>
 					<td>
@@ -232,7 +238,7 @@ else
 						{
 							<div class="text-body-secondary">完成后将替换：@task.ReplacesNaming</div>
 						}
-						@if (task.ReplacedByNaming is not null)
+						@if (task.ReplacedByNaming is not null && !task.IsSelectionTombstone)
 						{
 							<div class="text-body-secondary">已被 @task.ReplacedByNaming 替换</div>
 						}
@@ -242,11 +248,22 @@ else
 						{
 							@switch (task.Status)
 							{
+								// 启动未恢复的人工入口：不重新校验、不隔离、不重新下载。
+								case DownloadTaskStatus.Downloading when task.RunState == DownloadRunStates.FailedRetryable :
+									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ResumeRunAsync(task.Id)">继续下载</button>
+									break;
 								case DownloadTaskStatus.Downloading :
 									<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => PauseAsync(task.Id)">暂停</button>
 									break;
+								case DownloadTaskStatus.Paused when task.Phase == DownloadDisplayPhase.VerificationUnconfirmed :
+									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ReverifyAsync(task.Id)">重新校验</button>
+									break;
 								case DownloadTaskStatus.Paused when task.IsUserPaused :
 									<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => ResumeAsync(task.Id)">恢复</button>
+									break;
+								case DownloadTaskStatus.Completed when task.RunState is DownloadRunStates.FailedRetryable
+								                                                          or DownloadRunStates.DownloaderStopped :
+									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ResumeRunAsync(task.Id)">恢复做种</button>
 									break;
 								case DownloadTaskStatus.Failed or DownloadTaskStatus.Lost :
 									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RetryAsync(task.Id)">重试</button>
@@ -472,6 +489,17 @@ else
 		return RunOperationAsync(() => _vm.RetryAsync(taskId, _cts.Token));
 	}
 
+	private Task ReverifyAsync(Guid taskId)
+	{
+		return RunOperationAsync(() => _vm.ReverifyAsync(taskId, _cts.Token));
+	}
+
+	/// <summary>人工恢复启动：完成后的任务恢复做种，部分完成继续下载；不重新校验、不隔离。</summary>
+	private Task ResumeRunAsync(Guid taskId)
+	{
+		return RunOperationAsync(() => _vm.ResumeRunAsync(taskId, _cts.Token));
+	}
+
 	private Task RetryArchiveAsync(Guid taskId)
 	{
 		return RunOperationAsync(() => _vm.RetryArchiveAsync(taskId, _cts.Token));
@@ -574,6 +602,7 @@ else
 			DownloadDisplayPhase.WaitingAddConfirm   => "text-bg-warning",
 			DownloadDisplayPhase.WaitingStopConfirm  => "text-bg-warning",
 			DownloadDisplayPhase.IsolationMigrating  => "text-bg-warning",
+			DownloadDisplayPhase.VerificationUnconfirmed => "text-bg-warning",
 			DownloadDisplayPhase.WaitingSubmit       => "text-bg-secondary",
 			DownloadDisplayPhase.Archiving           => "text-bg-success",
 			DownloadDisplayPhase.Downloading         => "text-bg-primary",

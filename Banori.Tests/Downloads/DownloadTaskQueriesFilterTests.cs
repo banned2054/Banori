@@ -250,6 +250,10 @@ public sealed class DownloadTaskQueriesFilterTests
         {
             CreatedAtUtc = DownloadTaskListTestSeed.Base, Step = DownloadVerificationStep.Requested
         };
+        var unconfirmedIntent = new DownloadVerificationIntent
+        {
+            CreatedAtUtc = DownloadTaskListTestSeed.Base, Step = DownloadVerificationStep.Unconfirmed
+        };
         var rows = new[]
         {
             DownloadTaskListTestSeed.NewTask("S01", DownloadTaskListTestSeed.At(0),
@@ -286,6 +290,14 @@ public sealed class DownloadTaskQueriesFilterTests
                                              DownloadTaskStatus.Paused,
                                              category : QbittorrentTorrentCategory.Checking,
                                              verificationIntent : requestedIntent.ToJson()),
+            // 校验未确认：Paused 状态但展示阶段归「准备与校验中」，SQL 过滤必须与 GroupOf 一致。
+            DownloadTaskListTestSeed.NewTask("S13U", DownloadTaskListTestSeed.At(13),
+                                             DownloadTaskStatus.Paused,
+                                             verificationIntent : unconfirmedIntent.ToJson()),
+            // 人工暂停优先：未确认意图保留人工暂停时展示为 PausedManually，归「已暂停」桶。
+            DownloadTaskListTestSeed.NewTask("S13UM", DownloadTaskListTestSeed.At(13),
+                                             DownloadTaskStatus.Paused, userPaused : true,
+                                             verificationIntent : unconfirmedIntent.ToJson()),
             DownloadTaskListTestSeed.NewTask("S14", DownloadTaskListTestSeed.At(14)),
             DownloadTaskListTestSeed.NewTask("S15", DownloadTaskListTestSeed.At(15),
                                              pendingSavePath : "/tmp/staging"),
@@ -313,6 +325,20 @@ public sealed class DownloadTaskQueriesFilterTests
                                                                .OrderBy(name => name, StringComparer.Ordinal).ToList()),
                             () => Assert.Equal(expected.Count, result.TotalCount));
         }
+
+        // 同一 Unconfirmed 意图按是否保留人工暂停分属两个桶：不能因 JSON 条件同时被排除或重复计入。
+        var pausedNames = (await QueryAsync(harness, new DownloadTaskListFilter
+        {
+            StatusGroups = Groups(DownloadStatusFilterGroup.Paused)
+        })).Items.Select(task => task.NamingSnapshot).ToList();
+        var preparingNames = (await QueryAsync(harness, new DownloadTaskListFilter
+        {
+            StatusGroups = Groups(DownloadStatusFilterGroup.PreparingChecking)
+        })).Items.Select(task => task.NamingSnapshot).ToList();
+        Assert.Contains("S13UM", pausedNames);
+        Assert.DoesNotContain("S13UM", preparingNames);
+        Assert.Contains("S13U", preparingNames);
+        Assert.DoesNotContain("S13U", pausedNames);
     }
 
     [Fact]

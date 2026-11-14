@@ -3,16 +3,26 @@ using System.Reflection;
 using System.Text;
 using Banori.Core.Torrents;
 using Banori.Data;
+using Banori.Features.Settings;
 using Banori.Integrations.Qbittorrent;
 using Microsoft.EntityFrameworkCore;
 
 namespace Banori.Features.Downloads;
 
 /// <summary>下载任务列表的只读投影查询：筛选与计数在 SQL 端完成后分页，展示不依赖登记编排与下载执行的客户端。</summary>
-public sealed class DownloadTaskQueries(IDbContextFactory<ApplicationDbContext> dbContextFactory)
+public sealed class DownloadTaskQueries(
+    IDbContextFactory<ApplicationDbContext> dbContextFactory,
+    ManageQbittorrentSettings?               qbittorrentSettings = null)
 {
     /// <summary>LIKE 转义符：用户输入中的 %、_ 与反斜杠按字面匹配，不当作通配符。</summary>
     private const string LikeEscape = "\\";
+
+    /// <summary>
+    ///     校验未确认意图的 JSON 片段（Web 默认序列化的 step 值）：未确认是暂停状态但展示通常归
+    ///     「准备与校验中」，校验意图存 JSON 无法直接查询，用该片段做最小口径的 SQL 归属判断；
+    ///     保留人工暂停的未确认任务例外，按暂停桶归属。
+    /// </summary>
+    private const string UnconfirmedIntentPattern = "%\"step\":\"Unconfirmed\"%";
 
     /// <summary>要素 JSON 中语言键的前缀模式；整串不被匹配即视为无语言任务。</summary>
     private const string LanguageKeyPrefixPattern = "%\"language\":\"%";
@@ -32,6 +42,10 @@ public sealed class DownloadTaskQueries(IDbContextFactory<ApplicationDbContext> 
         var             page       = Math.Clamp(filter.Page, 1, pageCount);
         var             languages  = await ListLanguagesAsync(db, cancellationToken);
         if (totalCount == 0) return new DownloadTaskListPage([], page, pageSize, 0, languages);
+
+        // 下载器就绪只读取一次：等待提交的解释需要同一快照，不能每个任务重复读设置。
+        var settings        = qbittorrentSettings is null ? null : await qbittorrentSettings.GetAsync(cancellationToken);
+        var downloaderReady = settings is { Enabled: true, IsConfigured: true };
 
         // SQLite 不支持 DateTimeOffset 的 ORDER BY 与比较，无法纯 SQL 分页：取匹配行的轻量键集
         // （Id + 创建时间）内存稳定排序后切出当页，再按 Id 取回整行。筛选与计数始终在 SQL 端完成。
@@ -53,7 +67,7 @@ public sealed class DownloadTaskQueries(IDbContextFactory<ApplicationDbContext> 
         var pageTasks = pageIds.Where(rowsById.ContainsKey).Select(id => rowsById[id]).ToList();
 
         var relatedNames = await RelatedNamesAsync(db, pageTasks, cancellationToken);
-        var items        = pageTasks.Select(task => ToView(task, relatedNames)).ToList();
+        var items = pageTasks.Select(task => ToView(task, relatedNames, downloaderReady)).ToList();
         return new DownloadTaskListPage(items, page, pageSize, totalCount, languages);
     }
 
@@ -89,7 +103,9 @@ public sealed class DownloadTaskQueries(IDbContextFactory<ApplicationDbContext> 
     /// <summary>
     ///     状态分组过滤：与 DownloadStatusFilter.GroupOf 同一口径的 SQL 形状（等价性测试锁定两边一致）。
     ///     显示阶段的细分（隔离/校验意图/准备阶段）都落在「准备与校验中」桶；校验意图存 JSON 无法直接查询，
-    ///     仅「暂停/运行任务被下载器端 recheck 观察为校验中」这一处影响归属，用空意图近似该判断。
+    ///     仅「暂停/运行任务被下载器端 recheck 观察为校验中」这一处影响归属，用空意图近似该判断；
+    ///     「校验未确认」同样是 Paused 但归准备与校验桶，按意图 JSON 的 Unconfirmed 片段精确归属；
+    ///     人工暂停优先：保留 IsUserPaused 的未确认任务按暂停桶归属，不落入准备与校验桶。
     /// </summary>
     private static IQueryable<DownloadTask> ApplyStatusGroups(
         IQueryable<DownloadTask> query, IReadOnlySet<DownloadStatusFilterGroup> groups)
@@ -117,11 +133,16 @@ public sealed class DownloadTaskQueries(IDbContextFactory<ApplicationDbContext> 
                                   (task.IsSystemPaused ||
                                    task.LastObservedCategory == QbittorrentTorrentCategory.Checking)) ||
                                  (task.Status               == DownloadTaskStatus.Paused           &&
-                                  task.LastObservedCategory == QbittorrentTorrentCategory.Checking &&
-                                  string.IsNullOrEmpty(task.VerificationIntent)))) ||
+                                  ((task.LastObservedCategory == QbittorrentTorrentCategory.Checking &&
+                                    string.IsNullOrEmpty(task.VerificationIntent)) ||
+                                   (!task.IsUserPaused &&
+                                     EF.Functions.Like(task.VerificationIntent, UnconfirmedIntentPattern)))))) ||
                                (wantPaused && task.Status == DownloadTaskStatus.Paused &&
                                 !(task.LastObservedCategory == QbittorrentTorrentCategory.Checking &&
-                                  string.IsNullOrEmpty(task.VerificationIntent)))             ||
+                                  string.IsNullOrEmpty(task.VerificationIntent))                         &&
+                                (task.VerificationIntent == null ||
+                                 task.IsUserPaused            ||
+                                 !EF.Functions.Like(task.VerificationIntent, UnconfirmedIntentPattern))) ||
                                (wantCompleted && task.Status == DownloadTaskStatus.Completed) ||
                                (wantFailed    && task.Status == DownloadTaskStatus.Failed)    ||
                                (wantLost      && task.Status == DownloadTaskStatus.Lost)      ||
@@ -242,12 +263,14 @@ public sealed class DownloadTaskQueries(IDbContextFactory<ApplicationDbContext> 
                        .ToDictionaryAsync(task => task.Id, task => task.NamingSnapshot, cancellationToken);
     }
 
-    private static DownloadTaskView ToView(DownloadTask task, IReadOnlyDictionary<Guid, string> relatedNames)
+    private static DownloadTaskView ToView(
+        DownloadTask task, IReadOnlyDictionary<Guid, string> relatedNames, bool downloaderReady)
     {
         var ingredients   = TorrentNamingIngredients.FromJson(task.NamingIngredients);
         var archiveReview = DownloadArchiveReview.FromJson(task.ArchiveReview);
         var intent        = DownloadVerificationIntent.FromJson(task.VerificationIntent);
         var decision      = DownloadPathDecision.FromJson(task.PathDecision);
+        var runRecovery   = DownloadRunRecovery.FromJson(task.RunRecovery);
         return new DownloadTaskView
         {
             Id          = task.Id,
@@ -280,18 +303,27 @@ public sealed class DownloadTaskQueries(IDbContextFactory<ApplicationDbContext> 
             ReplacedByNaming = task.ReplacedByTaskId is { } replacedById
                 ? relatedNames.GetValueOrDefault(replacedById)
                 : null,
-            PreparationStage    = task.PreparationStage,
-            ArchiveReviewReason = archiveReview?.Reason,
-            IsolationState      = task.IsolationState,
-            VerificationStep    = intent?.Step,
-            VerificationRound   = intent?.Round            ?? 0,
-            ObservedChecking    = intent?.ObservedChecking ?? false,
-            StopConfirmPending = intent?.TimeoutStopRequestedAtUtc is not null ||
-                                 intent?.PauseRequestedAtUtc is not null,
+            PreparationStage         = task.PreparationStage,
+            ArchiveReviewReason      = archiveReview?.Reason,
+            IsolationState           = task.IsolationState,
+            VerificationStep         = intent?.Step,
+            VerificationRequestState = intent?.RequestState,
+            VerificationRound        = intent?.Round            ?? 0,
+            ObservedChecking         = intent?.ObservedChecking ?? false,
+            CompletionEvidence       = intent?.CompletionEvidenceKind,
+            StopConfirmPending       = intent?.TimeoutStopRequestedAtUtc is not null ||
+                                       intent?.PauseRequestedAtUtc is not null,
             ResultStabilizing         = intent?.StabilityObservedAtUtc is not null,
             ExternalStopObservedAtUtc = task.ExternalStopObservedAtUtc,
+            RunPurpose                = runRecovery?.Purpose,
+            RunState                  = runRecovery?.State,
+            RunReason                 = runRecovery?.Reason,
+            RunObservedAtUtc          = runRecovery?.LastObservedAtUtc,
             LastSyncedAtUtc           = task.LastSyncedAtUtc,
             LastObservedCategory      = task.LastObservedCategory,
+            NextObservationAtUtc      = task.NextObservationAtUtc,
+            AttemptCount              = task.AttemptCount,
+            DownloaderReady           = downloaderReady,
             PathDecisionKind          = decision?.Kind,
             PathDecisionReason        = decision?.Reason,
             PathDecisionRelatedTaskId = decision?.RelatedTaskId,

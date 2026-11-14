@@ -618,6 +618,23 @@ public sealed class DownloadTasksPageViewModel(
                                 "任务已重新排队，等待提交。", cancellationToken);
     }
 
+    /// <summary>重新校验：仅作用于校验未确认的任务；保留候选与文件，只重置本轮证据并重发 recheck。</summary>
+    public async Task ReverifyAsync(Guid taskId, CancellationToken cancellationToken = default)
+    {
+        await RunOperationAsync(taskId, () => downloadService.ReverifyAsync(taskId, cancellationToken),
+                                "已重新发起校验，等待下载器确认。", cancellationToken);
+    }
+
+    /// <summary>
+    ///     人工恢复启动：完整任务恢复做种、部分完成继续下载。响应丢失先观察、有界重试，
+    ///     不盲目重发；不重新校验、不隔离、不重新下载。
+    /// </summary>
+    public async Task ResumeRunAsync(Guid taskId, CancellationToken cancellationToken = default)
+    {
+        await RunOperationAsync(taskId, () => downloadService.ResumeRunAsync(taskId, cancellationToken),
+                                "恢复请求已发出，等待下载器确认。", cancellationToken);
+    }
+
     /// <summary>重新核对：仅作用于已完成但归档受阻的任务；占用或身份异常仍会被拒绝并提示原因。</summary>
     public async Task RetryArchiveAsync(Guid taskId, CancellationToken cancellationToken = default)
     {

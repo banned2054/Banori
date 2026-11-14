@@ -333,6 +333,47 @@ public sealed class DownloadTasksPageViewModelTests
                         () => Assert.Equal(100, vm.Tasks.Count));
     }
 
+    [Fact]
+    public async Task ReverifyAsync_UnconfirmedTask_ReloadsResetIntentAndReportsSuccess()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        var task = DownloadTaskListTestSeed.NewTask(
+            "Page Reverify OK", DownloadTaskListTestSeed.At(0), DownloadTaskStatus.Paused,
+            verificationIntent: new DownloadVerificationIntent
+            {
+                CreatedAtUtc = DownloadTaskListTestSeed.Base, Step = DownloadVerificationStep.Unconfirmed
+            }.ToJson());
+        await DownloadTaskListTestSeed.SeedAsync(harness, [task]);
+        var vm = CreateViewModel(harness);
+        await vm.LoadAsync();
+
+        await vm.ReverifyAsync(task.Id).WaitAsync(Timeout);
+
+        Assert.False(vm.Busy);
+        Assert.True(vm.Succeeded);
+        Assert.Equal("已重新发起校验，等待下载器确认。", vm.Message);
+        var reloaded = await harness.GetTaskAsync(task.Id);
+        Assert.Equal(DownloadTaskStatus.Downloading, reloaded.Status);
+        Assert.Equal(DownloadVerificationStep.Requested,
+                     DownloadVerificationIntent.FromJson(reloaded.VerificationIntent)!.Step);
+    }
+
+    [Fact]
+    public async Task ReverifyAsync_RejectedTask_ShowsServiceErrorAndClearsBusy()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        var       taskId  = await harness.CreateUploadAsync(TestTorrentBytes.Create("Page Reverify Error - 01"));
+        var       vm      = CreateViewModel(harness);
+        await vm.LoadAsync();
+
+        await vm.ReverifyAsync(taskId).WaitAsync(Timeout);
+
+        Assert.False(vm.Busy);
+        Assert.False(vm.Succeeded);
+        Assert.Equal("只有校验未确认的任务可以重新校验。", vm.Message);
+        Assert.Equal(DownloadTaskStatus.PendingSubmit, (await harness.GetTaskAsync(taskId)).Status);
+    }
+
     private static async Task WaitForFilterAsync(DownloadTasksPageViewModel vm, Func<bool> condition)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);

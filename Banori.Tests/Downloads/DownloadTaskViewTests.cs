@@ -192,6 +192,32 @@ public sealed class DownloadTaskViewTests
         Assert.Contains(task.PhaseNotes, note => note.Contains("原因未记录"));
     }
 
+    /// <summary>
+    ///     人工暂停优先于校验未确认：保留的人工暂停不得被显示成可「重新校验」的系统暂停，
+    ///     页面按钮条件（Paused 且 VerificationUnconfirmed）也不再成立。
+    /// </summary>
+    [Fact]
+    public void Phase_UserPausedUnconfirmed_KeepsManualPauseOverReverify()
+    {
+        var manual = CreateTask(DownloadTaskStatus.Paused) with
+        {
+            IsUserPaused = true, VerificationStep = DownloadVerificationStep.Unconfirmed
+        };
+        var downloaderStopped = manual with { ExternalStopObservedAtUtc = DateTimeOffset.UtcNow };
+
+        Assert.Equal(DownloadDisplayPhase.PausedManually, manual.Phase);
+        Assert.Contains("恢复", manual.NextStepText);
+        Assert.DoesNotContain("重新校验", manual.NextStepText);
+        Assert.DoesNotContain(manual.PhaseNotes, note => note.Contains("重新校验"));
+        Assert.False(manual.Status == DownloadTaskStatus.Paused &&
+                     manual.Phase == DownloadDisplayPhase.VerificationUnconfirmed);
+
+        Assert.Equal(DownloadDisplayPhase.PausedByDownloader, downloaderStopped.Phase);
+        Assert.DoesNotContain("重新校验", downloaderStopped.NextStepText);
+        Assert.False(downloaderStopped.Status == DownloadTaskStatus.Paused &&
+                     downloaderStopped.Phase == DownloadDisplayPhase.VerificationUnconfirmed);
+    }
+
     [Theory]
     [InlineData(DownloadTaskStatus.Downloading, true)]
     [InlineData(DownloadTaskStatus.Paused, true)]
