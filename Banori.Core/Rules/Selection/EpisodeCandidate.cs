@@ -27,6 +27,14 @@ public sealed record EpisodeCandidate
 
     public required int Version { get; init; }
 
+    /// <summary>
+    ///     逐集裁决前该包的初始候选正片文件数；只数正片，不含字幕与 Seed。跨包落选不会减少该数
+    ///     （文件仍保持正片角色），包内落选已归 Seed。不是独立排序维度：同组同语言的分区内与
+    ///     版本一起比较，跨组/跨语言同优先级时作为分区冠军之间的决胜输入；不参与跨字幕组/
+    ///     跨语言的版本比较。
+    /// </summary>
+    public int PackageVideoFileCount { get; init; } = 1;
+
     /// <summary>同优先级的稳定决胜输入之一：更早发布者优先。</summary>
     public DateTimeOffset? PublishedAtUtc { get; init; }
 

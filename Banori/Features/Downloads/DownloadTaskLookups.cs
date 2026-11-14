@@ -1,4 +1,5 @@
 using Banned.AniParser;
+using Banned.AniParser.Models.Enums;
 using Banori.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -43,14 +44,22 @@ internal static class DownloadTaskLookups
     /// <summary>
     ///     已完成现任守卫：现任所属任务已完成、未被声明替换且版本不高于挑战方时，允许把现任记入
     ///     每集登记表或由非登记优胜兜底切换现任。调用方必须传入该集正片文件的有效版本；仅在
-    ///     确认单集且文件名不可解析时，才允许使用任务级版本回退。
+    ///     确认单集且文件名不可解析时，才允许使用任务级版本回退。来源由调用方保证同源，不在此比较。
+    ///     文件的字幕组与语言都可用于比较时，版本只在同组（忽略大小写）且同语言内成立；任一方缺失
+    ///     这两项时保持单纯版本守卫，兼容历史调用与无法解析的命名。
     /// </summary>
     internal static bool IsTakeoverEligibleIncumbent(
-        DownloadTaskStatus incumbentStatus,  Guid? incumbentReplacedByTaskId,
-        int                incumbentVersion, int   challengerVersion)
+        DownloadTaskStatus incumbentStatus,  Guid?          incumbentReplacedByTaskId,
+        int                incumbentVersion, int            challengerVersion,
+        string?            incumbentGroup   = null, EnumLanguage? incumbentLanguage = null,
+        string?            challengerGroup  = null, EnumLanguage? challengerLanguage = null)
         => incumbentStatus == DownloadTaskStatus.Completed &&
            incumbentReplacedByTaskId is null               &&
-           incumbentVersion <= challengerVersion;
+           incumbentVersion <= challengerVersion           &&
+           (incumbentGroup is null || incumbentLanguage is null ||
+            challengerGroup is null || challengerLanguage is null ||
+            (string.Equals(incumbentGroup, challengerGroup, StringComparison.OrdinalIgnoreCase) &&
+             incumbentLanguage == challengerLanguage));
 
     /// <summary>重算所选内容总大小：文件选择变化后统一刷新，选中口径只在此定义。</summary>
     internal static void RefreshSelectedTotals(DownloadTask task)
@@ -77,20 +86,24 @@ internal static class DownloadTaskLookups
     /// <summary>
     ///     单个文件是否仍承担职责：人工覆盖的选中文件是人工固定资源；内容文件在其集数上的现任
     ///     属于其他任务时已被覆盖（数据另有人承载），集数无法解析的内容视为独有职责；Seed 附件
-    ///     的回收是独立策略，不单独构成职责。
+    ///     的回收是独立策略，不单独构成职责。传入 <paramref name="sourceScope" /> 时只在同源行内
+    ///     查找该集现任；null 表示调用方已按来源过滤 rows，保持旧行为。
     /// </summary>
     internal static bool FileHoldsResidualDuty(
         AniParser parser, DownloadTask task, DownloadTaskFile file, IReadOnlyList<DownloadTaskFile> taskFiles,
         IReadOnlyList<EpisodeVersion> rows, HashSet<Guid> ownFileIds,
-        Func<DownloadTask, DownloadTaskFile, decimal?> episodeOf)
+        Func<DownloadTask, DownloadTaskFile, decimal?> episodeOf, string? sourceScope = null)
     {
         if (!file.IsSelectedForDownload) return false;
         if (file.IsManualOverride) return true;
         if (file.Kind == DownloadFileKind.Seed) return false;
 
+        var scopedRows = sourceScope is null
+            ? rows
+            : rows.Where(row => row.SourceScope == sourceScope).ToList();
         var episode = DutyEpisode(parser, task, file, taskFiles, episodeOf);
         if (episode is null) return true;
-        var incumbent = rows.FirstOrDefault(row => row.Episode == episode)?.IncumbentVideoFileId;
+        var incumbent = scopedRows.FirstOrDefault(row => row.Episode == episode)?.IncumbentVideoFileId;
         return incumbent is null || ownFileIds.Contains(incumbent.Value);
     }
 
@@ -99,10 +112,12 @@ internal static class DownloadTaskLookups
     ///     仍存在未被其他现任覆盖的选中内容文件（含无法解析集数的独有内容）、存在人工固定资源，
     ///     或存在未清的执行意图与操作日志（改名、归档待核对、校验、隔离）时，任务仍有职责，
     ///     不得退出。SelectionSyncPending 不在此列：选择下推只是执行尾巴，退出后无需再下推。
+    ///     传入 <paramref name="sourceScope" /> 时只读同源登记行；null 表示调用方已按来源过滤 rows。
     /// </summary>
     internal static bool HasResidualDuties(
         AniParser                     parser, DownloadTask task, IReadOnlyList<DownloadTaskFile> files,
-        IReadOnlyList<EpisodeVersion> rows,   Func<DownloadTask, DownloadTaskFile, decimal?> episodeOf)
+        IReadOnlyList<EpisodeVersion> rows,   Func<DownloadTask, DownloadTaskFile, decimal?> episodeOf,
+        string?                       sourceScope = null)
     {
         if (task.VerificationIntent is not null                ||
             task.IsolationState != DownloadIsolationState.None ||
@@ -111,12 +126,15 @@ internal static class DownloadTaskLookups
             files.Any(file => file.PendingRenameFrom is not null))
             return true;
 
+        var scopedRows = sourceScope is null
+            ? rows
+            : rows.Where(row => row.SourceScope == sourceScope).ToList();
         var ownFileIds = files.Select(file => file.Id).ToHashSet();
-        if (rows.Any(row => ownFileIds.Contains(row.IncumbentVideoFileId ?? Guid.Empty) ||
-                            ownFileIds.Contains(row.PendingVideoFileId   ?? Guid.Empty)))
+        if (scopedRows.Any(row => ownFileIds.Contains(row.IncumbentVideoFileId ?? Guid.Empty) ||
+                                  ownFileIds.Contains(row.PendingVideoFileId   ?? Guid.Empty)))
             return true;
 
-        return files.Any(file => FileHoldsResidualDuty(parser, task, file, files, rows, ownFileIds, episodeOf));
+        return files.Any(file => FileHoldsResidualDuty(parser, task, file, files, scopedRows, ownFileIds, episodeOf));
     }
 
     /// <summary>

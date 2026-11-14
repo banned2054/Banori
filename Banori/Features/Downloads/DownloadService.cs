@@ -1,5 +1,6 @@
 using Banned.AniParser;
 using Banned.AniParser.Models;
+using Banned.AniParser.Models.Enums;
 using Banned.Qbittorrent.Exceptions;
 using Banori.Core.Rules;
 using Banori.Core.Rules.Selection;
@@ -662,6 +663,7 @@ public sealed class DownloadService(
         ApplicationDbContext db, DownloadTask task, CancellationToken cancellationToken)
     {
         if (task.SubjectId is not { } subjectId) return;
+        var sourceScope = SourceScopes.FromSiteSource(task.SiteSource);
         var taskFiles = await db.DownloadTaskFiles.AsNoTracking()
                                 .Where(file => file.DownloadTaskId == task.Id)
                                 .ToListAsync(cancellationToken);
@@ -693,7 +695,7 @@ public sealed class DownloadService(
 
         var fileIds = videos.Select(file => file.Id).ToHashSet();
         var rows = await db.EpisodeVersions
-                           .Where(row => row.SubjectId == subjectId)
+                           .Where(row => row.SubjectId == subjectId && row.SourceScope == sourceScope)
                            .ToListAsync(cancellationToken);
         var incumbentFileIds = rows.Where(row => row.IncumbentVideoFileId is not null)
                                    .Select(row => row.IncumbentVideoFileId!.Value)
@@ -703,15 +705,19 @@ public sealed class DownloadService(
             : await db.DownloadTasks.Include(owner => owner.Files)
                       .Where(owner => owner.Files.Any(file => incumbentFileIds.Contains(file.Id)))
                       .ToListAsync(cancellationToken);
-        var incumbentGuards = new Dictionary<Guid, (int Version, DownloadTaskStatus Status, Guid? ReplacedByTaskId)>();
+        var incumbentGuards =
+            new Dictionary<Guid, (int Version, DownloadTaskStatus Status, Guid? ReplacedByTaskId,
+                                  string? Group, EnumLanguage? Language)>();
         foreach (var row in rows.Where(row => row.IncumbentVideoFileId is not null))
         {
             var fileId = row.IncumbentVideoFileId!.Value;
             var owner  = incumbentOwners.FirstOrDefault(candidate => candidate.Files.Any(file => file.Id == fileId));
             var file   = owner?.Files.FirstOrDefault(candidate => candidate.Id == fileId);
             if (owner is null || file is null) continue;
+            var (group, language) = ParseGroupAndLanguage(aniParser, file.OriginalRelativePath,
+                                                          owner.NamingSnapshot);
             incumbentGuards[fileId] = (DownloadTaskLookups.EpisodeFileVersion(aniParser, owner, file, row.Episode),
-                                       owner.Status, owner.ReplacedByTaskId);
+                                       owner.Status, owner.ReplacedByTaskId, group, language);
         }
 
         var retiredOwnerIds = new List<Guid>();
@@ -720,7 +726,7 @@ public sealed class DownloadService(
             var row = rows.FirstOrDefault(row => row.Episode == episode);
             if (row is null)
             {
-                row = new EpisodeVersion { SubjectId = subjectId, Episode = episode };
+                row = new EpisodeVersion { SubjectId = subjectId, Episode = episode, SourceScope = sourceScope };
                 db.EpisodeVersions.Add(row);
                 rows.Add(row);
             }
@@ -730,13 +736,17 @@ public sealed class DownloadService(
                 // 本任务不是登记在案的待完成优胜（未在对决中胜出，或属于不互相竞争的来源）。
                 // 例外沿用条目链完成期替换的版本守卫（判定集中在 DownloadTaskLookups，与登记期
                 // 同一实现）：现任所属任务已完成且版本不高于本集正片文件时仍允许切换——覆盖两个订阅
-                // 条目任务先后完成、登记时互相豁免的场景。
+                // 条目任务先后完成、登记时互相豁免的场景。字幕组与语言都可比时只在同分区内切换。
+                var (group, language) = ParseGroupAndLanguage(aniParser, video.OriginalRelativePath,
+                                                              task.NamingSnapshot);
                 if (!incumbentGuards.TryGetValue(incumbent, out var guard) ||
                     !DownloadTaskLookups.IsTakeoverEligibleIncumbent(guard.Status, guard.ReplacedByTaskId,
                                                                      guard.Version,
                                                                      DownloadTaskLookups.EpisodeFileVersion(aniParser,
                                                                          task, video,
-                                                                         episode, taskFiles)))
+                                                                         episode, taskFiles),
+                                                                     guard.Group, guard.Language,
+                                                                     group, language))
                     continue;
             }
 
@@ -761,6 +771,23 @@ public sealed class DownloadService(
     }
 
     /// <summary>
+    ///     完成期版本守卫的字幕组与语言：文件名可解析时取解析结果，解析失败才回退命名要素快照；
+    ///     任一值缺失时由守卫本身按历史版本规则处理，不在此猜测。
+    /// </summary>
+    private static (string? Group, EnumLanguage? Language) ParseGroupAndLanguage(
+        AniParser parser, string path, string? namingIngredients)
+    {
+        var parsed = parser.Parse(DownloadEpisodeResolver.FileName(path));
+        if (parsed is not null) return (parsed.Group, parsed.Language);
+
+        var ingredients = TorrentNamingIngredients.FromJson(namingIngredients);
+        var language = Enum.TryParse(ingredients?.Language, true, out EnumLanguage parsedLanguage)
+            ? parsedLanguage
+            : (EnumLanguage?)null;
+        return (ingredients?.Group, language);
+    }
+
+    /// <summary>
     ///     冗余退出评估（设计第四阶段）：检查职责是否全部耗尽——登记表不再引用其文件、选中内容
     ///     均已被其他现任覆盖、无人工固定资源且无未清操作日志（见 HasResidualDuties）。耗尽的
     ///     旧任务翻转为 Replaced 墓碑，下载器种子由对账清理环统一保留内容移除（deleteFiles=false），
@@ -779,9 +806,10 @@ public sealed class DownloadService(
                 continue;
             if (owner.SubjectId is not { } subjectId) continue;
 
+            var sourceScope = SourceScopes.FromSiteSource(owner.SiteSource);
             var rows = await db.EpisodeVersions.Where(row => row.SubjectId == subjectId).ToListAsync(ct);
             if (DownloadTaskLookups.HasResidualDuties(aniParser, owner, owner.Files.ToList(), rows,
-                                                      episodeResolver.EpisodeOf))
+                                                      episodeResolver.EpisodeOf, sourceScope))
                 continue;
 
             owner.Status           = DownloadTaskStatus.Replaced;

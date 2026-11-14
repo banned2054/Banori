@@ -6,19 +6,20 @@ namespace Banori.Tests.Downloads;
 /// <summary>
 ///     P2 回归：包含承接的严格超集增量必须以常规逐集择优后的最终承担集合为准——常规落选集的
 ///     文件终将被取消选择，不得充当独有内容增量，也不得为旧包职责充数；没有新增职责时保留现任。
+///     平级合集另按该包初始候选正片数决胜；跨包落选只取消选择、不改变正片角色，初始数不变。
 /// </summary>
 public sealed partial class DownloadVerificationTests
 {
     [Fact]
-    public async Task Containment_IncrementFromLosingEpisode_KeepsIncumbentsAndThrows()
+    public async Task PackageCount_LosingEpisodeStillCountsForSharedEpisodeWinner()
     {
-        await AssertLosingIncrementRejectedAsync(ContainmentFileName(1), ContainmentFileName(2, "繁日双语"));
+        await AssertLosingIncrementWinsSharedEpisodeAsync(ContainmentFileName(1), ContainmentFileName(2, "繁日双语"));
     }
 
     [Fact]
-    public async Task Containment_IncrementFromLosingEpisode_IgnoresBatchFileOrder()
+    public async Task PackageCount_LosingEpisodeStillCounts_IgnoresBatchFileOrder()
     {
-        await AssertLosingIncrementRejectedAsync(ContainmentFileName(2, "繁日双语"), ContainmentFileName(1));
+        await AssertLosingIncrementWinsSharedEpisodeAsync(ContainmentFileName(2, "繁日双语"), ContainmentFileName(1));
     }
 
     [Fact]
@@ -101,31 +102,39 @@ public sealed partial class DownloadVerificationTests
         Assert.Null((await harness.GetTaskAsync(ep2Id)).ReplacedByTaskId);
     }
 
-    private static async Task AssertLosingIncrementRejectedAsync(params string[] filePaths)
+    private static async Task AssertLosingIncrementWinsSharedEpisodeAsync(params string[] filePaths)
     {
         using var harness = await VerificationHarness.CreateAsync();
         await harness.SaveSelectionRulesAsync(NekoRules());
-        var ep1Id      = await CompleteContainmentIncumbentAsync(harness, ContainmentFileName(1));
-        var ep2Id      = await CompleteContainmentIncumbentAsync(harness, ContainmentFileName(2));
-        var addsBefore = harness.Store.AddCalls.Count;
+        var ep1Id = await CompleteContainmentIncumbentAsync(harness, ContainmentFileName(1));
+        var ep2Id = await CompleteContainmentIncumbentAsync(harness, ContainmentFileName(2));
 
-        // E2 繁日常规择优落选，其文件不构成严格超集增量：E1 无新增职责沿用现任保留，整包落选
-        // 抛出并留「择优」终止墓碑，不登记待完成优胜，也不添加到下载器。
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                                                                harness.CreateUploadAsync(ContainmentBatch(filePaths)));
+        // 平级合集按初始候选正片数决胜：E2 繁日稍后会因语言优先级落选，但它仍是本包的
+        // 正片角色，初始数保持 2，因此 E1 共享集由 2 个正片的新包取胜，不能按包含承接的
+        // “落选增量不算数”旧口径拒绝整包。
+        var incomingId = await harness.CreateUploadAsync(ContainmentBatch(filePaths));
+        var incoming   = await harness.GetTaskAsync(incomingId);
+        Assert.Equal(DownloadTaskStatus.PendingSubmit, incoming.Status);
 
-        Assert.Equal(addsBefore, harness.Store.AddCalls.Count);
-        Assert.Empty(harness.Store.DeleteCalls);
-        Assert.Equal(DownloadTaskStatus.Completed, (await harness.GetTaskAsync(ep1Id)).Status);
-        Assert.Null((await harness.GetTaskAsync(ep1Id)).ReplacedByTaskId);
-        Assert.Equal(DownloadTaskStatus.Completed, (await harness.GetTaskAsync(ep2Id)).Status);
-        Assert.Null((await harness.GetTaskAsync(ep2Id)).ReplacedByTaskId);
-        Assert.Null((await EpisodeRegistryAsync(harness, 1))!.PendingVideoFileId);
+        var sharedIndex = Array.FindIndex(filePaths, path => path == ContainmentFileName(1));
+        var extraIndex  = Array.FindIndex(filePaths, path => path == ContainmentFileName(2, "繁日双语"));
+        await using (var db = await harness.CreateDbContextAsync())
+        {
+            var files = await db.DownloadTaskFiles.AsNoTracking()
+                                .Where(file => file.DownloadTaskId == incomingId)
+                                .OrderBy(file => file.FileIndex)
+                                .ToListAsync();
+            Assert.True(files[sharedIndex].IsSelectedForDownload);
+            Assert.False(files[extraIndex].IsSelectedForDownload);
+        }
+
+        var ep1Row = (await EpisodeRegistryAsync(harness, 1))!;
+        Assert.Equal(await ContainmentFileIdAsync(harness, ep1Id, 0), ep1Row.IncumbentVideoFileId);
+        Assert.Equal(await ContainmentFileIdAsync(harness, incomingId, sharedIndex), ep1Row.PendingVideoFileId);
         Assert.Null((await EpisodeRegistryAsync(harness, 2))!.PendingVideoFileId);
-        await using var db = await harness.CreateDbContextAsync();
-        var tombstone = Assert.Single(await db.DownloadTasks.AsNoTracking()
-                                              .Where(task => task.Status == DownloadTaskStatus.Replaced)
-                                              .ToListAsync());
-        Assert.Equal("择优", tombstone.FailedStep);
+        Assert.Equal(DownloadTaskStatus.Completed, (await harness.GetTaskAsync(ep1Id)).Status);
+        Assert.Equal(DownloadTaskStatus.Completed, (await harness.GetTaskAsync(ep2Id)).Status);
+        Assert.Null((await harness.GetTaskAsync(ep1Id)).ReplacedByTaskId);
+        Assert.Null((await harness.GetTaskAsync(ep2Id)).ReplacedByTaskId);
     }
 }

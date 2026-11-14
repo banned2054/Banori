@@ -21,8 +21,12 @@ public sealed record GroupSelectionResult(
 
 /// <summary>
 ///     同集组内择优：按规则配置比较候选，选出一组唯一的优胜者。
-///     比较顺序：规则优先级（字幕组 / 语言 / 组合条件）→ 字幕组名 → 修订版本（仅同字幕组内生效）→
-///     同优先级保留现任优胜 → 发布时间早者优先 → 稳定来源标识。不使用 RSS 枚举顺序或数据库 ID 决胜。
+///     规则优先级（字幕组 / 语言 / 组合条件）最高的候选层内，先按字幕组（忽略大小写）与语言
+///     （枚举值全等，null 只与 null 相等）分区：分区内按修订版本 → 包内初始正片数 → 发布时间 →
+///     稳定来源标识选版本冠军，分区冠军之间再按包内初始正片数 → 发布时间 → 稳定来源标识比较。
+///     版本只在同组同语言的分区内比较；跨组/跨语言同优先级按分区冠军的初始正片数决胜，
+///     不按组名/语言名排序。现任只在没有严格更优代表时保留：计数相同时保留现任侧的分区冠军。
+///     不使用 RSS 枚举顺序或数据库 ID 决胜。
 /// </summary>
 public sealed class CandidateRankingPolicy
 {
@@ -63,40 +67,57 @@ public sealed class CandidateRankingPolicy
 
     /// <summary>
     ///     同组内选出优胜。现任优胜的保留不进入排序链（排序链要求全序，否则会形成
-    ///     “v2 优于 v1、现任 v1 优于他组、他组按组名优于 v2”的循环），而是显式判定：
-    ///     取规则优先级最高的候选层；现任在该层内时，只有同字幕组的更高修订版本构成严格升级
-    ///     （计划：不同字幕组不凭版本号跨越优先级），其余情况保留现任；现任不在该层时按
-    ///     组名 → 版本 → 发布时间 → 稳定来源标识的基础全序取第一。
+    ///     “v2 优于 v1、现任 v1 优于他组、他组按组名优于 v2”的循环），而是做一次两层归约：
+    ///     取规则优先级最高的候选层，按字幕组（忽略大小写）与语言（枚举值全等）分区，分区内
+    ///     选版本冠军；冠军之间按初始正片数 → 发布时间 → 稳定来源标识选全局冠军。版本只在
+    ///     同分区内比较，不定义跨分区的成对比较器。现任不在最高层时取全局冠军；在最高层时
+    ///     取现任所在分区的冠军，仅当全局冠军的初始正片数严格更多才替换，计数相同保留现任侧。
     /// </summary>
     private static CandidateRank SelectWinner(IReadOnlyList<CandidateRank> contenders, Guid? currentWinnerFeedItemId)
     {
         var minPriority = contenders.Min(rank => rank.Priority);
         var topTier     = contenders.Where(rank => rank.Priority == minPriority).ToList();
+
+        var partitionChampions = topTier.GroupBy(rank => PartitionKey(rank.Candidate))
+                                        .Select(partition => OrderWithin(partition).First())
+                                        .ToList();
+        var overallChampion = OrderAcross(partitionChampions).First();
+
         var current = currentWinnerFeedItemId is null
             ? null
             : topTier.FirstOrDefault(rank => rank.Candidate.FeedItemId == currentWinnerFeedItemId);
-        if (current is null)
-            return topTier
-                  .OrderBy(rank => rank.Candidate.Group, StringComparer.Ordinal)
-                  .ThenByDescending(rank => rank.Candidate.Version)
-                  .ThenBy(rank => rank.Candidate.PublishedAtUtc ?? DateTimeOffset.MaxValue)
-                  .ThenBy(rank => rank.Candidate.StableId, StringComparer.Ordinal)
-                  .ThenBy(rank => rank.Candidate.FeedItemId)
-                  .First();
+        if (current is null) return overallChampion;
 
-        // 同字幕组判断与规则匹配（FindGroupRank / MatchesGroup）一致不区分大小写：
-        // 现任 ANi 与新候选 ani 是同组修订升级，不得视为跨组而保留现任。
-        var upgrade = topTier
-                     .Where(rank => string.Equals(rank.Candidate.Group, current.Candidate.Group,
-                                                  StringComparison.OrdinalIgnoreCase) &&
-                                    rank.Candidate.Version > current.Candidate.Version)
-                     .OrderByDescending(rank => rank.Candidate.Version)
-                     .ThenBy(rank => rank.Candidate.PublishedAtUtc ?? DateTimeOffset.MaxValue)
-                     .ThenBy(rank => rank.Candidate.StableId, StringComparer.Ordinal)
-                     .ThenBy(rank => rank.Candidate.FeedItemId)
-                     .FirstOrDefault();
-        return upgrade ?? current;
+        var incumbentKey      = PartitionKey(current.Candidate);
+        var incumbentChampion = partitionChampions.First(champion => PartitionKey(champion.Candidate) == incumbentKey);
+
+        // 冠军之间已按初始正片数降序，全局冠军不会少于现任分区冠军；计数相同说明没有严格更优，
+        // 保留现任侧代表（现任本身，或同分区内版本/计数更高的升级者）。
+        return overallChampion.Candidate.PackageVideoFileCount > incumbentChampion.Candidate.PackageVideoFileCount
+            ? overallChampion
+            : incumbentChampion;
     }
+
+    /// <summary>
+    ///     分区键：字幕组按忽略大小写的等价类归一，语言按枚举值精确相等；null 语言自成一个分区。
+    /// </summary>
+    private static (string Group, EnumLanguage? Language) PartitionKey(EpisodeCandidate candidate) =>
+        (candidate.Group.ToUpperInvariant(), candidate.Language);
+
+    /// <summary>分区内的全序：版本 → 初始正片数 → 发布时间 → 稳定来源标识 → FeedItemId。</summary>
+    private static IOrderedEnumerable<CandidateRank> OrderWithin(IEnumerable<CandidateRank> partition) =>
+        partition.OrderByDescending(rank => rank.Candidate.Version)
+                 .ThenByDescending(rank => rank.Candidate.PackageVideoFileCount)
+                 .ThenBy(rank => rank.Candidate.PublishedAtUtc ?? DateTimeOffset.MaxValue)
+                 .ThenBy(rank => rank.Candidate.StableId, StringComparer.Ordinal)
+                 .ThenBy(rank => rank.Candidate.FeedItemId);
+
+    /// <summary>分区冠军之间的全序：初始正片数 → 发布时间 → 稳定来源标识 → FeedItemId。</summary>
+    private static IOrderedEnumerable<CandidateRank> OrderAcross(IEnumerable<CandidateRank> champions) =>
+        champions.OrderByDescending(rank => rank.Candidate.PackageVideoFileCount)
+                 .ThenBy(rank => rank.Candidate.PublishedAtUtc ?? DateTimeOffset.MaxValue)
+                 .ThenBy(rank => rank.Candidate.StableId, StringComparer.Ordinal)
+                 .ThenBy(rank => rank.Candidate.FeedItemId);
 
     private static (int Priority, string Basis, string? ExcludedReason) RankCandidate(
         EpisodeCandidate candidate, SelectionRuleConfig config)

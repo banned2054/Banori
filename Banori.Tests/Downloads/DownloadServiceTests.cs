@@ -141,27 +141,27 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(DownloadTaskStatus.Downloading, submitted.Status);
         var add = Assert.Single(harness.Store.AddCalls);
         Assert.Equal(task.SavePath, add.SavePath);
-        // 默认替身 tracker 不在 PT 分类表内：未知 tracker 的上传统一归 bt 并作为 tag 提交。
-        Assert.Equal("bt", submitted.SiteSource);
-        Assert.Equal(["bt"], add.Tags);
+        // 默认替身 tracker 不在 PT 分类表内：未知 tracker 的上传统一归 other 并作为 tag 提交。
+        Assert.Equal("other", submitted.SiteSource);
+        Assert.Equal(["other"], add.Tags);
         Assert.Equal("Uploaded Anime - 01", add.Rename);
     }
 
     [Fact]
-    public async Task CreateUpload_UnknownTrackersFallBackToBtAndManualSourceIsIgnored()
+    public async Task CreateUpload_UnknownTrackersFallBackToOtherAndManualSourceIsIgnored()
     {
         using var harness = await CreateHarnessAsync();
         var       bytes   = TestTorrentBytes.Create("Uploaded Anime - 01");
 
-        // 手填来源参数仅为兼容保留：未知 tracker 的上传归 bt，手填值不再参与判定。
+        // 手填来源参数仅为兼容保留：未知 tracker 的上传归 other，手填值不再参与判定。
         var taskId = await harness.CreateUploadAsync(bytes, "byrbt");
 
         var task = await harness.GetTaskAsync(taskId);
-        Assert.Equal("bt", task.SiteSource);
+        Assert.Equal("other", task.SiteSource);
 
         await harness.ReconcileAsync();
         var add = Assert.Single(harness.Store.AddCalls);
-        Assert.Equal(["bt"], add.Tags);
+        Assert.Equal(["other"], add.Tags);
     }
 
     [Fact]
@@ -192,13 +192,13 @@ public sealed partial class DownloadServiceTests
     {
         using var harness = await CreateHarnessAsync();
 
-        // 伪造的相似主机与错误路径不得命中分类，统一归 bt。
+        // 伪造的相似主机与错误路径不得命中分类，统一归 other。
         var fakeBytes = TestTorrentBytes.CreateMultiTracker("Fake Host Anime - 01",
                                                             "https://evil-tracker.byr.pt/announce.php",
                                                             "https://tracker.byr.pt.evil.com/announce.php",
                                                             "https://tracker-public.tjupt.org/announce");
         var fakeTask = await harness.CreateUploadAsync(fakeBytes);
-        Assert.Equal("bt", (await harness.GetTaskAsync(fakeTask)).SiteSource);
+        Assert.Equal("other", (await harness.GetTaskAsync(fakeTask)).SiteSource);
     }
 
     [Fact]
@@ -381,6 +381,32 @@ public sealed partial class DownloadServiceTests
         await harness.ReconcileAsync();
         var add = Assert.Single(harness.Store.AddCalls);
         Assert.Empty(add.Tags);
+    }
+
+    [Fact]
+    public async Task CreateFromRssFeed_UnknownHostAndUploadOther_AreSeparateArbitrationDomains()
+    {
+        using var harness = await CreateHarnessAsync();
+        // 上传未命中 PT tracker → other；未知 RSS 主机 → (unknown)。两者同 Subject/集数也不得互相裁决。
+        var uploadId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语")));
+        var upload   = await harness.GetTaskAsync(uploadId);
+        Assert.Equal("other", upload.SiteSource);
+        Assert.Equal(SourceScopes.Other, SourceScopes.FromSiteSource(upload.SiteSource));
+        Assert.Equal(SourceScopes.Unknown, SourceScopes.FromFeedHost("self.example.org"));
+
+        harness.FeedReader.Items.Add(RssItem("unknown-host", NekoTitle("简日双语"),
+                                             "https://self.example.org/torrents/unknown-host.torrent"));
+        var result = await harness.CreateFromRssFeedAsync("https://self.example.org/rss", subjectId : 42);
+
+        Assert.Equal(1, result.CreatedCount);
+        // 未知 RSS 不因上传 other 占优而落选，上传任务也不被跨源顶替。
+        Assert.Equal(DownloadTaskStatus.PendingSubmit, (await harness.GetTaskAsync(uploadId)).Status);
+        var rssTaskId = result.Items.Single(item => item.TaskId is not null).TaskId!.Value;
+        var rssTask   = await harness.GetTaskAsync(rssTaskId);
+        Assert.Equal(DownloadTaskStatus.PendingSubmit, rssTask.Status);
+        Assert.Null(rssTask.SiteSource);
+        await using var db = await harness.CreateDbContextAsync();
+        Assert.Empty(await db.EpisodeVersions.AsNoTracking().ToListAsync());
     }
 
     [Fact]
@@ -1179,13 +1205,17 @@ public sealed partial class DownloadServiceTests
             Assert.Equal("Media/Anime/测试作品 E12.mp4", oldFile.CurrentRelativePath);
         }
 
-        // 新版本（繁日，不同来源可登记，不同压制故大小不同）目标同名：新任务在专属目录独立下载
-        // （不再回退原始命名直写），完成链把旧成片移入 .replaced/ 备份后完成替换。
+        // 同来源新版本（简体→简体 v2，不同压制故大小不同）目标同名：来源隔离后只有同源版本才登记
+        // 待完成优胜，新任务据此在专属目录独立下载（不再回退原始命名直写），完成链把旧成片移入
+        // .replaced/ 备份后完成替换。跨来源不再登记 Pending，不能用跨源任务构造替换关系。
+        var replacementName = NekoTitle("简日双语").Replace("[12]", "[12v2]", StringComparison.Ordinal);
         var replacementBytes = Encoding.UTF8.GetBytes(Encoding.UTF8
-                                                              .GetString(TestTorrentBytes.Create(NekoTitle("繁日双语")))
+                                                              .GetString(TestTorrentBytes.Create(
+                                                                  replacementName,
+                                                                  "https://tracker.byr.pt/announce.php?passkey=old"))
                                                               .Replace("6:lengthi1024e", "6:lengthi2048e",
                                                                        StringComparison.Ordinal));
-        var newTaskId = await harness.CreateUploadAsync(replacementBytes, "byrbt");
+        var newTaskId = await harness.CreateUploadAsync(replacementBytes);
         var newTask   = await harness.GetTaskAsync(newTaskId);
         Assert.DoesNotContain(harness.Store.RenameFileCalls, call => call.Hash == newTask.InfoHash);
 
@@ -1812,6 +1842,17 @@ public sealed partial class DownloadServiceTests
         await using var db = await harness.CreateDbContextAsync();
         return await db.EpisodeVersions.AsNoTracking()
                        .SingleOrDefaultAsync(row => row.SubjectId == subjectId && row.Episode == episode);
+    }
+
+    /// <summary>按来源读取每集登记表行：来源隔离后的登记/现任断言入口。</summary>
+    private static async Task<EpisodeVersion?> FindSourceEpisodeVersionAsync(
+        TestHarness harness, decimal episode, string sourceScope, int subjectId = 42)
+    {
+        await using var db = await harness.CreateDbContextAsync();
+        return await db.EpisodeVersions.AsNoTracking()
+                       .SingleOrDefaultAsync(row => row.SubjectId   == subjectId   &&
+                                                    row.Episode     == episode     &&
+                                                    row.SourceScope == sourceScope);
     }
 
     /// <summary>任务的胜者正片文件 Id（首个 Anime 文件；文件不可分类的单文件任务回退唯一文件）。</summary>
@@ -2510,8 +2551,8 @@ public sealed partial class DownloadServiceTests
         var taskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(title));
 
         var task             = await harness.GetTaskAsync(taskId);
-        // 默认模板渲染：{source} 取上传 tracker 分类的 bt 兜底（默认替身 tracker 未知）。
-        var expectedSnapshot = "[Anime]测试作品 E12 bt";
+        // 默认模板渲染：{source} 取上传 tracker 分类的 other 兜底（默认替身 tracker 未知）。
+        var expectedSnapshot = "[Anime]测试作品 E12 other";
         Assert.Equal(expectedSnapshot, task.NamingSnapshot);
         Assert.Equal(42, task.SubjectId);
         var ingredients = TorrentNamingIngredients.FromJson(task.NamingIngredients);
@@ -2520,7 +2561,7 @@ public sealed partial class DownloadServiceTests
         Assert.Equal("测试作品", ingredients.Title);
         Assert.Equal("12", ingredients.EpisodeText);
         Assert.Equal("喵萌奶茶屋", ingredients.Group);
-        Assert.Equal("bt", ingredients.Source);
+        Assert.Equal("other", ingredients.Source);
 
         // 沿用既有提交管线：提交与完成改名都使用模板渲染的命名。
         await harness.ReconcileAsync();
@@ -2599,8 +2640,8 @@ public sealed partial class DownloadServiceTests
 
         var task = await harness.GetTaskAsync(taskId);
         Assert.Equal(7, task.SubjectId);
-        // 上传来源取 tracker 分类的 bt 兜底（默认替身 tracker 未知）。
-        Assert.Equal("[Anime]测试作品7 E12 bt", task.NamingSnapshot);
+        // 上传来源取 tracker 分类的 other 兜底（默认替身 tracker 未知）。
+        Assert.Equal("[Anime]测试作品7 E12 other", task.NamingSnapshot);
         await using var db = await harness.CreateDbContextAsync();
         Assert.True(await db.SubjectTitleMappings.AsNoTracking().AnyAsync(mapping =>
                                                                               mapping.NormalizedTitle ==

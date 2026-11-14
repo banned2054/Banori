@@ -37,11 +37,18 @@ public sealed partial class DownloadVerificationTests
                                        .Replace("6:lengthi1024e", "6:lengthi2048e",
                                                 StringComparison.Ordinal));
 
-    private static async Task<EpisodeVersion?> EpisodeRegistryAsync(VerificationHarness harness, decimal episode)
+    /// <summary>
+    ///     读取每集登记行：来源隔离后必须按来源过滤。containment 用上传种子均未命中 PT tracker，
+    ///     统一落在 <see cref="SourceScopes.Other" />；同 Subject/集数可能另有 legacy 或其他来源行。
+    /// </summary>
+    private static async Task<EpisodeVersion?> EpisodeRegistryAsync(
+        VerificationHarness harness, decimal episode, string sourceScope = SourceScopes.Other)
     {
         await using var db = await harness.CreateDbContextAsync();
         return await db.EpisodeVersions.AsNoTracking()
-                       .SingleOrDefaultAsync(row => row.SubjectId == 42 && row.Episode == episode);
+                       .SingleOrDefaultAsync(row => row.SubjectId   == 42           &&
+                                                    row.Episode     == episode      &&
+                                                    row.SourceScope == sourceScope);
     }
 
     private static async Task<Guid> ContainmentFileIdAsync(VerificationHarness harness, Guid taskId, int fileIndex)
@@ -151,7 +158,7 @@ public sealed partial class DownloadVerificationTests
     }
 
     [Fact]
-    public async Task Containment_UniqueSubtitleDuty_BlocksTakeoverAndKeepsSmallSeed()
+    public async Task Containment_EqualVideoCount_UniqueSubtitleDuty_BlocksTakeoverAndKeepsSmallSeed()
     {
         using var harness = await VerificationHarness.CreateAsync();
         await harness.SaveSelectionRulesAsync(NekoRules());
@@ -159,25 +166,28 @@ public sealed partial class DownloadVerificationTests
                                                               ContainmentSubtitleName(1));
         var small = await harness.GetTaskAsync(smallId);
 
-        // 大包正片覆盖小包第 1 集，但没有小包的独有字幕：职责文件未被全部覆盖，不构成包含承接，
-        // 第 1 集回落到现任保留语义取消选择；小包保留全部职责。
-        var bigId = await harness.CreateUploadAsync(ContainmentBatch(ContainmentFileName(1),
-                                                                     ContainmentFileName(2)));
+        // 双方正片数相同时排名保留现任，包含承接仍必须覆盖小包的独有字幕：readme 是 Seed，
+        // 不构成正片数或严格超集增量，新包不得凭“文件更多”忽略字幕职责。
+        var bytes      = ContainmentBatch(ContainmentFileName(1), "readme.txt");
+        var addsBefore = harness.Store.AddCalls.Count;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => harness.CreateUploadAsync(bytes));
+        Assert.Equal(addsBefore, harness.Store.AddCalls.Count);
+
         await using (var db = await harness.CreateDbContextAsync())
         {
-            var ep1 = await db.DownloadTaskFiles.AsNoTracking()
-                              .SingleAsync(file => file.DownloadTaskId == bigId && file.FileIndex == 0);
-            Assert.False(ep1.IsSelectedForDownload);
-            Assert.Contains("同集已有更优任务", ep1.SelectionReason);
-            var ep2 = await db.DownloadTaskFiles.AsNoTracking()
-                              .SingleAsync(file => file.DownloadTaskId == bigId && file.FileIndex == 1);
-            Assert.True(ep2.IsSelectedForDownload);
+            var tombstone = await db.DownloadTasks.AsNoTracking()
+                                    .SingleAsync(task => task.Status           == DownloadTaskStatus.Replaced &&
+                                                         task.ReplacedByTaskId == smallId);
+            Assert.Equal("择优", tombstone.FailedStep);
+            var files = await db.DownloadTaskFiles.AsNoTracking()
+                                .Where(file => file.DownloadTaskId == smallId)
+                                .ToListAsync();
+            Assert.All(files, file => Assert.True(file.IsSelectedForDownload));
         }
 
         for (var round = 0; round < 3; round++) await harness.ReconcileAsync();
         Assert.Equal(await ContainmentFileIdAsync(harness, smallId, 0),
                      (await EpisodeRegistryAsync(harness, 1))!.IncumbentVideoFileId);
-        Assert.Null(await EpisodeRegistryAsync(harness, 2));
         Assert.Equal(DownloadTaskStatus.Completed, (await harness.GetTaskAsync(smallId)).Status);
         Assert.Null((await harness.GetTaskAsync(smallId)).ReplacedByTaskId);
         Assert.Empty(harness.Store.DeleteCalls);
