@@ -1,5 +1,6 @@
 using Banori.Configuration;
 using Banori.Data;
+using Banori.Features.Downloads;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -15,6 +16,9 @@ public static class ApplicationInitializer
         var             dbContext = services.GetRequiredService<ApplicationDbContext>();
 
         await dbContext.Database.MigrateAsync(cancellationToken);
+
+        // 来源隔离迁移后先把可证明来源的旧行迁出 legacy 隔离域，再启动任何刷新/下载工作。
+        await services.GetRequiredService<SourceScopeBackfill>().RunAsync(cancellationToken);
 
         var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
         if (await userManager.Users.AnyAsync(cancellationToken)) return;
