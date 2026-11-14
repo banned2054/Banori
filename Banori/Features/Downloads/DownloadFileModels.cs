@@ -17,7 +17,13 @@ public sealed record DownloadFileView(
     string           ClassificationReason,
     decimal?         Episode,
     decimal?         EpisodeEnd,
-    string?          AnimeRelativePath);
+    string?          AnimeRelativePath,
+    long             Size,
+    bool             IsSelectedForDownload,
+    string?          SelectionReason,
+    Guid?            SupersededByTaskId,
+    string?          SupersededByNaming,
+    string?          VerificationOutcome);
 
 public sealed record DownloadFileEditRequest(
     DownloadFileKind Kind,

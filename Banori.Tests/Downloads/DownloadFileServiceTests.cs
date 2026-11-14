@@ -719,6 +719,69 @@ public sealed class DownloadFileServiceTests
         Assert.Null(view.Files.Single().Episode);
     }
 
+    /// <summary>列表投影逐文件暴露选择、承接与复用结果；承接方命名按集合批量解析，已删除的承接方保持空。</summary>
+    [Fact]
+    public async Task List_ProjectsFileSelectionSupersessionReuseAndSize()
+    {
+        await using var h = await Harness.CreateWithFiles(("first.mkv", 1024), ("second.mkv", 2048),
+                                                          ("third.mkv", 4096), ("fourth.mkv", 8192),
+                                                          ("fifth.mkv", 16384));
+        var firstSuccessor   = Guid.NewGuid();
+        var secondSuccessor  = Guid.NewGuid();
+        var missingSuccessor = Guid.NewGuid();
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            db.AddRange(new DownloadTask
+                        {
+                            Id             = firstSuccessor, InfoHash = new string('a', 40), SavePath = "/downloads",
+                            NamingSnapshot = "第一承接任务"
+                        },
+                        new DownloadTask
+                        {
+                            Id             = secondSuccessor, InfoHash = new string('b', 40), SavePath = "/downloads",
+                            NamingSnapshot = "第二承接任务"
+                        });
+            await db.SaveChangesAsync();
+        }
+
+        await h.Service.InitializeAsync(h.Task.Id);
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var files = await db.DownloadTaskFiles.OrderBy(file => file.FileIndex).ToListAsync();
+            files[0].VerificationOutcome = DownloadFileVerificationOutcomes.ReusedVerified;
+            files[1].VerificationOutcome = DownloadFileVerificationOutcomes.ReuseUnverified;
+            files[2].IsSelectedForDownload = false;
+            files[2].SelectionReason       = "同集包内择优落选";
+            files[2].SupersededByTaskId    = firstSuccessor;
+            files[3].IsSelectedForDownload = false;
+            files[3].SelectionReason       = "已被更优任务替代：第二承接任务";
+            files[3].SupersededByTaskId    = secondSuccessor;
+            files[4].IsSelectedForDownload = false;
+            files[4].SelectionReason       = "已被更优任务替代：已删除任务";
+            files[4].SupersededByTaskId    = missingSuccessor;
+            await db.SaveChangesAsync();
+        }
+
+        var view   = await h.Service.ListAsync(h.Task.Id);
+        var listed = view.Files.OrderBy(file => file.Index).ToArray();
+        Assert.Equal([1024L, 2048L, 4096L, 8192L, 16384L], listed.Select(file => file.Size));
+        Assert.True(listed[0].IsSelectedForDownload);
+        Assert.Null(listed[0].SelectionReason);
+        Assert.Null(listed[0].SupersededByTaskId);
+        Assert.Null(listed[0].SupersededByNaming);
+        Assert.Equal(DownloadFileVerificationOutcomes.ReusedVerified, listed[0].VerificationOutcome);
+        Assert.True(listed[1].IsSelectedForDownload);
+        Assert.Equal(DownloadFileVerificationOutcomes.ReuseUnverified, listed[1].VerificationOutcome);
+        Assert.False(listed[2].IsSelectedForDownload);
+        Assert.Equal("同集包内择优落选", listed[2].SelectionReason);
+        Assert.Equal(firstSuccessor, listed[2].SupersededByTaskId);
+        Assert.Equal("第一承接任务", listed[2].SupersededByNaming);
+        Assert.Equal(secondSuccessor, listed[3].SupersededByTaskId);
+        Assert.Equal("第二承接任务", listed[3].SupersededByNaming);
+        Assert.Equal(missingSuccessor, listed[4].SupersededByTaskId);
+        Assert.Null(listed[4].SupersededByNaming);
+    }
+
     [Fact]
     public async Task UnparsedLegacyFile_ManualEpisodeBuildsAndPersistsBoundSubjectTemplate()
     {

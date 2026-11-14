@@ -1,4 +1,5 @@
 @using Banori.Features.Downloads
+@using System.Globalization
 <div class="download-task-files p-3 bg-body-tertiary" aria-label="任务文件详情">
 	@if (State.Loading)
 	{
@@ -50,9 +51,26 @@
 								<div>当前路径：<code class="text-break">@file.CurrentPath</code></div>
 								<div class="mt-1">
 									<span class="badge text-bg-secondary me-2">@KindText(file.Kind)</span>
+									@if (!file.IsSelectedForDownload)
+									{
+										<span class="badge text-bg-secondary me-2">不下载</span>
+									}
 									分类原因：@file.ClassificationReason
 									<span class="ms-2">集数：@EpisodeText(file)</span>
+									<span class="ms-2">大小：@SizeText(file.Size)</span>
 								</div>
+								@if (!file.IsSelectedForDownload && !string.IsNullOrWhiteSpace(file.SelectionReason))
+								{
+									<div class="text-body-secondary">不下载原因：@file.SelectionReason</div>
+								}
+								@if (SupersededText(file) is { } superseded)
+								{
+									<div class="text-body-secondary">@superseded</div>
+								}
+								@if (VerificationText(file) is { } verification)
+								{
+									<div class="text-body-secondary">复用校验：@verification</div>
+								}
 							</div>
 							@if (draft is null)
 							{
@@ -187,5 +205,36 @@
 			: file.EpisodeEnd is { } end
 				? $"{episode:0.##}–{end:0.##}"
 				: $"{episode:0.##}";
+
+	/// <summary>承接方命名缺失（承接任务已删除或未命名）时退回任务 Id 前 8 位，不猜名称。</summary>
+	private static string? SupersededText(DownloadFileView file)
+	{
+		if (file.SupersededByTaskId is not { } supersededId) return null;
+		var name = string.IsNullOrWhiteSpace(file.SupersededByNaming)
+			? supersededId.ToString("N")[..8]
+			: file.SupersededByNaming;
+		return $"已被 {name} 承接";
+	}
+
+	/// <summary>复用结果只描述该次映射的确认状态，不据此断言字节内容不同。</summary>
+	private static string? VerificationText(DownloadFileView file) =>
+		file.VerificationOutcome switch
+		{
+			DownloadFileVerificationOutcomes.ReusedVerified  => "复用已证实",
+			DownloadFileVerificationOutcomes.ReuseUnverified => "复用未证实（该次映射未通过/未确认）",
+			_                                                => null
+		};
+
+	private static string SizeText(long size) =>
+		size switch
+		{
+			< 1024                => $"{size} B",
+			< 1024 * 1024         => $"{ScaledSize(size, 1024)} KB",
+			< 1024L * 1024 * 1024 => $"{ScaledSize(size, 1024 * 1024)} MB",
+			_                     => $"{ScaledSize(size, 1024L * 1024 * 1024)} GB"
+		};
+
+	private static string ScaledSize(long size, long unit) =>
+		(size / (double)unit).ToString("0.#", CultureInfo.InvariantCulture);
 
 }

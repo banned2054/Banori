@@ -59,11 +59,11 @@ public sealed class DownloadFileService(
         using var       lease = await coordinationGate.EnterAsync(cancellationToken);
         await using var db    = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var             task  = await LoadAsync(db, taskId, cancellationToken);
-        if (task.Files.Count != 0) return View(task);
+        if (task.Files.Count != 0) return await ViewAsync(db, task, cancellationToken);
         await using var session = await sessionFactory.CreateAsync(cancellationToken);
         task = await InitializeUnderGateAsync(db, session, taskId, cancellationToken);
 
-        return View(task);
+        return await ViewAsync(db, task, cancellationToken);
     }
 
     public async Task<DownloadFilePreview> PreviewAsync(
@@ -106,7 +106,7 @@ public sealed class DownloadFileService(
         Stage(task, plan);
         await db.SaveChangesAsync(cancellationToken); // Overrides and journal must survive before any remote side effect.
         await ExecutePendingAsync(db, session, task, cancellationToken);
-        return View(task);
+        return await ViewAsync(db, task, cancellationToken);
     }
 
     /// <summary>
@@ -602,9 +602,9 @@ public sealed class DownloadFileService(
                                file.Size == occupantSize);
 
     /// <summary>
-    ///     本任务完成替换时的迁让与放行对象：每集登记表中本任务为待完成优胜的集，其现任视频文件
-    ///     （现任所属任务须已完成且未被声明替换）；以及被本任务逐集承接取消选择的休眠文件
-    ///     （所属任务任意状态——部分承接的合集仍在下载其余集）。
+    ///     本任务完成替换时的迁让与放行对象：每集登记表中本任务来源下本任务为待完成优胜的集，其
+    ///     现任视频文件（现任所属任务须已完成且未被声明替换）；以及被本任务逐集承接取消选择的休眠
+    ///     文件（所属任务任意状态、来源不限——部分承接的合集仍在下载其余集）。
     /// </summary>
     private async Task<List<ReplacementAsideEntry>> LoadReplacementAsideFilesAsync(
         ApplicationDbContext db, DownloadTask task, CancellationToken ct)
@@ -616,8 +616,12 @@ public sealed class DownloadFileService(
 
         if (myVideoIds.Count > 0 && task.SubjectId is { } subjectId)
         {
+            // 只把本任务来源的 Pending 对应现任列入迁让对象；跨来源的登记行互不顶替。
+            var sourceScope = SourceScopes.FromSiteSource(task.SiteSource);
             var incumbentFileIds = await db.EpisodeVersions.AsNoTracking()
-                                           .Where(row => row.SubjectId == subjectId && row.PendingVideoFileId != null)
+                                           .Where(row => row.SubjectId   == subjectId   &&
+                                                         row.SourceScope == sourceScope &&
+                                                         row.PendingVideoFileId != null)
                                            .ToListAsync(ct);
             var wanted = incumbentFileIds
                         .Where(row => myVideoIds.Contains(row.PendingVideoFileId!.Value) &&
@@ -1292,21 +1296,47 @@ public sealed class DownloadFileService(
         return true;
     }
 
-    private DownloadTaskFilesView View(DownloadTask task) =>
-        new(task.Id, task.SavePath,
-            task.Files.OrderBy(file => file.FileIndex)
-                .Select(file =>
-                 {
-                     var parsed = aniParser.Parse(DownloadEpisodeResolver.FileName(file.OriginalRelativePath));
-                     var (episode, end) = Episodes(task, file, parsed);
-                     if (file.EpisodeNumberOverride is null &&
-                         parsed?.Episode is null            &&
-                         parsed?.StartEpisode is null)
-                         episode = null; // Display identification honestly; task episode fallback is only for naming.
-                     return new DownloadFileView(file.FileIndex, file.OriginalRelativePath, file.CurrentRelativePath,
-                                                 file.Kind, file.ClassificationReason, episode, end,
-                                                 file.AnimeRelativePathOverride);
-                 }).ToList());
+    private async Task<DownloadTaskFilesView> ViewAsync(
+        ApplicationDbContext db, DownloadTask task, CancellationToken ct)
+    {
+        var supersededNames = await SupersededNamesAsync(db, task, ct);
+        return new(task.Id, task.SavePath, ProjectFiles(task, supersededNames));
+    }
+
+    private IReadOnlyList<DownloadFileView> ProjectFiles(
+        DownloadTask task, IReadOnlyDictionary<Guid, string> supersededNames) =>
+        task.Files.OrderBy(file => file.FileIndex)
+            .Select(file =>
+             {
+                 var parsed = aniParser.Parse(DownloadEpisodeResolver.FileName(file.OriginalRelativePath));
+                 var (episode, end) = Episodes(task, file, parsed);
+                 if (file.EpisodeNumberOverride is null &&
+                     parsed?.Episode is null            &&
+                     parsed?.StartEpisode is null)
+                     episode = null; // Display identification honestly; task episode fallback is only for naming.
+                 var supersededByNaming = file.SupersededByTaskId is { } supersededId
+                     ? supersededNames.GetValueOrDefault(supersededId)
+                     : null;
+                 return new DownloadFileView(file.FileIndex, file.OriginalRelativePath, file.CurrentRelativePath,
+                                             file.Kind, file.ClassificationReason, episode, end,
+                                             file.AnimeRelativePathOverride, file.Size,
+                                             file.IsSelectedForDownload, file.SelectionReason,
+                                             file.SupersededByTaskId, supersededByNaming, file.VerificationOutcome);
+             }).ToList();
+
+    /// <summary>承接方命名：按本任务文件的 SupersededByTaskId 集合一次查询；承接任务已删除时对应字段保持 null。</summary>
+    private static async Task<IReadOnlyDictionary<Guid, string>> SupersededNamesAsync(
+        ApplicationDbContext db, DownloadTask task, CancellationToken ct)
+    {
+        var ids = task.Files.Where(file => file.SupersededByTaskId is not null)
+                      .Select(file => file.SupersededByTaskId!.Value)
+                      .Distinct()
+                      .ToList();
+        if (ids.Count == 0) return new Dictionary<Guid, string>();
+        return await db.DownloadTasks.AsNoTracking()
+                       .Where(value => ids.Contains(value.Id))
+                       .ToDictionaryAsync(value => value.Id, value => value.NamingSnapshot, ct);
+    }
 
     private static DownloadFileKind Kind(DownloadFileClassification classification) =>
         classification.Kind == Core.Downloads.DownloadFileKind.Seed
