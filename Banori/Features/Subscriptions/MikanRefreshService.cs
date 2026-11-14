@@ -1,3 +1,4 @@
+using Banori.Core.Torrents;
 using Banori.Data;
 using Banori.Integrations;
 using Microsoft.AspNetCore.DataProtection;
@@ -167,7 +168,8 @@ public sealed class MikanRefreshService(
         foreach (var entry in entries.OrderBy(item => item.PublishedAtUtc))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (await TryAddFeedItemAsync(db, subscription.Id, entry, timeProvider.GetUtcNow(), cancellationToken))
+            if (await TryAddFeedItemAsync(db, subscription.Id, subscription.SourceScope, entry,
+                                          timeProvider.GetUtcNow(), cancellationToken))
                 added++;
             else
                 duplicates++;
@@ -245,12 +247,13 @@ public sealed class MikanRefreshService(
                                            item.SubjectId != null                    &&
                                            item.Episode   != null                    &&
                                            item.MediaType != null)
-                            .Select(item => new { item.SubjectId, item.MediaType, item.Episode })
+                            .Select(item => new { item.SubjectId, item.MediaType, item.Episode, item.SourceScope })
                             .ToListAsync(cancellationToken);
 
         return items
               .Where(item => item.MediaType != "MultipleEpisode")
-              .Select(item => new SelectionGroupKey(item.SubjectId!.Value, item.MediaType!, item.Episode!.Value))
+              .Select(item => new SelectionGroupKey(item.SubjectId!.Value, item.MediaType!, item.Episode!.Value,
+                                                    item.SourceScope))
               .Distinct()
               .ToList();
     }
@@ -267,9 +270,9 @@ public sealed class MikanRefreshService(
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    private static async Task<bool> TryAddFeedItemAsync(ApplicationDbContext db,   Guid           subscriptionId,
-                                                        FeedSourceItem       item, DateTimeOffset seenAtUtc,
-                                                        CancellationToken    cancellationToken)
+    private static async Task<bool> TryAddFeedItemAsync(
+        ApplicationDbContext db, Guid subscriptionId, string sourceScope, FeedSourceItem item,
+        DateTimeOffset seenAtUtc, CancellationToken cancellationToken)
     {
         var existing = await db.FeedItems.SingleOrDefaultAsync(value => value.SubscriptionId == subscriptionId &&
                                                                         value.StableId       == item.StableId,
@@ -297,7 +300,8 @@ public sealed class MikanRefreshService(
             TorrentUrl     = item.TorrentUri?.AbsoluteUri,
             PublishedAtUtc = item.PublishedAtUtc,
             FirstSeenAtUtc = seenAtUtc,
-            Status         = FeedItemStatus.Pending
+            Status         = FeedItemStatus.Pending,
+            SourceScope    = sourceScope
         };
         db.FeedItems.Add(entity);
         try
@@ -371,13 +375,14 @@ public sealed class MikanRefreshService(
         Guid   Id,
         string Name,
         string FeedUrl,
+        string SourceScope,
         int    RefreshIntervalMinutes,
         int?   FixedSubjectId,
         Guid?  ProxyId)
     {
         public RefreshSubscription(MediaSubscription entity, string feedUrl)
-            : this(entity.Id, entity.Name, feedUrl, entity.RefreshIntervalMinutes, entity.FixedSubjectId,
-                   entity.ProxyId)
+            : this(entity.Id, entity.Name, feedUrl, SourceScopes.FromFeedUrl(feedUrl),
+                   entity.RefreshIntervalMinutes, entity.FixedSubjectId, entity.ProxyId)
         {
         }
     }

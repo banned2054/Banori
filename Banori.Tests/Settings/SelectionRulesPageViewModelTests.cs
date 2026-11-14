@@ -27,9 +27,10 @@ namespace Banori.Tests.Settings;
 /// </summary>
 public sealed class SelectionRulesPageViewModelTests
 {
-    private const int     SubjectId = 42;
-    private const string  MediaType = "SingleEpisode";
-    private const decimal Episode   = 12m;
+    private const int     SubjectId   = 42;
+    private const string  MediaType   = "SingleEpisode";
+    private const decimal Episode     = 12m;
+    private const string  SourceScope = "mikan";
 
     [Fact]
     public async Task Load_WithSavedConfig_FillsDraftAndVersion()
@@ -84,7 +85,7 @@ public sealed class SelectionRulesPageViewModelTests
         var (aniItemId, loliHouseItemId) = await harness.AddEpisodeCandidatesAsync();
 
         // 默认规则（LoliHouse 优先）先落库一次选择：当前优胜是 LoliHouse，版本 1。
-        await selectionService.SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+        await selectionService.SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
 
         var vm = harness.CreateViewModel(scope);
         await vm.LoadAsync();
@@ -119,7 +120,7 @@ public sealed class SelectionRulesPageViewModelTests
         var             selectionService = scope.ServiceProvider.GetRequiredService<CandidateSelectionService>();
         await harness.AddEpisodeCandidatesAsync();
 
-        await selectionService.SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+        await selectionService.SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
 
         var vm = harness.CreateViewModel(scope);
         await vm.LoadAsync();
@@ -142,7 +143,7 @@ public sealed class SelectionRulesPageViewModelTests
         var             selectionService = scope.ServiceProvider.GetRequiredService<CandidateSelectionService>();
         var (aniItemId, loliHouseItemId) = await harness.AddEpisodeCandidatesAsync();
 
-        await selectionService.SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+        await selectionService.SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
 
         var vm = harness.CreateViewModel(scope);
         await vm.LoadAsync();
@@ -213,7 +214,7 @@ public sealed class SelectionRulesPageViewModelTests
         await using var scope            = harness.CreateScope();
         var             selectionService = scope.ServiceProvider.GetRequiredService<CandidateSelectionService>();
         await harness.AddEpisodeCandidatesAsync();
-        await selectionService.SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+        await selectionService.SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
 
         var vm = harness.CreateViewModel(scope);
         await vm.LoadAsync();
@@ -392,6 +393,7 @@ public sealed class SelectionRulesPageViewModelTests
                 SubjectId      = SubjectId,
                 Reason         = "通过硬性过滤。",
                 NamingPreview  = $"测试作品 E{Episode:00} v1 [{group}]",
+                SourceScope    = SourceScope,
                 EvaluatedAtUtc = Timestamp
             });
             await db.SaveChangesAsync();

@@ -30,9 +30,12 @@ namespace Banori.Tests.Subscriptions;
 /// </summary>
 public sealed class CandidateSelectionServiceTests
 {
-    private const int     SubjectId = 42;
-    private const string  MediaType = "SingleEpisode";
-    private const decimal Episode   = 12m;
+    private const int     SubjectId    = 42;
+    private const string  MediaType    = "SingleEpisode";
+    private const decimal Episode      = 12m;
+    private const string  SourceScope  = "mikan";
+    private const string  MikanFeedUrl = "https://mikanani.me/RSS/test";
+    private const string  AnibtFeedUrl = "https://anibt.net/rss";
 
     [Fact]
     public async Task Select_HigherPriorityGroupWins_RegardlessOfInsertOrder()
@@ -47,7 +50,7 @@ public sealed class CandidateSelectionServiceTests
                     await harness.AddItemAsync($"guid:{group.ToLowerInvariant()}", group, "JpSc", 1);
 
             var plans = await harness.SelectionService
-                                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
 
             var plan = Assert.Single(plans);
             Assert.NotNull(plan.Winner);
@@ -86,6 +89,66 @@ public sealed class CandidateSelectionServiceTests
     }
 
     [Fact]
+    public async Task Select_DifferentFeedSources_KeepIndependentWinnersAndIntents()
+    {
+        // 两个订阅同 Subject/Media/Episode，但 RSS 主机不同：预选键含来源，各源各自一条
+        // 选择记录与下载意图，不互相淘汰。
+        using var harness   = await CreateHarnessAsync();
+        var       mikanItem = await harness.AddItemAsync("guid:mikan-source", "ANi", "JpSc", 1,
+                                                         SourceScope, MikanFeedUrl);
+        var anibtItem = await harness.AddItemAsync("guid:anibt-source", "LoliHouse", "JpSc", 1,
+                                                   "anibt", AnibtFeedUrl);
+        var keys = new[]
+        {
+            new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope),
+            new SelectionGroupKey(SubjectId, MediaType, Episode, "anibt")
+        };
+
+        var plans = await harness.SelectionService.SelectAndRegisterAsync(keys);
+
+        Assert.Equal(2, plans.Count);
+        Assert.All(plans, plan => Assert.NotNull(plan.Winner));
+        await using var db = await harness.CreateDbContextAsync();
+        var selections = await db.CandidateSelections.AsNoTracking().ToListAsync();
+        Assert.Equal(2, selections.Count);
+        var mikanSelection = selections.Single(item => item.SourceScope == SourceScope);
+        Assert.Equal(mikanItem, mikanSelection.WinnerFeedItemId);
+        Assert.NotNull(mikanSelection.IntentTaskId);
+        var anibtSelection = selections.Single(item => item.SourceScope == "anibt");
+        Assert.Equal(anibtItem, anibtSelection.WinnerFeedItemId);
+        Assert.NotNull(anibtSelection.IntentTaskId);
+        Assert.NotEqual(mikanSelection.IntentTaskId, anibtSelection.IntentTaskId);
+
+        // 两个条目都是各自来源组的优胜，不因另一来源存在被标成落选。
+        Assert.Equal(SelectionOutcome.Winner, await harness.GetOutcomeAsync(mikanItem));
+        Assert.Equal(SelectionOutcome.Winner, await harness.GetOutcomeAsync(anibtItem));
+        Assert.Equal(2, await db.DownloadTasks.CountAsync());
+    }
+
+    [Fact]
+    public async Task Select_SameSourceStillCompetes_WhileOtherSourceIsIndependent()
+    {
+        using var harness   = await CreateHarnessAsync();
+        var       aniItem   = await harness.AddItemAsync("guid:ani", "ANi", "JpSc", 1);
+        var       loliItem  = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
+        var       anibtItem = await harness.AddItemAsync("guid:anibt", "Sakurato", "JpSc", 1,
+                                                         "anibt", AnibtFeedUrl);
+
+        var plans = await harness.SelectionService.SelectAndRegisterAsync(
+            [new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
+
+        Assert.Single(plans);
+        Assert.Equal(loliItem, plans[0].Winner!.FeedItemId);
+        // 同来源仍按原规则竞争：低优先级候选落选。
+        Assert.Equal(SelectionOutcome.RunnerUp, await harness.GetOutcomeAsync(aniItem));
+        // 另一来源的条目不在本组：不参与、不被标落选，也不产生该来源的选择记录。
+        Assert.Equal(SelectionOutcome.None, await harness.GetOutcomeAsync(anibtItem));
+        await using var db = await harness.CreateDbContextAsync();
+        Assert.Equal(1, await db.CandidateSelections.CountAsync(item => item.SourceScope == SourceScope));
+        Assert.Equal(0, await db.CandidateSelections.CountAsync(item => item.SourceScope == "anibt"));
+    }
+
+    [Fact]
     public async Task Select_LaterHigherPriorityCandidate_RegistersUpgradeAndKeepsOldTask()
     {
         using var harness = await CreateHarnessAsync();
@@ -93,12 +156,12 @@ public sealed class CandidateSelectionServiceTests
 
         var firstPlans =
             await harness.SelectionService
-                         .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                         .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
         var firstTaskId = (await harness.GetSelectionAsync()).IntentTaskId;
 
         var loliHouseItem = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
         await harness.SelectionService
-                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
 
         var selection = await harness.GetSelectionAsync();
         Assert.Equal(loliHouseItem, selection.WinnerFeedItemId);
@@ -122,7 +185,7 @@ public sealed class CandidateSelectionServiceTests
         await harness.AddCompletedTaskForAsync(itemId);
 
         await harness.SelectionService
-                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
 
         var             selection = await harness.GetSelectionAsync();
         await using var db        = await harness.CreateDbContextAsync();
@@ -193,6 +256,7 @@ public sealed class CandidateSelectionServiceTests
                 TorrentUrl     = "https://mikanani.me/Download/guid:not-yet-evaluated.torrent",
                 FirstSeenAtUtc = harness.Timestamp,
                 Status         = FeedItemStatus.Pending,
+                SourceScope    = SourceScope,
                 Reason         = "等待处理。"
             });
             await db.SaveChangesAsync();
@@ -239,6 +303,7 @@ public sealed class CandidateSelectionServiceTests
                 TorrentUrl     = "https://mikanani.me/Download/guid:not-yet-evaluated.torrent",
                 FirstSeenAtUtc = harness.Timestamp,
                 Status         = FeedItemStatus.Pending,
+                SourceScope    = SourceScope,
                 Reason         = "等待处理。"
             });
             await db.SaveChangesAsync();
@@ -274,11 +339,11 @@ public sealed class CandidateSelectionServiceTests
         var       aniItem = await harness.AddItemAsync("guid:ani", "ANi", "JpSc", 1);
 
         await harness.SelectionService
-                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
 
         var loliHouseItem = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
         await harness.SelectionService
-                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
 
         // 下载器未就绪时换了优胜：意图字段必须重置，不得继续指向旧优胜的任务。
         var selection = await harness.GetSelectionAsync();
@@ -304,14 +369,14 @@ public sealed class CandidateSelectionServiceTests
         var       aniItem = await harness.AddItemAsync("guid:ani", "ANi", "JpSc", 1);
 
         await harness.SelectionService
-                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
         var oldTaskId = (await harness.GetSelectionAsync()).IntentTaskId;
 
         // 新优胜的种子下载必然失败（未注册的 stableId 触发测试下载器异常）。
         var broken = await harness.AddItemAsync("guid:broken", "LoliHouse", "JpSc", 1);
         harness.MarkTorrentBroken("guid:broken");
         await harness.SelectionService
-                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
 
         var selection = await harness.GetSelectionAsync();
         Assert.Equal(broken, selection.WinnerFeedItemId);
@@ -332,13 +397,13 @@ public sealed class CandidateSelectionServiceTests
         harness.MarkTorrentBroken("guid:ani");
 
         await harness.SelectionService
-                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
         Assert.Equal("获取种子文件失败。", (await harness.GetSelectionAsync()).IntentFailedReason);
 
         // 低位新候选落选触发同一优胜重算：不得自动重试已失败的种子下载，失败记录保持等待人工处理。
         var runnerUp = await harness.AddItemAsync("guid:ani-b", "ANi", "JpSc", 1);
         await harness.SelectionService
-                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
 
         var selection = await harness.GetSelectionAsync();
         Assert.Equal(aniItem, selection.WinnerFeedItemId);
@@ -353,7 +418,7 @@ public sealed class CandidateSelectionServiceTests
 
         // 人工重评路径显式要求重试（resetFailedIntent）时，修复种子来源后重试成功。
         harness.HealTorrent("guid:ani");
-        await harness.SelectionService.SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)],
+        await harness.SelectionService.SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)],
                                                               true);
 
         selection = await harness.GetSelectionAsync();
@@ -370,14 +435,14 @@ public sealed class CandidateSelectionServiceTests
         await harness.AddItemAsync("guid:ani", "ANi", "JpSc", 1);
 
         await harness.SelectionService
-                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
         var firstTaskId = (await harness.GetSelectionAsync()).IntentTaskId;
         Assert.NotNull(firstTaskId);
 
         // 同一优胜且意图已登记：新落选候选触发重算时不重新下载种子，也不新建任务。
         await harness.AddItemAsync("guid:ani-b", "ANi", "JpSc", 1);
         await harness.SelectionService
-                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
 
         Assert.Equal(1, harness.TorrentFetchCount);
         var selection = await harness.GetSelectionAsync();
@@ -406,7 +471,7 @@ public sealed class CandidateSelectionServiceTests
         var       sakuratoItem = await harness.AddItemAsync("guid:sakurato", "Sakurato", "JpSc", 1);
 
         await harness.SelectionService
-                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
 
         await using var db = await harness.CreateDbContextAsync();
         Assert.Equal(SelectionOutcome.Winner,
@@ -455,7 +520,7 @@ public sealed class CandidateSelectionServiceTests
         var       loliItem = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
 
         await harness.SelectionService
-                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
 
         // 草拟规则把 ANi 排到 LoliHouse 之前：预览应给出与执行同一路径的草拟优胜。
         var draft   = SelectionRuleConfig.CreateDefault() with { GroupOrder = ["ANi", "LoliHouse"] };
@@ -504,6 +569,7 @@ public sealed class CandidateSelectionServiceTests
                 TorrentUrl     = "https://mikanani.me/Download/guid:not-yet-evaluated.torrent",
                 FirstSeenAtUtc = harness.Timestamp,
                 Status         = FeedItemStatus.Pending,
+                SourceScope    = SourceScope,
                 Reason         = "等待处理。"
             });
             await db.SaveChangesAsync();
@@ -523,7 +589,7 @@ public sealed class CandidateSelectionServiceTests
         var       loliItem = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
 
         await harness.SelectionService
-                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode)]);
+                     .SelectAndRegisterAsync([new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope)]);
         Assert.Equal(1, (await harness.GetSelectionAsync()).RuleVersion);
 
         // provider 规则未变化：重选按同一规则执行，优胜与版本保持不变。
@@ -571,6 +637,7 @@ public sealed class CandidateSelectionServiceTests
                 TorrentUrl     = "https://mikanani.me/Download/guid:not-yet-evaluated.torrent",
                 FirstSeenAtUtc = harness.Timestamp,
                 Status         = FeedItemStatus.Pending,
+                SourceScope    = SourceScope,
                 Reason         = "等待处理。"
             });
             await db.SaveChangesAsync();
@@ -592,7 +659,7 @@ public sealed class CandidateSelectionServiceTests
         using var harness  = await CreateHarnessAsync();
         var       aniItem  = await harness.AddItemAsync("guid:ani", "ANi", "JpSc", 1);
         var       loliItem = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
-        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode);
+        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope);
 
         await harness.SelectionService.SelectAndRegisterAsync([key]);
         Assert.Equal(SelectionOutcome.RunnerUp,
@@ -620,7 +687,7 @@ public sealed class CandidateSelectionServiceTests
         using var harness  = await CreateHarnessAsync();
         var       aniItem  = await harness.AddItemAsync("guid:ani", "ANi", "JpSc", 1);
         var       loliItem = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
-        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode);
+        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope);
 
         await harness.SelectionService.SelectAndRegisterAsync([key]);
         // 模拟重选中断：规则已保存为 v2（ANi 优先），但不执行整库重选。
@@ -648,7 +715,7 @@ public sealed class CandidateSelectionServiceTests
         using var harness  = await CreateHarnessAsync();
         var       aniItem  = await harness.AddItemAsync("guid:ani", "ANi", "JpSc", 1);
         var       loliItem = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
-        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode);
+        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope);
 
         var first  = harness.SelectionService.SelectAndRegisterAsync([key]);
         var second = harness.SelectionService.SelectAndRegisterAsync([key]);
@@ -675,7 +742,7 @@ public sealed class CandidateSelectionServiceTests
         using var harness  = await CreateHarnessAsync(switchableProvider : provider);
         var       aniItem  = await harness.AddItemAsync("guid:ani", "ANi", "JpSc", 1);
         var       loliItem = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
-        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode);
+        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope);
 
         // 慢批次在入口读取规则时挂起（快照为 v1，优胜 LoliHouse）。
         var slow = harness.SelectionService.SelectAndRegisterAsync([key]);
@@ -718,7 +785,7 @@ public sealed class CandidateSelectionServiceTests
         using var harness  = await CreateHarnessAsync(switchableProvider : provider);
         var       aniItem  = await harness.AddItemAsync("guid:ani", "ANi", "JpSc", 1);
         var       loliItem = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
-        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode);
+        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope);
 
         // 慢批次在入口读取规则时挂起（快照为 v2，优胜 ANi）。
         var slow = harness.SelectionService.SelectAndRegisterAsync([key]);
@@ -751,7 +818,7 @@ public sealed class CandidateSelectionServiceTests
         using var harness  = await CreateHarnessAsync();
         var       aniItem  = await harness.AddItemAsync("guid:ani", "ANi", "JpSc", 1);
         var       loliItem = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
-        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode);
+        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope);
 
         // 批次一必须在线程池线程上启动：其同步前缀会一路执行到种子获取处的挂起，
         // 若在测试线程上启动会把自己阻塞在放行之前，形成自死锁。
@@ -782,7 +849,7 @@ public sealed class CandidateSelectionServiceTests
         using var harness  = await CreateHarnessAsync();
         var       aniItem  = await harness.AddItemAsync("guid:ani", "ANi", "JpSc", 1);
         var       loliItem = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
-        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode);
+        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope);
 
         // ANi 优先规则（v2）下完成选择：优胜 ANi。
         await harness.RuleSettings.SaveAsync(SelectionRuleConfig.CreateDefault() with
@@ -814,7 +881,7 @@ public sealed class CandidateSelectionServiceTests
         using var harness  = await CreateHarnessAsync(false);
         var       aniItem  = await harness.AddItemAsync("guid:ani", "ANi", "JpSc", 1);
         var       loliItem = await harness.AddItemAsync("guid:loli", "LoliHouse", "JpSc", 1);
-        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode);
+        var       key      = new SelectionGroupKey(SubjectId, MediaType, Episode, SourceScope);
 
         await harness.SelectionService.SelectAndRegisterAsync([key]);
         await harness.RuleSettings.SaveAsync(SelectionRuleConfig.CreateDefault() with
@@ -928,6 +995,7 @@ public sealed class CandidateSelectionServiceTests
                                                   provider.GetRequiredService<TimeProvider>(),
                                                   NullLogger<DownloadService>.Instance,
                                                   new SubjectEpisodeCorrectionPolicy());
+        var dataProtectionProvider = new EphemeralDataProtectionProvider();
         var intakeService = new DownloadIntakeService(dbFactory,
                                                       provider.GetRequiredService<DownloadCoordinationGate>(),
                                                       provider.GetRequiredService<ITorrentFileSource>(),
@@ -946,7 +1014,7 @@ public sealed class CandidateSelectionServiceTests
                                                       new SubjectEpisodeCorrectionPolicy(),
                                                       provider.GetRequiredService<TimeProvider>(),
                                                       NullLogger<DownloadIntakeService>.Instance,
-                                                      new EphemeralDataProtectionProvider());
+                                                      dataProtectionProvider);
         // 门闸必须进程级共享：与应用的单例注册一致，两个服务实例（模拟刷新 worker 与
         // Blazor 电路各自的 Scoped 实例）通过同一门闸互斥同组并发。
         var gate      = new SelectionGroupGate();
@@ -961,7 +1029,7 @@ public sealed class CandidateSelectionServiceTests
 
         var harness = new SelectionHarness(directory, timestamp, provider, downloadService, intakeService,
                                            CreateService(), CreateService(), ruleSettings, brokenStableIds,
-                                           fetchCounter);
+                                           fetchCounter, dataProtectionProvider);
         await using var db = await harness.CreateDbContextAsync();
         await db.Database.EnsureCreatedAsync();
         db.MediaSubjects.Add(new MediaSubject
@@ -1055,8 +1123,12 @@ public sealed class CandidateSelectionServiceTests
         CandidateSelectionService   parallelSelectionService,
         ManageSelectionRuleSettings ruleSettings,
         HashSet<string>             brokenStableIds,
-        TorrentFetchCounter         fetchCounter) : IDisposable
+        TorrentFetchCounter         fetchCounter,
+        IDataProtectionProvider     dataProtectionProvider) : IDisposable
     {
+        private readonly IDataProtector _feedUrlProtector =
+            dataProtectionProvider.CreateProtector("Banori.MediaSubscriptions.FeedUrl.v1");
+
         public DirectoryInfo             Directory        { get; } = directory;
         public DateTimeOffset            Timestamp        { get; } = timestamp;
         public DownloadService           DownloadService  { get; } = downloadService;
@@ -1115,14 +1187,15 @@ public sealed class CandidateSelectionServiceTests
         }
 
         /// <summary>插入一条已通过硬性过滤的合格候选条目。</summary>
-        public async Task<Guid> AddItemAsync(string stableId, string group, string language, int version)
+        public async Task<Guid> AddItemAsync(string stableId, string group, string language, int version,
+                                             string sourceScope = SourceScope, string feedUrl = MikanFeedUrl)
         {
             await using var db     = await CreateDbContextAsync();
             var             itemId = Guid.NewGuid();
             db.FeedItems.Add(new FeedItem
             {
                 Id             = itemId,
-                SubscriptionId = await EnsureSubscriptionAsync(db),
+                SubscriptionId = await EnsureSubscriptionAsync(db, feedUrl),
                 StableId       = stableId,
                 Title          = $"[{group}] 测试作品 - 12",
                 TorrentUrl     = $"https://mikanani.me/Download/{stableId}.torrent",
@@ -1142,6 +1215,7 @@ public sealed class CandidateSelectionServiceTests
                 NamingIngredients = new TorrentNamingIngredients("{title} E{episode} {version} [{group}]", "测试作品",
                                                                  ReleaseNamePreviewPolicy.FormatEpisodeText(Episode),
                                                                  version, group, null).ToJson(),
+                SourceScope    = sourceScope,
                 EvaluatedAtUtc = Timestamp
             });
             await db.SaveChangesAsync();
@@ -1164,6 +1238,7 @@ public sealed class CandidateSelectionServiceTests
                 TorrentFile    = torrentBytes,
                 TorrentUrl     = item.TorrentUrl!,
                 SavePath       = "/downloads/test",
+                SiteSource     = item.SourceScope == SourceScopes.Legacy ? null : item.SourceScope,
                 NamingSnapshot = item.NamingPreview!,
                 Episode        = Episode,
                 Version        = item.Version,
@@ -1198,6 +1273,7 @@ public sealed class CandidateSelectionServiceTests
                 SubjectId          = SubjectId,
                 MediaType          = MediaType,
                 Episode            = Episode,
+                SourceScope        = SourceScope,
                 WinnerFeedItemId   = winnerItemId,
                 RuleVersion        = 1,
                 RankingBasis       = "测试优胜依据",
@@ -1209,13 +1285,14 @@ public sealed class CandidateSelectionServiceTests
             await db.SaveChangesAsync();
         }
 
-        public async Task<CandidateSelection> GetSelectionAsync()
+        public async Task<CandidateSelection> GetSelectionAsync(string sourceScope = SourceScope)
         {
             await using var db = await CreateDbContextAsync();
             return await db.CandidateSelections.AsNoTracking()
-                           .SingleAsync(selection => selection.SubjectId == SubjectId &&
-                                                     selection.MediaType == MediaType &&
-                                                     selection.Episode   == Episode);
+                           .SingleAsync(selection => selection.SubjectId   == SubjectId   &&
+                                                     selection.MediaType   == MediaType   &&
+                                                     selection.Episode     == Episode     &&
+                                                     selection.SourceScope == sourceScope);
         }
 
         /// <summary>读取条目当前的同集择优标记（Winner / RunnerUp / None）。</summary>
@@ -1240,14 +1317,17 @@ public sealed class CandidateSelectionServiceTests
             return factory.CreateDbContextAsync();
         }
 
-        private async Task<Guid> EnsureSubscriptionAsync(ApplicationDbContext db)
+        private async Task<Guid> EnsureSubscriptionAsync(
+            ApplicationDbContext db, string feedUrl = MikanFeedUrl)
         {
-            var existing = await db.MediaSubscriptions.FirstOrDefaultAsync();
+            var existing = await db.MediaSubscriptions.FirstOrDefaultAsync(value => value.Name == feedUrl);
             if (existing is not null) return existing.Id;
 
             var subscription = new MediaSubscription
             {
-                Id                     = Guid.NewGuid(), Name = "测试订阅", FeedUrlProtected = "unused",
+                Id                     = Guid.NewGuid(),
+                Name                   = feedUrl,
+                FeedUrlProtected       = _feedUrlProtector.Protect(feedUrl),
                 RefreshIntervalMinutes = 30
             };
             db.MediaSubscriptions.Add(subscription);

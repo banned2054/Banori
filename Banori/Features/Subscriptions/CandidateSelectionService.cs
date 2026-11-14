@@ -7,8 +7,8 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Banori.Features.Subscriptions;
 
-/// <summary>同集分组键：修正后的 Subject + 解析出的集类型 + 修正后集数。</summary>
-public sealed record SelectionGroupKey(int SubjectId, string MediaType, decimal Episode);
+/// <summary>同集分组键：修正后的 Subject + 解析出的集类型 + 修正后集数 + 来源作用域。</summary>
+public sealed record SelectionGroupKey(int SubjectId, string MediaType, decimal Episode, string SourceScope);
 
 /// <summary>一组候选的计算结果（未落库）。Winner 为空表示组内没有合格候选或全部被排除。</summary>
 public sealed record GroupSelectionPlan(
@@ -36,7 +36,7 @@ public sealed record SelectionPreviewResult(
     IReadOnlyList<SelectionPreviewGroup> Groups);
 
 /// <summary>
-///     同集批量择优：读取组内全部合格候选（含历史与跨订阅条目），按规则快照选出优胜，
+///     同集批量择优：读取同来源组内全部合格候选（含历史与跨订阅条目），按规则快照选出优胜，
 ///     并把选择记录与下载意图在同一本地短事务中落库。种子下载等网络请求在事务外完成。
 ///     同一组的计划与提交在共享的组级门闸（单例）内相邻执行，防止并发的刷新 / 人工重评 /
 ///     规则重选（各自持有 Scoped 服务实例）用过期快照互相覆盖。
@@ -129,8 +129,8 @@ public sealed class CandidateSelectionService(
         }
         catch (Exception exception)
         {
-            logger.LogError(exception, "同集组 {SubjectId}/{MediaType}/{Episode} 择优计算失败。", key.SubjectId,
-                            key.MediaType, key.Episode);
+            logger.LogError(exception, "同集组 {SubjectId}/{MediaType}/{Episode}/{SourceScope} 择优计算失败。",
+                            key.SubjectId, key.MediaType, key.Episode, key.SourceScope);
             return null;
         }
     }
@@ -166,27 +166,35 @@ public sealed class CandidateSelectionService(
             if (downloaderReady)
             {
                 var selections = await db.CandidateSelections.AsNoTracking()
-                                         .Select(item => new { item.SubjectId, item.MediaType, item.Episode })
+                                         .Select(item => new
+                                          {
+                                              item.SubjectId, item.MediaType, item.Episode, item.SourceScope
+                                          })
                                          .ToListAsync(cancellationToken);
-                var knownKeys = selections.Select(item => (item.SubjectId, item.MediaType, item.Episode)).ToHashSet();
+                var knownKeys = selections.Select(item => (item.SubjectId, item.MediaType, item.Episode,
+                                                           item.SourceScope)).ToHashSet();
 
                 pendingKeys.AddRange(scan.GroupKeys
                                          .Where(key => !knownKeys.Contains((key.SubjectId, key.MediaType,
-                                                                            key.Episode))));
+                                                                            key.Episode, key.SourceScope))));
 
                 var unregistered = await db.CandidateSelections.AsNoTracking()
                                            .Where(item => item.IntentTaskId       == null &&
                                                           item.IntentFailedReason == null)
-                                           .Select(item => new { item.SubjectId, item.MediaType, item.Episode })
+                                           .Select(item => new
+                                            {
+                                                item.SubjectId, item.MediaType, item.Episode, item.SourceScope
+                                            })
                                            .ToListAsync(cancellationToken);
                 // 同一等待规则也适用于“有选择记录但意图未登记”的组（如下载器后配置）：批次未完成时
                 // 不得按旧候选登记下载意图，等批次完成后的统一择优或下一轮恢复。
                 pendingKeys.AddRange(unregistered
                                     .Where(item => !scan.WaitingKeys.Contains(
                                                                               (item.SubjectId, item.MediaType,
-                                                                               item.Episode)))
+                                                                               item.Episode, item.SourceScope)))
                                     .Select(item =>
-                                                new SelectionGroupKey(item.SubjectId, item.MediaType, item.Episode)));
+                                                new SelectionGroupKey(item.SubjectId, item.MediaType, item.Episode,
+                                                                      item.SourceScope)));
             }
 
             // 版本对账窗口：选择记录的规则版本与当前生效规则不一致即重选，不只看落后——
@@ -195,14 +203,18 @@ public sealed class CandidateSelectionService(
             var currentRuleVersion = (await ruleProvider.GetAsync(cancellationToken)).Version;
             var versionMismatched = await db.CandidateSelections.AsNoTracking()
                                             .Where(item => item.RuleVersion != currentRuleVersion)
-                                            .Select(item => new { item.SubjectId, item.MediaType, item.Episode })
+                                            .Select(item => new
+                                             {
+                                                 item.SubjectId, item.MediaType, item.Episode, item.SourceScope
+                                             })
                                             .ToListAsync(cancellationToken);
             pendingKeys.AddRange(versionMismatched
                                 .Where(item => !scan.WaitingKeys.Contains(
                                                                           (item.SubjectId, item.MediaType,
-                                                                           item.Episode)))
+                                                                           item.Episode, item.SourceScope)))
                                 .Select(item =>
-                                            new SelectionGroupKey(item.SubjectId, item.MediaType, item.Episode)));
+                                            new SelectionGroupKey(item.SubjectId, item.MediaType, item.Episode,
+                                                                  item.SourceScope)));
             pendingKeys = pendingKeys.Distinct().ToList();
         }
 
@@ -273,11 +285,11 @@ public sealed class CandidateSelectionService(
         var currentWinners = (await db.CandidateSelections.AsNoTracking()
                                       .Select(item => new
                                        {
-                                           item.SubjectId, item.MediaType, item.Episode,
+                                           item.SubjectId, item.MediaType, item.Episode, item.SourceScope,
                                            item.WinnerFeedItemId
                                        })
                                       .ToListAsync(cancellationToken))
-           .ToDictionary(item => (item.SubjectId, item.MediaType, item.Episode),
+           .ToDictionary(item => (item.SubjectId, item.MediaType, item.Episode, item.SourceScope),
                          item => item.WinnerFeedItemId);
 
         var plans = new List<GroupSelectionPlan>();
@@ -294,8 +306,8 @@ public sealed class CandidateSelectionService(
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "同集组 {SubjectId}/{MediaType}/{Episode} 规则变更预览失败。",
-                                key.SubjectId, key.MediaType, key.Episode);
+                logger.LogError(exception, "同集组 {SubjectId}/{MediaType}/{Episode}/{SourceScope} 规则变更预览失败。",
+                                key.SubjectId, key.MediaType, key.Episode, key.SourceScope);
             }
         }
 
@@ -315,7 +327,8 @@ public sealed class CandidateSelectionService(
         var groups = plans.Select(plan =>
         {
             var currentWinnerId =
-                currentWinners.TryGetValue((plan.Key.SubjectId, plan.Key.MediaType, plan.Key.Episode), out var winnerId)
+                currentWinners.TryGetValue((plan.Key.SubjectId, plan.Key.MediaType, plan.Key.Episode,
+                                            plan.Key.SourceScope), out var winnerId)
                     ? (Guid?)winnerId
                     : null;
             var draftWinnerId = plan.Winner?.FeedItemId;
@@ -358,8 +371,8 @@ public sealed class CandidateSelectionService(
                                               item.MediaType != "MultipleEpisode")
                                .Select(item => new
                                 {
-                                    item.SubscriptionId, item.SubjectId, item.MediaType,
-                                    item.Episode
+                                    item.SubscriptionId, item.SubjectId, item.MediaType, item.Episode,
+                                    item.SourceScope
                                 })
                                .ToListAsync(cancellationToken);
         var subscriptionsWithPending = (await db.FeedItems.AsNoTracking()
@@ -371,15 +384,17 @@ public sealed class CandidateSelectionService(
 
         var waitingKeys = accepted
                          .Where(item => subscriptionsWithPending.Contains(item.SubscriptionId))
-                         .Select(item => (item.SubjectId!.Value, item.MediaType!, item.Episode!.Value))
+                         .Select(item => (item.SubjectId!.Value, item.MediaType!, item.Episode!.Value,
+                                          item.SourceScope))
                          .ToHashSet();
 
         var groupKeys = accepted
-                       .GroupBy(item => (item.SubjectId!.Value, item.MediaType!, item.Episode!.Value))
+                       .GroupBy(item => (item.SubjectId!.Value, item.MediaType!, item.Episode!.Value,
+                                         item.SourceScope))
                        .Where(group => group.All(item =>
                                                      !subscriptionsWithPending.Contains(item.SubscriptionId)))
-                       .Select(group => new SelectionGroupKey(group.Key.Item1, group.Key.Item2,
-                                                              group.Key.Item3))
+                       .Select(group => new SelectionGroupKey(group.Key.Item1, group.Key.Item2, group.Key.Item3,
+                                                              group.Key.Item4))
                        .ToList();
 
         return new GuardedGroupScan(groupKeys, waitingKeys);
@@ -390,10 +405,11 @@ public sealed class CandidateSelectionService(
         CancellationToken    cancellationToken)
     {
         var items = await db.FeedItems.AsNoTracking()
-                            .Where(item => item.Status    == FeedItemStatus.Accepted &&
-                                           item.SubjectId == key.SubjectId           &&
-                                           item.MediaType == key.MediaType           &&
-                                           item.Episode   == key.Episode)
+                            .Where(item => item.Status      == FeedItemStatus.Accepted &&
+                                           item.SubjectId   == key.SubjectId           &&
+                                           item.MediaType   == key.MediaType           &&
+                                           item.Episode     == key.Episode             &&
+                                           item.SourceScope == key.SourceScope)
                             .ToListAsync(cancellationToken);
 
         var candidates = items.Select(BuildCandidate)
@@ -402,9 +418,10 @@ public sealed class CandidateSelectionService(
                               .ToList();
 
         var currentWinnerId = await db.CandidateSelections.AsNoTracking()
-                                      .Where(item => item.SubjectId == key.SubjectId &&
-                                                     item.MediaType == key.MediaType &&
-                                                     item.Episode   == key.Episode)
+                                      .Where(item => item.SubjectId   == key.SubjectId   &&
+                                                     item.MediaType   == key.MediaType   &&
+                                                     item.Episode     == key.Episode     &&
+                                                     item.SourceScope == key.SourceScope)
                                       .Select(item => (Guid?)item.WinnerFeedItemId)
                                       .SingleOrDefaultAsync(cancellationToken);
 
@@ -439,9 +456,10 @@ public sealed class CandidateSelectionService(
 
             // 先读现有选择记录，用于判断意图是否需要（重新）登记；写入仍在下方同一事务完成。
             var selection = await db.CandidateSelections
-                                    .SingleOrDefaultAsync(item => item.SubjectId == plan.Key.SubjectId &&
-                                                                  item.MediaType == plan.Key.MediaType &&
-                                                                  item.Episode   == plan.Key.Episode,
+                                    .SingleOrDefaultAsync(item => item.SubjectId   == plan.Key.SubjectId   &&
+                                                                  item.MediaType   == plan.Key.MediaType   &&
+                                                                  item.Episode     == plan.Key.Episode     &&
+                                                                  item.SourceScope == plan.Key.SourceScope,
                                                           cancellationToken);
 
             // 提交前版本守卫：计划版本与当前生效规则双向对账。高于当前生效版本说明计划读取
@@ -522,9 +540,10 @@ public sealed class CandidateSelectionService(
                 if (selection is not null)
                 {
                     var groupItems = await db.FeedItems
-                                             .Where(item => item.SubjectId        == plan.Key.SubjectId &&
-                                                            item.MediaType        == plan.Key.MediaType &&
-                                                            item.Episode          == plan.Key.Episode   &&
+                                             .Where(item => item.SubjectId   == plan.Key.SubjectId   &&
+                                                            item.MediaType   == plan.Key.MediaType   &&
+                                                            item.Episode     == plan.Key.Episode     &&
+                                                            item.SourceScope == plan.Key.SourceScope &&
                                                             item.SelectionOutcome != SelectionOutcome.None)
                                              .ToListAsync(cancellationToken);
                     foreach (var item in groupItems) item.SelectionOutcome = SelectionOutcome.None;
@@ -550,10 +569,11 @@ public sealed class CandidateSelectionService(
                 {
                     selection = new CandidateSelection
                     {
-                        Id        = Guid.NewGuid(),
-                        SubjectId = plan.Key.SubjectId,
-                        MediaType = plan.Key.MediaType,
-                        Episode   = plan.Key.Episode
+                        Id          = Guid.NewGuid(),
+                        SubjectId   = plan.Key.SubjectId,
+                        MediaType   = plan.Key.MediaType,
+                        Episode     = plan.Key.Episode,
+                        SourceScope = plan.Key.SourceScope
                     };
                     db.CandidateSelections.Add(selection);
                 }
@@ -641,8 +661,8 @@ public sealed class CandidateSelectionService(
         }
         catch (Exception exception)
         {
-            logger.LogError(exception, "同集组 {SubjectId}/{MediaType}/{Episode} 的选择结果落库失败，等待下轮恢复。",
-                            plan.Key.SubjectId, plan.Key.MediaType, plan.Key.Episode);
+            logger.LogError(exception, "同集组 {SubjectId}/{MediaType}/{Episode}/{SourceScope} 的选择结果落库失败，等待下轮恢复。",
+                            plan.Key.SubjectId, plan.Key.MediaType, plan.Key.Episode, plan.Key.SourceScope);
         }
     }
 
@@ -685,6 +705,6 @@ public sealed class CandidateSelectionService(
 
     /// <summary>组级守卫扫描结果：通过守卫的组键，以及仍被待评估条目阻塞的组键集合。</summary>
     private sealed record GuardedGroupScan(
-        List<SelectionGroupKey>                                     GroupKeys,
-        HashSet<(int SubjectId, string MediaType, decimal Episode)> WaitingKeys);
+        List<SelectionGroupKey> GroupKeys,
+        HashSet<(int SubjectId, string MediaType, decimal Episode, string SourceScope)> WaitingKeys);
 }

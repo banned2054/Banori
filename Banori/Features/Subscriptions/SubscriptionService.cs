@@ -1,3 +1,4 @@
+using Banori.Core.Torrents;
 using Banori.Data;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
@@ -221,14 +222,8 @@ public sealed class SubscriptionService(
         return request with { Name = name, FeedUrl = feedUrl };
     }
 
-    private static bool IsSupportedSubscriptionHost(string host)
-    {
-        return MatchesHost(host, "mikanani.me") || MatchesHost(host, "anibt.net");
-
-        static bool MatchesHost(string value, string baseHost) =>
-            value.Equals(baseHost, StringComparison.OrdinalIgnoreCase) ||
-            value.EndsWith($".{baseHost}", StringComparison.OrdinalIgnoreCase);
-    }
+    // 订阅白名单与 RSS 来源分类共用同一张主机表，避免新增站点时两处漂移。
+    private static bool IsSupportedSubscriptionHost(string host) => TorrentSiteSource.FromFeedHost(host) is not null;
 
     private SubscriptionView ToView(MediaSubscription item, RefreshWorkStatus? latestStatus)
     {

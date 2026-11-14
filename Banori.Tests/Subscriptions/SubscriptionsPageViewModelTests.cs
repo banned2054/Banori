@@ -107,6 +107,31 @@ public sealed class SubscriptionsPageViewModelTests
     }
 
     [Fact]
+    public async Task Save_MikanimeTvUrl_IsAccepted()
+    {
+        var testDirectory = Directory.CreateTempSubdirectory("Banori.MikanimeVM.Accepted.Tests.");
+        try
+        {
+            var             services = CreateServices(testDirectory);
+            await using var provider = services.BuildServiceProvider();
+            await using var scope    = provider.CreateAsyncScope();
+            await EnsureCreatedAsync(scope);
+
+            var subscriptionService = scope.ServiceProvider.GetRequiredService<SubscriptionService>();
+            await subscriptionService.SaveAsync(new SaveSubscriptionRequest(null, "Mikan 镜像订阅",
+                                                                            "https://mikanime.tv/RSS/MyBangumi?token=test",
+                                                                            true, 30, null));
+
+            var view = Assert.Single(await subscriptionService.ListAsync());
+            Assert.Equal("Mikan 镜像订阅", view.Name);
+        }
+        finally
+        {
+            testDirectory.Delete(true);
+        }
+    }
+
+    [Fact]
     public async Task Save_WithUnknownProxyId_Throws()
     {
         var testDirectory = Directory.CreateTempSubdirectory("Banori.ProxyVM.Unknown.Tests.");

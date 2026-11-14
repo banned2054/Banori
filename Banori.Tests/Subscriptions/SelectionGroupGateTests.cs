@@ -8,7 +8,7 @@ namespace Banori.Tests.Subscriptions;
 /// </summary>
 public sealed class SelectionGroupGateTests
 {
-    private static readonly SelectionGroupKey Key = new(1, "SingleEpisode", 12m);
+    private static readonly SelectionGroupKey Key = new(1, "SingleEpisode", 12m, "mikan");
 
     [Fact]
     public async Task SameGroup_ConcurrentWaiters_SerializeUntilReleased()

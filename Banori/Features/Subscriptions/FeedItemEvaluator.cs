@@ -46,6 +46,12 @@ public sealed class FeedItemEvaluator(
     {
         var item = await LoadItemAsync(itemId, cancellationToken);
 
+        // 订阅来源按解密后的实际 RSS 地址主机判定（mikanani.me/anibt.net），密文绝不能进入命名快照。
+        // 解密失败或未知主机归 (unknown)，与上传未命中的 other 分域，不与旧行 legacy 混用。
+        var feedUrl     = FeedUrlProtection.TryUnprotectUrl(_urlProtector, item.FeedUrlProtected);
+        var feedSite    = TorrentSiteSource.FromFeedUrl(feedUrl);
+        var sourceScope = SourceScopes.FromFeedUrl(feedUrl);
+
         var parsed = parser.Parse(item.Title);
         if (parsed is null)
         {
@@ -56,7 +62,7 @@ public sealed class FeedItemEvaluator(
                                         Reason         = "AniParser 无法识别该标题。",
                                         EvaluatedAtUtc = timeProvider.GetUtcNow()
                                     },
-                                    cancellationToken);
+                                    cancellationToken, sourceScope);
             return;
         }
 
@@ -74,15 +80,12 @@ public sealed class FeedItemEvaluator(
         if (subjectId is null)
         {
             await SaveParsedNeedsReviewAsync(itemId, parsed, "未能关联 Bangumi Subject，需要人工指定。",
-                                             cancellationToken);
+                                             cancellationToken, sourceScope : sourceScope);
             return;
         }
 
-        // 订阅来源按解密后的实际 RSS 地址主机判定（mikanani.me/anibt.net），密文绝不能进入命名快照。
-        var feedHost =
-            TorrentSiteSource.FromFeedUrl(FeedUrlProtection.TryUnprotectUrl(_urlProtector, item.FeedUrlProtected));
         await EvaluateWithSubjectAsync(itemId, parsed, subjectId.Value, normalizedTitle,
-                                       item.PublishedAtUtc, item.StableId, feedHost, cancellationToken);
+                                       item.PublishedAtUtc, item.StableId, feedSite, sourceScope, cancellationToken);
     }
 
     /// <summary>
@@ -110,15 +113,15 @@ public sealed class FeedItemEvaluator(
 
     private async Task EvaluateWithSubjectAsync(Guid              itemId,          ParseResult parsed, int subjectId,
                                                 string            normalizedTitle, DateTimeOffset? publishedAtUtc,
-                                                string            stableId,        string? feedHost,
-                                                CancellationToken cancellationToken)
+                                                string            stableId,        string? feedSite,
+                                                string            sourceScope,     CancellationToken cancellationToken)
     {
         if (parsed.MediaType.ToString() == "MultipleEpisode" || parsed.Episode is null)
         {
             var storedSubjectId = await TryCacheSubjectAsync(subjectId, normalizedTitle, cancellationToken);
             await SaveParsedNeedsReviewAsync(itemId, parsed,
                                              parsed.Episode is null ? "未能识别集数，需要人工确认。" : "首版不自动处理多集合集。",
-                                             cancellationToken, storedSubjectId);
+                                             cancellationToken, storedSubjectId, sourceScope);
             return;
         }
 
@@ -126,7 +129,7 @@ public sealed class FeedItemEvaluator(
         if (correction.SubjectId is null)
         {
             await SaveParsedNeedsReviewAsync(itemId, parsed, "Subject 修正规则未得到有效 Subject。",
-                                             cancellationToken);
+                                             cancellationToken, sourceScope : sourceScope);
             return;
         }
 
@@ -147,7 +150,7 @@ public sealed class FeedItemEvaluator(
         catch
         {
             await SaveParsedNeedsReviewAsync(itemId, parsed, "读取 Bangumi Subject 失败，可稍后重新评估。",
-                                             cancellationToken);
+                                             cancellationToken, sourceScope : sourceScope);
             return;
         }
 
@@ -183,8 +186,8 @@ public sealed class FeedItemEvaluator(
         // 命名后缀优先用字幕组名；同一规则下优胜确定时的命名快照与该预览一致。
         var preference       = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
         var correctionReason = correction.Reason == "未应用集数修正规则。" ? string.Empty : $" {correction.Reason}";
-        // 命名模板的 {source} 令牌取订阅 RSS 地址判定的来源站点（mikan/anibt）。
-        var siteSource       = feedHost;
+        // 命名模板的 {source} 令牌取订阅 RSS 地址判定的来源站点（mikan/anibt），未知来源不渲染。
+        var siteSource       = feedSite;
         var namingTemplate   = await namingTemplateStore.GetAsync(cancellationToken);
         var fileTemplate     = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
         // 预览与命名要素同源生成，且分别快照 AniParser 与 Bangumi 字段。
@@ -200,7 +203,7 @@ public sealed class FeedItemEvaluator(
                                                decisionStatus, preference,
                                                eligibility.Reason + correctionReason, namingPreview,
                                                correction.Episode, ingredients.ToJson()),
-                                cancellationToken);
+                                cancellationToken, sourceScope);
     }
 
     private async Task<ItemSnapshot> LoadItemAsync(Guid itemId, CancellationToken cancellationToken)
@@ -211,7 +214,7 @@ public sealed class FeedItemEvaluator(
                        .Select(value => new ItemSnapshot(value.Id, value.Title, value.Link, value.SubjectId,
                                                          value.MediaType, value.Episode, value.PublishedAtUtc,
                                                          value.StableId, value.Subscription.ProxyId,
-                                                         value.Subscription.FeedUrlProtected))
+                                                         value.Subscription.FeedUrlProtected, value.SourceScope))
                        .SingleOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException("找不到指定条目。");
     }
@@ -222,7 +225,7 @@ public sealed class FeedItemEvaluator(
         if (item.SubjectId is null || item.MediaType is null || item.Episode is null) return null;
         if (string.Equals(item.MediaType, "MultipleEpisode", StringComparison.Ordinal)) return null;
 
-        return new SelectionGroupKey(item.SubjectId.Value, item.MediaType, item.Episode.Value);
+        return new SelectionGroupKey(item.SubjectId.Value, item.MediaType, item.Episode.Value, item.SourceScope);
     }
 
     private async Task<int?> TryCacheSubjectAsync(int               subjectId, string normalizedTitle,
@@ -277,10 +280,11 @@ public sealed class FeedItemEvaluator(
     };
 
     private Task SaveParsedNeedsReviewAsync(
-        Guid itemId, ParseResult parsed, string reason, CancellationToken cancellationToken, int? subjectId = null) =>
+        Guid itemId, ParseResult parsed, string reason, CancellationToken cancellationToken,
+        int? subjectId = null, string? sourceScope = null) =>
         SaveAnalysisAsync(itemId,
                           CreateAnalysis(parsed, FeedItemStatus.NeedsReview, subjectId, null, null, null, reason, null,
-                                         parsed.Episode), cancellationToken);
+                                         parsed.Episode), cancellationToken, sourceScope);
 
     private async Task<int?> FindSubjectIdByTitleAsync(string normalizedTitle, CancellationToken cancellationToken)
     {
@@ -292,7 +296,7 @@ public sealed class FeedItemEvaluator(
     }
 
     private async Task SaveAnalysisAsync(
-        Guid itemId, FeedItemAnalysis analysis, CancellationToken cancellationToken)
+        Guid itemId, FeedItemAnalysis analysis, CancellationToken cancellationToken, string? sourceScope = null)
     {
         await using var db   = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var             item = await db.FeedItems.SingleAsync(value => value.Id == itemId, cancellationToken);
@@ -320,6 +324,8 @@ public sealed class FeedItemEvaluator(
         item.NamingPreview     = analysis.NamingPreview;
         item.NamingIngredients = analysis.NamingIngredients;
         item.EvaluatedAtUtc    = analysis.EvaluatedAtUtc;
+        // 来源作用域与集数、状态同事务落库：后续预选与登记按该来源分域，不再重复解密订阅地址。
+        if (sourceScope is not null) item.SourceScope = sourceScope;
         // 条目重新评估后不再合格时，旧的组内落选标记已失去意义，清除以免详情页误导；
         // 仍合格的条目保留原值，等待组内重选更新为优胜或落选。
         item.SelectionOutcome = analysis.Status == FeedItemStatus.Accepted
@@ -338,5 +344,6 @@ public sealed class FeedItemEvaluator(
         DateTimeOffset? PublishedAtUtc,
         string          StableId,
         Guid?           SubscriptionProxyId,
-        string?         FeedUrlProtected);
+        string?         FeedUrlProtected,
+        string          SourceScope);
 }
