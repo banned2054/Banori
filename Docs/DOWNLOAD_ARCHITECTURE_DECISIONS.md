@@ -1,6 +1,6 @@
 # 下载系统架构决策（DOWNLOAD_ARCHITECTURE_DECISIONS）
 
-> 最后核对：2026-11-11，基于当前工作区未提交实现；未提交/未发布。
+> 决策核对：2026-11-11；发布准备更新：2026-11-15。相关实现已纳入 v0.3.0 发布候选（实现基准 `ec2cd71`），实际验证范围见 [架构审计](DOWNLOAD_ARCHITECTURE_AUDIT.md#8-验证状态单测全绿--实机已验证)。
 >
 > 本文只记录**已采纳的决策**与**已拒绝的方案**，不写阶段历史，不保留第二个“最终方案”。业务要求见 [DOWNLOAD_BUSINESS_RULES.md](DOWNLOAD_BUSINESS_RULES.md)，现状证据见 [DOWNLOAD_ARCHITECTURE_AUDIT.md](DOWNLOAD_ARCHITECTURE_AUDIT.md)，剩余目标见 [DOWNLOAD_TARGET_ARCHITECTURE.md](DOWNLOAD_TARGET_ARCHITECTURE.md)。
 

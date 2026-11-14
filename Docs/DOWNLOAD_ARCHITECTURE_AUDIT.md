@@ -1,8 +1,8 @@
 # 下载系统架构审计（现状与证据）
 
-> 最后核对：2026-11-14，基于当前工作区未提交实现；未提交/未发布。
+> 实现核对：2026-11-14；发布准备更新：2026-11-15。实现基准为已提交的 v0.3.0 发布候选 `ec2cd71`。
 >
-> 审计对象：当前工作区（基线 `a0bfeb2` + 未提交改动）。方法：直接读源码与测试、对照迁移文件；**2026-11-11 本轮全量测试 1129/1129 通过，2026-11-14 复验 1130 通过 / 0 失败 / 0 跳过**；**已用真实 qBittorrent 5.3 隔离实例实测部分行为（复检证据/checkingResumeData/pieces/应用重启/重复请求，见 §5、§8）；做种链路已由 2026-11-14 E2E 真机覆盖（见 §8 报告条目）；MySQL 实机迁移未执行；未执行 Git 写操作**。
+> 审计对象：v0.2.4 之后已提交的来源隔离、下载恢复及展示实现。方法：直接读源码与测试、对照迁移文件；**2026-11-11 全量测试 1129/1129 通过，2026-11-14 复验 1130 通过 / 0 失败 / 0 跳过；2026-11-15 在 .NET 11 下以 Release 配置复验仍为 1130 通过 / 0 失败 / 0 跳过**；**已有真实 qBittorrent 5.3 隔离实例的部分行为实测记录（复检证据/checkingResumeData/pieces/应用重启/重复请求，见 §5、§8），做种链路由 2026-11-14 E2E 真机覆盖（见 §8）；MySQL 实机迁移、旧版本完整升级与备份恢复、双架构 .NET 11 容器构建及启动仍待验收，本轮仅补齐文档，未重跑实机验收**。
 >
 > 证据标记：**【源码】**= 直接读当前工作区源码；**【已有测试】**= 仓库内测试，已由本轮全量运行覆盖；**【报告】**= 过滤运行或补充运行记录（含真实 qB 隔离实例实测记录）；**【未验证】**= 需要真实 qB/MySQL，当前无证据。行号会随工作区变动，重要处同时给符号名。
 
@@ -100,10 +100,12 @@
 
 ## 8. 验证状态（单测全绿 ≠ 实机已验证）
 
+- 【测试】2026-11-15，基于 `ec2cd71` 的 .NET 11 实现运行 `dotnet test Banori.Tests/Banori.Tests.csproj --no-restore -c Release -v minimal`：**1130 通过 / 0 失败 / 0 跳过**。本次仅为本地回归，不包含真实 qB、MySQL、浏览器或容器升级验收。
 - 【报告】真实 qBittorrent 5.3 隔离实例（独立端口/save path/配置目录）已实测：recheck 请求后 `pieces_have` 同步清零再恢复、`checkingResumeData` 的出现与语义、请求前已有 `checkingDL`/`UP` 时重复 recheck 可卡死校验、应用重启后证据作废路径。这些实测支撑 §5 的证据规则。
 - 【报告】2026-11-14 两个跨站搬运复用 E2E 验收场景真机通过（隔离 qBittorrent 4.6.4 容器 + 真实 Program/worker + 独立 SQLite，`.e2e/Banori.E2E.Tests/CrossSeedAcceptanceScenarios.cs`）：非受管候选复用全链与 v2 映射修正命名 onto 被占用目标路径，均 `ReusedVerified`→`ConfirmedRunning`→Completed、下载增量逐样本为 0、qB 终态 stalledUP。§5 的“受控映射改名 + recheck 复用”链路由此获得 4.6.4 实机证据；证据在 `.e2e/s1/`、`.e2e/s2/`，复跑入口见 `.e2e/README-e2e.md`。
 - 【未验证】真实 qB 其余行为：qB 4.x/5.x 文件 index、Seeding 态选择下推、`content_path`、Reannounce 响应；真实 MySQL 实机迁移。
+- 【未验证】0.2.4 存量数据副本的完整升级与配套密钥、加密订阅及任务恢复，升级前数据库和配置备份的回退演练，以及 .NET 11 容器的 `linux/amd64`、`linux/arm64` 构建和启动。已有 E2E 使用独立 SQLite，不能代替旧库升级验收；具体待办见 [qBittorrent 后续任务](QBITTORRENT_FOLLOW_UP.md#6-页面数据库与容器升级)。
 - 【测试】2026-11-11 本轮 `dotnet test Banori.slnx --no-restore -v minimal`：**1129 passed / 0 failed / 0 skipped**；`dotnet build Banori.slnx` 成功。新增/改写的测试覆盖：两层归约与顺序无关（`CandidateRankingPolicyTests`、`DownloadPackageRankingTests`）、跨组合集替换不可解析单集（`EpisodeVersionGuard_CrossGroupLargerBatch_ReplacesUnparseableSingle`）、复检基线证据/pieces/重启（`DownloadRecheckEvidenceTests`）、做种/恢复分离状态机（`DownloadRunRecoveryTests`、`DownloadVerificationRecoveryTests`）、逐槽拆行回填与结构化报告（`SourceScopeBackfillTests`、`DownloadLegacyHandoffTests`）、RunRecovery 迁移（`RunRecoveryMigrationTests`）、快速校验自动完成（`DownloadVerificationTests.FastRecheckCompletesBetweenSamples_*`，旧“漏采→暂停人工”预期已改）。
-- 【报告】审计目录过滤运行记录只对应当次范围，不能替代全量结论；全量结论以最近全量运行为准（2026-11-14 复验 1130 通过 / 0 失败 / 0 跳过；2026-11-11 本轮 1129/1129）。
+- 【报告】审计目录过滤运行记录只对应当次范围，不能替代全量结论；最近本地全量回归为 2026-11-15 .NET 11 / Release 复验，1130 通过 / 0 失败 / 0 跳过。2026-11-14 的 1130 项及 2026-11-11 的 1129 项记录保留为历史证据。
 
 *本文只记录现状，不提出新方案；业务要求见 [DOWNLOAD_BUSINESS_RULES.md](DOWNLOAD_BUSINESS_RULES.md)，取舍见 [DOWNLOAD_ARCHITECTURE_DECISIONS.md](DOWNLOAD_ARCHITECTURE_DECISIONS.md)，剩余目标见 [DOWNLOAD_TARGET_ARCHITECTURE.md](DOWNLOAD_TARGET_ARCHITECTURE.md)。*

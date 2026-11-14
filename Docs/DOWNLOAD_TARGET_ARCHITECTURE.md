@@ -1,8 +1,8 @@
 # 下载系统剩余目标（DOWNLOAD_TARGET_ARCHITECTURE）
 
-> 最后核对：2026-11-14，基于当前工作区未提交实现；未提交/未发布。
+> 实现核对：2026-11-14；发布准备更新：2026-11-15。实现基准为已提交的 v0.3.0 发布候选 `ec2cd71`。
 >
-> 测试状态：2026-11-14 复验 **1130 通过 / 0 失败 / 0 跳过**；2026-11-11 本轮全量 `dotnet test Banori.slnx --no-restore -v minimal` **1129/1129 通过**，`dotnet build Banori.slnx` 成功；过滤运行另有多组；真实 qB 5.3 隔离实例已实测复检证据/checkingResumeData/pieces/重启/重复请求五项，MySQL 实机未验证。
+> 测试状态：2026-11-15 在 .NET 11 下以 Release 配置复验 **1130 通过 / 0 失败 / 0 跳过**（命令见 [架构审计](DOWNLOAD_ARCHITECTURE_AUDIT.md#8-验证状态单测全绿--实机已验证)）；2026-11-14 回归复验同为 1130 通过。已有真实 qB 5.3 隔离实例的复检证据/checkingResumeData/pieces/重启/重复请求五项实测及 2026-11-14 qB 4.6.4 跨站复用 E2E 记录；MySQL 实机、旧库完整升级与备份恢复、双架构 .NET 11 容器构建及启动仍待验收，本轮未重跑实机验收。
 >
 > 本文只写**剩余目标、职责边界与验收矩阵**，不重复业务规则、不再给十模块大设计。业务要求见 [DOWNLOAD_BUSINESS_RULES.md](DOWNLOAD_BUSINESS_RULES.md)，现状证据见 [DOWNLOAD_ARCHITECTURE_AUDIT.md](DOWNLOAD_ARCHITECTURE_AUDIT.md)，已采纳取舍见 [DOWNLOAD_ARCHITECTURE_DECISIONS.md](DOWNLOAD_ARCHITECTURE_DECISIONS.md)。
 
@@ -108,7 +108,7 @@
 
 ## 5. 验收矩阵
 
-> 2026-11-14 复验 **1130 通过 / 0 失败 / 0 跳过**；2026-11-11 本轮全量 `dotnet test Banori.slnx --no-restore -v minimal` **1129/1129 通过**，A1–A5 均落在该次运行内。B 类为实机/未做项：B1 部分已实测，其余仍未验证。
+> 2026-11-15 在 .NET 11 下以 Release 配置复验 **1130 通过 / 0 失败 / 0 跳过**，A1–A5 均在本地回归范围内。B 类按各行记录区分部分实测、未验证、未做及未定案，不能以回归通过替代实机验收。
 
 | # | 验收项 | 证据/方法 | 状态 |
 |---|---|---|---|
@@ -125,5 +125,6 @@
 | B6 | magnet 入口 | G6 解析/登记用例 | **未做** |
 | B7 | 同 hash 跨来源 | G7 定案 + 查重/接管用例 | **未定案** |
 | B8 | eligibility/MediaType/DB ID | G8 逐项定案 + 等价测试 | **未做** |
+| B9 | 0.2.4 旧库升级、备份回退与双架构 .NET 11 容器 | [后续验收清单](QBITTORRENT_FOLLOW_UP.md#6-页面数据库与容器升级)，使用数据副本和隔离容器 | **未验证**：本轮仅补齐文档，未执行实机验收 |
 
 *本文只列剩余目标与验收口径；业务规则冲突时以业务基准为准，已采纳取舍见决策文档。*

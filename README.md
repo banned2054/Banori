@@ -12,7 +12,7 @@
 <br>
 
 <div>
-    <a href="https://github.com/banned2054/Banori/releases/tag/v0.2.4"><img alt="Version 0.2.4" src="https://img.shields.io/badge/version-0.2.4-blue"></a>
+    <a href="https://github.com/banned2054/Banori/releases/tag/v0.3.0"><img alt="Version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-blue"></a>
     <a href="https://dotnet.microsoft.com/"><img alt=".NET 11" src="https://img.shields.io/badge/.NET-11.0-512BD4"></a>
     <a href="https://learn.microsoft.com/aspnet/core/blazor/"><img alt="Blazor" src="https://img.shields.io/badge/Blazor-Interactive_Server-7B2CBF"></a>
     <a href="https://learn.microsoft.com/ef/core/"><img alt="EF Core" src="https://img.shields.io/badge/EF_Core-11-2EA44F"></a>
@@ -32,10 +32,10 @@
 
 ## ✨ 功能特性
 
-- **订阅与刷新** — 管理 Mikan、AniBT RSS，定时刷新并去重入库；RSS 地址加密保存。
+- **订阅与刷新** — 管理 Mikan（含 `mikanani.me`、`mikanime.tv`）、AniBT RSS，定时刷新并去重入库；RSS 地址加密保存。
 - **条目评估** — 解析条目信息、关联 Bangumi，并展示筛选理由与命名预览。
-- **下载管理** — 支持 RSS 链接、本地种子和已有种子接管；下载前确认文件选择与命名，按所选内容跟踪进度。
-- **逐集择优** — 单集与合集跨包比较版本，按每集分配下载职责；新版本完成后切换，删除承接方时按关系回退。
+- **下载管理** — 支持 RSS 链接、本地种子和已有种子接管；下载前确认文件选择与命名，按所选内容跟踪进度，展示等待原因、复用结果和恢复操作。
+- **逐集择优** — 同一来源内的单集与合集跨包比较版本，不同来源独立竞争，按每集分配下载职责；新版本完成后切换，删除承接方时按关系回退。
 - **数据复用** — 通过 qBittorrent 校验已有文件，确认后复用或交叉做种；不能确认时保留原数据并独立下载。
 - **整理归档** — 按命名模板整理媒体文件与随行字幕；归档受阻时展示原因并支持重新核对，冗余种子自动移除且保留磁盘文件。
 - **通知与代理** — 支持 Telegram、Gotify 通知与投递记录，统一管理各服务使用的命名代理。
@@ -43,7 +43,7 @@
 
 ## 🐳 Docker 部署
 
-需要安装 Docker Engine 和 Docker Compose。容器发布工作流配置为构建 `linux/amd64` 与 `linux/arm64`，使用同一镜像标签；Docker 按主机架构选择镜像。容器将 Web 服务监听在 `7340` 端口，默认将 Compose 文件所在目录的 `config/` 映射到容器 `/app/config`，持久化数据库与加密密钥。
+需要安装 Docker Engine 和 Docker Compose；镜像已包含 ASP.NET Core 11 运行时，宿主机无需另装 .NET。容器发布工作流配置为构建 `linux/amd64` 与 `linux/arm64`，使用同一镜像标签；Docker 按主机架构选择镜像。容器将 Web 服务监听在 `7340` 端口，默认将 Compose 文件所在目录的 `config/` 映射到容器 `/app/config`，持久化数据库与加密密钥。
 
 ```bash
 cp .env.example .env
@@ -71,20 +71,20 @@ docker compose logs -f banori
 docker compose down
 ```
 
-升级时保留原有数据挂载，执行：
+升级前先停止旧实例并备份整个 `config/` 目录；MySQL 部署还须单独备份数据库。保留原有数据挂载，执行：
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-数据库结构会在启动时自动更新，无需手动迁移。建议升级前备份整个 `config/` 目录；版本变化见 [更新日志](Docs/CHANGELOG.md)。
+数据库结构会在启动时自动更新，无需手动迁移。0.3.0 会新增来源作用域与下载恢复状态，并回填可判定来源的历史记录；不要让新旧实例同时写入同一数据库。回退时恢复升级前的数据库和配套配置、密钥，不能只切换回旧镜像。具体变化与尚未完成的升级验收见 [v0.3.0 发布说明](Docs/RELEASE_NOTES_v0.3.0.md)；历史版本见 [更新日志](Docs/CHANGELOG.md)。
 
-GitHub Actions 在发布 GitHub Release 或手动运行 `Publish container image` 工作流时构建并推送镜像；普通分支 push 或单独推送标签不会触发发布。Release 使用 `v*` 标签生成同名版本镜像，符合工作流默认分支条件时同时更新 `latest`，例如：
+GitHub Actions 在发布 GitHub Release 或手动运行 `Publish container image` 工作流时构建并推送镜像；普通分支 push 或单独推送标签不会触发发布。Release 按 Git 标签名生成同名版本镜像（本项目使用 `v*`，例如 `v0.3.0`），并按 [metadata-action 的默认标签规则](https://github.com/docker/metadata-action#latest-tag) 同时更新 `latest`；在默认分支手动运行也会更新 `latest`。工作流还会生成 `sha-` 前缀的提交标签。例如：
 
 ```text
 ghcr.io/banned2054/banori:latest
-ghcr.io/banned2054/banori:v0.2.4
+ghcr.io/banned2054/banori:v0.3.0
 ```
 
 ### 数据持久化
@@ -168,7 +168,7 @@ SQL 日志可能包含业务数据或 SQL 文本中的字面量，不建议长�
 
 ## 🛠️ 本地开发
 
-需要安装 [.NET 11 SDK](https://dotnet.microsoft.com/download/dotnet/11.0)。使用空数据库启动时，先通过环境变量设置首位管理员：
+从源码构建或运行需要安装 [.NET 11 SDK](https://dotnet.microsoft.com/download/dotnet/11.0)；直接运行已发布的框架依赖产物需要 ASP.NET Core 11 Runtime，单独安装 .NET Runtime 不足以运行 Web 应用。使用空数据库启动时，先通过环境变量设置首位管理员：
 
 ```powershell
 $env:BANORI_USERNAME = "admin"

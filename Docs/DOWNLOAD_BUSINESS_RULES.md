@@ -1,6 +1,6 @@
 # 下载系统业务基准（DOWNLOAD_BUSINESS_RULES）
 
-> 最后核对：2026-11-11，基于当前工作区未提交实现；未提交/未发布。
+> 业务规则核对：2026-11-11；发布准备更新：2026-11-15。相关实现已纳入 v0.3.0 发布候选（实现基准 `ec2cd71`），实际验证范围见 [架构审计](DOWNLOAD_ARCHITECTURE_AUDIT.md#8-验证状态单测全绿--实机已验证)。
 >
 > 本文是下载系统唯一业务基准，只回答“业务要求是什么”。现状证据见 [DOWNLOAD_ARCHITECTURE_AUDIT.md](DOWNLOAD_ARCHITECTURE_AUDIT.md)，取舍见 [DOWNLOAD_ARCHITECTURE_DECISIONS.md](DOWNLOAD_ARCHITECTURE_DECISIONS.md)，剩余目标见 [DOWNLOAD_TARGET_ARCHITECTURE.md](DOWNLOAD_TARGET_ARCHITECTURE.md)。三份文档与本文冲突时以本文为准，不得用实现反推修改本文。
 >
