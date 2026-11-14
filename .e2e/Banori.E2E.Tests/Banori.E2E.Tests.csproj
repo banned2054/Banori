@@ -1,10 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<TargetFramework>net10.0</TargetFramework>
+		<TargetFramework>net11.0</TargetFramework>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<IsPackable>false</IsPackable>
+		<IsTestProject>true</IsTestProject>
 		<!-- 不加入 Banori.sln：按项目路径运行 dotnet test .e2e/Banori.E2E.Tests。
 		     入口点绑定见 AcceptanceHost（Banori.Program 为 internal，经非泛型 WAF 的 EntryPoint 静态属性反射绑定）。 -->
 		<AssemblyName>Banori.E2E.Tests</AssemblyName>
@@ -16,12 +17,11 @@
 		     （Banori.csproj 已对 Banori.Tests 声明）只覆盖 Banori.Tests；这里改用带参构造绕开
 		     Program 可见性（见 AcceptanceHost 注释）。 -->
 		<ProjectReference Include="..\..\Banori\Banori.csproj" />
-		<PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.14" />
-		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+		<PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="11.0.0" />
+		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.12.0" />
 		<PackageReference Include="xunit" Version="2.9.3" />
-		<PackageReference Include="xunit.runner.visualstudio" Version="3.1.0" />
-		<!-- 未启用 E2E_SMOKE 时 Skip.If → 真 skipped（xunit 2.x 官方生态标准做法）。 -->
-		<PackageReference Include="Xunit.SkippableFact" Version="1.5.23" />
+		<PackageReference Include="xunit.runner.visualstudio" Version="4.0.1" />
+		<PackageReference Include="Xunit.SkippableFact" Version="1.5.85" />
 	</ItemGroup>
 
 </Project>

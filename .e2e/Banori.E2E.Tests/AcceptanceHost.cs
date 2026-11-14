@@ -80,7 +80,7 @@ public sealed class AcceptanceHost : WebApplicationFactory<ManageQbittorrentSett
 
     /// <summary>
     ///     重置环境：停 BackgroundService（释放 SQLite 连接）→ 清 SQLite 连接池 → 删库。
-    ///     .NET 10 WAF minimal hosting 下 Server.Host（IWebHost）已废弃且直接抛错，无法经它
+    ///     WAF minimal hosting 下 Server.Host（IWebHost）已废弃且直接抛错，无法经它
     ///     StopAsync；改为逆序手动停止全部 IHostedService（与 host.StopAsync 的停止顺序一致），
     ///     host 自身随调用方的 DisposeAsync（WAF Dispose）释放。Microsoft.Data.Sqlite 的连接池
     ///     会持有打开的连接句柄，Windows 上不清池就删不掉库文件。

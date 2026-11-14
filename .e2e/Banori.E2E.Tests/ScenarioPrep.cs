@@ -12,7 +12,7 @@ namespace Banori.E2E.Tests;
 ///     multipart /api/v2/torrents/add（stopped=true）→ recheck → force-resume；
 ///     断言 amount_downloaded≈0 基线（数据来自预放文件而非网络下载）。
 /// </summary>
-public sealed class ScenarioPrep(AcceptanceHost host)
+public static class ScenarioPrep
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

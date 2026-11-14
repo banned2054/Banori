@@ -34,7 +34,7 @@ public sealed class QbApiClient(string baseUrl, string username, string password
                 {
                     Content = new FormUrlEncodedContent(new Dictionary<string, string>
                     {
-                        ["username"] = username,
+                        ["username"] = Username,
                         ["password"] = password
                     })
                 };

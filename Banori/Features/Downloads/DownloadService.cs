@@ -26,19 +26,12 @@ namespace Banori.Features.Downloads;
 public sealed class DownloadService(
     IDbContextFactory<ApplicationDbContext> dbContextFactory,
     DownloadCoordinationGate                coordinationGate,
-    ITorrentFileSource                      torrentFileSource,
-    IFeedSourceReader                       feedSourceReader,
     IQbittorrentSessionFactory              sessionFactory,
     ManageQbittorrentSettings               qbittorrentSettings,
     NotificationEnqueuer                    notificationEnqueuer,
     AniParser                               aniParser,
-    NamingTemplateStore                     namingTemplateStore,
     ReleaseNamePreviewPolicy                namingPolicy,
-    CandidateEligibilityPolicy              eligibilityPolicy,
-    CandidateRankingPolicy                  rankingPolicy,
-    ISelectionRuleProvider                  ruleProvider,
     SubjectMetadataCache                    subjectCache,
-    ISubjectLinkResolver                    subjectLinkResolver,
     TimeProvider                            timeProvider,
     ILogger<DownloadService>                logger,
     SubjectEpisodeCorrectionPolicy          episodeCorrectionPolicy,
@@ -1725,7 +1718,7 @@ public sealed class DownloadService(
     ///     journal-first 发出一次 Resume：请求台账先落库（AwaitingConfirm + 请求时间 + Unknown），再发送，
     ///     并立即观察一次——快速生效时无需等下一轮。响应丢失不断言失败：转 ResponseUnknown 由观察确认。
     /// </summary>
-    private async Task<DownloadRunRecovery> IssueRunResumeAsync(
+    private async Task<DownloadRunRecovery?> IssueRunResumeAsync(
         IQbittorrentSession session, DownloadTask task, string purpose,
         DownloadRunRecovery? previous, CancellationToken ct)
     {
@@ -1964,6 +1957,12 @@ public sealed class DownloadService(
 
         await using var session = await sessionFactory.CreateAsync(cancellationToken);
         var result = await IssueRunResumeAsync(session, task, recovery.Purpose, recovery, cancellationToken);
+        if (result is null)
+        {
+            logger.LogInformation("任务 {TaskId} 继续下载已观察到运行，启动恢复记录已清空。", taskId);
+            return;
+        }
+
         logger.LogInformation("任务 {TaskId} 人工恢复启动已发出（{RunState}），等待对账观察确认。",
                               taskId, result.State);
     }

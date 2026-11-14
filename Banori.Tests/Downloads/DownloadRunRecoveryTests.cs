@@ -193,7 +193,7 @@ public sealed partial class DownloadVerificationTests
         Assert.NotNull(run);
         Assert.Equal(DownloadRunStates.ConfirmedRunning, run.State);
         Assert.NotNull(run.LastReannounceError);
-        Assert.Equal(1, harness.Store.RecheckCalls.Count);
+        Assert.Single(harness.Store.RecheckCalls);
         Assert.Single(harness.Store.ReannounceCalls);
         Assert.Empty(harness.Store.DeleteCalls);
     }

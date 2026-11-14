@@ -135,13 +135,13 @@ internal sealed class SchedulingHarness(
     /// <summary>推进一个采样间隔（1 秒）再对账：驱动需要时间流逝的正常流程。</summary>
     public async Task RoundAsync()
     {
-        time.Advance(TimeSpan.FromSeconds(1));
+        Time.Advance(TimeSpan.FromSeconds(1));
         await service.ReconcileAsync();
     }
 
     public async Task AdvanceAsync(TimeSpan by)
     {
-        time.Advance(by);
+        Time.Advance(by);
         await service.ReconcileAsync();
     }
 

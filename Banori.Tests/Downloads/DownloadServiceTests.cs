@@ -3175,6 +3175,7 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(DownloadTaskStatus.Replaced, retiredV1.Status);
         Assert.Equal(taskIdV2, retiredV1.ReplacedByTaskId);
         var interim = await FindEpisodeVersionAsync(harness);
+        Assert.NotNull(interim);
         Assert.Equal(await FindAnimeFileIdAsync(harness, taskIdV2), interim.IncumbentVideoFileId);
         Assert.Equal(await FindAnimeFileIdAsync(harness, taskIdV1), interim.SupersededVideoFileId);
         Assert.Equal(await FindAnimeFileIdAsync(harness, taskIdV3), interim.PendingVideoFileId);
@@ -3186,6 +3187,7 @@ public sealed partial class DownloadServiceTests
         var completedV3 = await harness.GetTaskAsync(taskIdV3);
         Assert.Equal(DownloadTaskStatus.Completed, completedV3.Status);
         var final = await FindEpisodeVersionAsync(harness);
+        Assert.NotNull(final);
         Assert.Equal(await FindAnimeFileIdAsync(harness, taskIdV3), final.IncumbentVideoFileId);
         Assert.Equal(await FindAnimeFileIdAsync(harness, taskIdV2), final.SupersededVideoFileId);
         Assert.Null(final.PendingVideoFileId);
@@ -3502,12 +3504,14 @@ public sealed partial class DownloadServiceTests
         CompleteTorrent(harness, v2.InfoHash);
         await harness.ReconcileAsync();
         var switched = await FindEpisodeVersionAsync(harness, 12);
+        Assert.NotNull(switched);
         Assert.Equal(await FindAnimeFileIdAsync(harness, v2Id), switched.IncumbentVideoFileId);
         Assert.Equal(await FindAnimeFileIdAsync(harness, v1Id), switched.SupersededVideoFileId);
 
         // 删除现任所属任务：登记表回退到它承接的上一任，历史成片重新成为该集现任。
         await harness.Service.DeleteAsync(v2Id, false, false);
         var reverted = await FindEpisodeVersionAsync(harness, 12);
+        Assert.NotNull(reverted);
         Assert.Equal(await FindAnimeFileIdAsync(harness, v1Id), reverted.IncumbentVideoFileId);
         Assert.Null(reverted.SupersededVideoFileId);
         Assert.Equal(DownloadTaskStatus.Completed, (await harness.GetTaskAsync(v1Id)).Status);

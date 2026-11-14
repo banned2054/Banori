@@ -13,9 +13,9 @@
 
 <div>
     <a href="https://github.com/banned2054/Banori/releases/tag/v0.2.4"><img alt="Version 0.2.4" src="https://img.shields.io/badge/version-0.2.4-blue"></a>
-    <a href="https://dotnet.microsoft.com/"><img alt=".NET 10" src="https://img.shields.io/badge/.NET-10.0-512BD4"></a>
+    <a href="https://dotnet.microsoft.com/"><img alt=".NET 11" src="https://img.shields.io/badge/.NET-11.0-512BD4"></a>
     <a href="https://learn.microsoft.com/aspnet/core/blazor/"><img alt="Blazor" src="https://img.shields.io/badge/Blazor-Interactive_Server-7B2CBF"></a>
-    <a href="https://learn.microsoft.com/ef/core/"><img alt="EF Core" src="https://img.shields.io/badge/EF_Core-10-2EA44F"></a>
+    <a href="https://learn.microsoft.com/ef/core/"><img alt="EF Core" src="https://img.shields.io/badge/EF_Core-11-2EA44F"></a>
 </div>
 
 <br>
@@ -24,7 +24,7 @@
 
 </div>
 
-**Banori**是面向个人或家庭媒体库的动漫 RSS 管理面板，基于 .NET 10 与 Blazor 构建。它可以管理 Mikan / AniBT 订阅、分析并关联 Bangumi 条目，评估优胜条目并登记下载任务，再提交到 qBittorrent，完成后按模板整理文件。
+**Banori**是面向个人或家庭媒体库的动漫 RSS 管理面板，基于 .NET 11 与 Blazor 构建。它可以管理 Mikan / AniBT 订阅、分析并关联 Bangumi 条目，评估优胜条目并登记下载任务，再提交到 qBittorrent，完成后按模板整理文件。
 
 ## 🚧 项目状态
 
@@ -168,7 +168,7 @@ SQL 日志可能包含业务数据或 SQL 文本中的字面量，不建议长�
 
 ## 🛠️ 本地开发
 
-需要安装 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)。使用空数据库启动时，先通过环境变量设置首位管理员：
+需要安装 [.NET 11 SDK](https://dotnet.microsoft.com/download/dotnet/11.0)。使用空数据库启动时，先通过环境变量设置首位管理员：
 
 ```powershell
 $env:BANORI_USERNAME = "admin"

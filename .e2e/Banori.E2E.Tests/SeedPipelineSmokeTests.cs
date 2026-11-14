@@ -24,7 +24,7 @@ public sealed class SeedPipelineSmokeTests : IAsyncLifetime
     public static bool SmokeEnabled =>
         Environment.GetEnvironmentVariable("E2E_SMOKE") == "1";
 
-    /// <summary>惰性求值：E2E_SMOKE 未启用时类型初始化不触碰文件系统（Skip.IfNot 先于首次访问）。</summary>
+    /// <summary>惰性求值：只有测试实际执行时才访问文件系统。</summary>
     private static string SmokeRoot => _smokeRoot ??= FindSmokeRoot();
 
     public Task InitializeAsync() => Task.CompletedTask;
@@ -43,8 +43,6 @@ public sealed class SeedPipelineSmokeTests : IAsyncLifetime
     [SkippableFact]
     public async Task 搭建环境_冒烟_上传种子到qB可见()
     {
-        // 未设 E2E_SMOKE=1（或非 Windows）时记 skipped 而非 Passed；runbook：
-        // set E2E_SMOKE=1 && dotnet test .e2e/Banori.E2E.Tests
         Skip.IfNot(SmokeEnabled && RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
 
         // 前置：外部 qb_container.py up 已起 4.6.4 容器（E2E_QB_* 环境变量指向它）。

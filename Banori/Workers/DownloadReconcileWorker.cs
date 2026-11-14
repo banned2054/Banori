@@ -18,7 +18,7 @@ public sealed class DownloadReconcileWorker(
     TimeProvider                            timeProvider,
     IDbContextFactory<ApplicationDbContext> dbContextFactory,
     DownloadTimingPolicy?                   timingPolicy = null,
-    ILogger<DownloadReconcileWorker>        logger       = null) : BackgroundService
+    ILogger<DownloadReconcileWorker>?       logger       = null) : BackgroundService
 {
     private readonly DownloadTimingPolicy timing = timingPolicy ?? DownloadTimingPolicy.Default;
 

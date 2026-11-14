@@ -37,11 +37,11 @@ public sealed class DownloadVerificationPhaseThreeTests
         Assert.True(waiting.Status.IsActive());
         Assert.Equal(DownloadIsolationState.None, waiting.IsolationState);
         Assert.Equal(DownloadPreparationStage.AwaitingVerification, waiting.PreparationStage);
-        Assert.Equal(1, harness.Store.RecheckCalls.Count);
+        Assert.Single(harness.Store.RecheckCalls);
 
         // 同一时刻的脉冲风暴不消耗补发预算。
         for (var i = 0; i < 5; i++) await harness.ReconcileNowAsync();
-        Assert.Equal(1, harness.Store.RecheckCalls.Count);
+        Assert.Single(harness.Store.RecheckCalls);
 
         // 窗口过期：允许一次有界补发。
         await harness.AdvanceAsync(TimeSpan.FromSeconds(31));
@@ -84,7 +84,7 @@ public sealed class DownloadVerificationPhaseThreeTests
         Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
         Assert.Null(completed.VerificationIntent);
         Assert.Equal(DownloadIsolationState.None, completed.IsolationState);
-        Assert.Equal(1, harness.Store.RecheckCalls.Count); // 见证先于补发：无需第二次请求。
+        Assert.Single(harness.Store.RecheckCalls); // 见证先于补发：无需第二次请求。
         Assert.Single(harness.Store.AddCalls);
         Assert.Empty(harness.Store.DeleteCalls);
         Assert.Single(harness.Store.ResumeCalls);
@@ -669,7 +669,7 @@ public sealed class DownloadVerificationPhaseThreeTests
 
         // 无进展到期：发出第 1 次停止请求。
         await harness.AdvanceAsync(TimeSpan.FromMinutes(11));
-        Assert.Equal(1, harness.Store.PauseCalls.Count);
+        Assert.Single(harness.Store.PauseCalls);
 
         // 此后校验持续推进（每轮进度都变）：停止请求仍未生效时按确认窗口有界补发，耗尽才失败，
         // 不能因进度变化重置期限、把未确认的停止请求无限搁置。
@@ -917,7 +917,7 @@ public sealed class DownloadVerificationPhaseThreeTests
             await service.ResumeAsync(taskId);
         }
 
-        Assert.Equal(1, harness.Store.PauseCalls.Count);
+        Assert.Single(harness.Store.PauseCalls);
 
         // 停止确认窗口过期按预算补发，耗尽后明确受阻——不得无限停留在 Downloading
         // 等待一个已作废的校验自然结束。

@@ -4,6 +4,7 @@
 @using Banori.Data
 @using Banori.Features.Proxies
 @using Banori.Features.Subscriptions
+@using Microsoft.JSInterop
 @implements IDisposable
 
 @inject SubscriptionService                 SubscriptionService
@@ -162,7 +163,25 @@ else
 
 	private async Task DeleteAsync(SubscriptionView subscription)
 	{
-		if (!await JsRuntime.InvokeAsync<bool>("confirm", $"删除订阅“{subscription.Name}”及其所有条目？")) return;
+		bool confirmed;
+		try
+		{
+			confirmed = await JsRuntime.InvokeAsync<bool>(
+				"confirm",
+				_cts.Token,
+				$"删除订阅“{subscription.Name}”及其所有条目？");
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+			return;
+		}
+		catch (Exception exception) when (exception is JSException or InvalidOperationException)
+		{
+			Logger.LogWarning(exception, "浏览器确认对话框不可用，已取消删除订阅。");
+			return;
+		}
+
+		if (!confirmed) return;
 		await RunAsync(token => _vm.DeleteAsync(subscription.Id, subscription.Name, token));
 	}
 

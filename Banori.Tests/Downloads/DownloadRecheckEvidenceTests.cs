@@ -37,7 +37,7 @@ public sealed class DownloadRecheckEvidenceTests
         Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
         Assert.Null(completed.VerificationIntent);
         Assert.Equal(DownloadIsolationState.None, completed.IsolationState);
-        Assert.Equal(1, harness.Store.RecheckCalls.Count); // 先见证、后补发：无需第二次请求。
+        Assert.Single(harness.Store.RecheckCalls); // 先见证、后补发：无需第二次请求。
         Assert.Empty(harness.Store.DeleteCalls);
         Assert.Single(harness.Store.ResumeCalls);
         await using (var db = await harness.CreateDbContextAsync())
@@ -240,7 +240,7 @@ public sealed class DownloadRecheckEvidenceTests
         var waiting = DownloadVerificationIntent.FromJson((await harness.GetTaskAsync(taskId)).VerificationIntent);
         Assert.NotNull(waiting);
         Assert.False(waiting.ObservedChecking); // 外部校验不归属本轮。
-        Assert.Equal(1, harness.Store.RecheckCalls.Count); // 校验期间不叠加 recheck。
+        Assert.Single(harness.Store.RecheckCalls); // 校验期间不叠加 recheck。
         Assert.DoesNotContain(task.InfoHash, harness.Store.PauseCalls);
 
         // 外部校验结束：重新捕获基线并发出本轮请求，外部校验仍未被记为本轮证据。
@@ -271,13 +271,13 @@ public sealed class DownloadRecheckEvidenceTests
         var issued = DownloadVerificationIntent.FromJson((await harness.GetTaskAsync(taskId)).VerificationIntent);
         Assert.NotNull(issued);
         Assert.NotNull(issued.RecheckAppliedAtUtc);
-        Assert.Equal(1, harness.Store.RecheckCalls.Count);
+        Assert.Single(harness.Store.RecheckCalls);
 
         for (var i = 0; i < 9; i++) await harness.RoundAsync(); // pieces 恢复为完整结果 → 见证 → 完成。
 
         var completed = await harness.GetTaskAsync(taskId);
         Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
-        Assert.Equal(1, harness.Store.RecheckCalls.Count);
+        Assert.Single(harness.Store.RecheckCalls);
         Assert.Single(harness.Store.ResumeCalls);
         Assert.Empty(harness.Store.DeleteCalls);
     }
@@ -341,7 +341,7 @@ public sealed class DownloadRecheckEvidenceTests
 
         var completed = await harness.GetTaskAsync(taskId);
         Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
-        Assert.Equal(1, harness.Store.RecheckCalls.Count);
+        Assert.Single(harness.Store.RecheckCalls);
         Assert.Empty(harness.Store.DeleteCalls);
     }
 
@@ -371,7 +371,7 @@ public sealed class DownloadRecheckEvidenceTests
         var completed = await harness.GetTaskAsync(taskId);
         Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
         // 见证先于发送重试：SendFailed 保留的基线与锚点在下一轮直接成立完成见证，不再补发请求。
-        Assert.Equal(1, harness.Store.RecheckCalls.Count);
+        Assert.Single(harness.Store.RecheckCalls);
         Assert.Empty(harness.Store.DeleteCalls);
         Assert.Single(harness.Store.ResumeCalls);
     }
@@ -388,7 +388,7 @@ public sealed class DownloadRecheckEvidenceTests
         harness.Store.RecheckBehavior = FakeRecheckBehavior.RecordOnly;
         await harness.RoundAsync(); // 候选根提交。
         await harness.RoundAsync(); // 映射 + 首次 recheck。
-        Assert.Equal(1, harness.Store.RecheckCalls.Count);
+        Assert.Single(harness.Store.RecheckCalls);
 
         // 应用重启后下载器保留了旧的完整状态（resume data）：不得据此判定本轮完成。
         harness.Store.Torrents[task.InfoHash] = harness.Store.Torrents[task.InfoHash] with

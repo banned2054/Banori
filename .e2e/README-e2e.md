@@ -1,8 +1,8 @@
 # .e2e 端到端验收（隔离 qB 4.6.4 容器 + 真机 Banori host）
 
 三个独立验收：冒烟（SeedPipelineSmokeTests）、跨站搬运复用场景1（CrossSeedScenario1Tests）、
-场景2（CrossSeedScenario2Tests）。全部为 SkippableFact：对应环境变量未设置时显示 [SKIP]
-（只做 gate 判定，不触碰文件系统、不启动 python/Docker），不影响常规 `dotnet test`。
+场景2（CrossSeedScenario2Tests）。使用 Xunit.SkippableFact 的动态跳过：对应环境变量未设置时显示 [SKIP]
+（只检查环境变量和操作系统，不访问文件系统、不启动 python/Docker），不影响常规 `dotnet test`。
 每个场景自动管理自己的 qB 容器（测试内 up/down，串行绝不并行），
 场景证据落盘 `.e2e/s1`、`.e2e/s2`（目录不存在时自动创建；本地保留不删，重跑覆盖）。
 另有 `E2ePathResolutionTests` 的 3 个目录定位 [Fact]：无 gate、始终运行、自清理，
