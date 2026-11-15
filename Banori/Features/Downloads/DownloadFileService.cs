@@ -8,6 +8,7 @@ using Banori.Data;
 using Banori.Integrations.Qbittorrent;
 using Microsoft.EntityFrameworkCore;
 using System.Text.RegularExpressions;
+using Torrent = MonoTorrent.Torrent;
 
 namespace Banori.Features.Downloads;
 
@@ -22,7 +23,13 @@ public sealed class TargetPathOccupiedException(string message) : InvalidOperati
 ///     这类失败必须阻塞推进（失败/待核对），绝不进入任何可启动或可迁移的回退——身份不明时
 ///     既不能证明目标可写，也不能证明当前布局可保留。
 /// </summary>
-public class DownloadFileIdentityException(string message) : InvalidOperationException(message);
+public class DownloadFileIdentityException : InvalidOperationException
+{
+    public DownloadFileIdentityException(string message) : base(message) { }
+
+    /// <summary>保留底层失败原因，用于区分「下载器导出失败」与「导出内容无效」等不同恢复障碍。</summary>
+    public DownloadFileIdentityException(string message, Exception innerException) : base(message, innerException) { }
+}
 
 /// <summary>
 ///     布局请求（改名、移动）在确认窗口内有界补发后仍未生效：下载器可能拒绝或吞掉了请求，
@@ -715,7 +722,7 @@ public sealed class DownloadFileService(
     {
         var task = await LoadAsync(db, taskId, ct);
         if (!TorrentDownloadPolicy.TryLoad(task.TorrentFile, out var torrent, out var isMultiFile))
-            throw new DownloadFileIdentityException("种子原始元数据不存在或文件清单无效，不能伪造原始文件路径。");
+            (torrent, isMultiFile) = await RecoverTorrentFileAsync(session, task, ct);
         // Library enumeration (including zero-length files) can change. Match immutable originals, never its indices.
         var remaining =
             torrent.Files.ToDictionary(file => TorrentDownloadPolicy.GetRelativePath(torrent, file, isMultiFile),
@@ -776,6 +783,36 @@ public sealed class DownloadFileService(
         RelativeDownloadPathPolicy.ValidateDirectories(task.MediaDirectory, task.SeedDirectory);
         await db.SaveChangesAsync(ct);
         return task;
+    }
+
+    /// <summary>
+    ///     旧任务缺失或无效的原始种子元数据经下载器导出补存。仅在元数据解析失败时调用；导出内容
+    ///     必须解析成功且 InfoHash 与任务一致才允许赋回任务。核验通过前不触碰数据库，赋值后的后续
+    ///     身份失败随未提交上下文丢弃。接口不支持导出与取消原样传播，其余导出异常包装为身份异常。
+    /// </summary>
+    private async Task<(Torrent Torrent, bool IsMultiFile)> RecoverTorrentFileAsync(
+        IQbittorrentSession session, DownloadTask task, CancellationToken ct)
+    {
+        byte[] exported;
+        try
+        {
+            exported = await session.ExportTorrentAsync(task.InfoHash, ct);
+        }
+        catch (Exception exception) when (exception is not NotSupportedException &&
+                                          exception is not OperationCanceledException)
+        {
+            throw new DownloadFileIdentityException("下载器导出种子失败，无法恢复原始元数据。", exception);
+        }
+
+        if (exported is not { Length: > 0 } ||
+            !TorrentDownloadPolicy.TryLoad(exported, out var torrent, out var isMultiFile))
+            throw new DownloadFileIdentityException("下载器导出的种子内容无效，无法恢复原始元数据。");
+        var exportedHash = torrent.InfoHashes.V1!.ToHex().ToLowerInvariant();
+        if (!string.Equals(exportedHash, task.InfoHash, StringComparison.OrdinalIgnoreCase))
+            throw new DownloadFileIdentityException("下载器导出的种子 InfoHash 与任务不一致，拒绝恢复。");
+
+        task.TorrentFile = exported;
+        return (torrent, isMultiFile);
     }
 
     private static IReadOnlyDictionary<int, TorrentFileSnapshot> MatchRemoteFiles(

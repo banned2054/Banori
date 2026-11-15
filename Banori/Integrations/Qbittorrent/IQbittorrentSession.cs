@@ -97,6 +97,10 @@ public interface IQbittorrentSession : IAsyncDisposable
         string infoHash, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("会话不支持文件身份列表。");
 
+    /// <summary>导出种子的原始 .torrent 字节，用于恢复数据库缺失/无效的原始元数据；旧会话必须显式支持。</summary>
+    Task<byte[]> ExportTorrentAsync(string infoHash, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("会话不支持种子导出。");
+
     /// <summary>按 qB index 批量设置文件的下载选择；业务层只表达下载或跳过，不区分 qB 的高/最高优先级。请求成功不代表已生效，应随后读取文件快照确认。</summary>
     Task SetTorrentFileSelectionAsync(string infoHash, IReadOnlyCollection<int> fileIndices,
                                       bool   download, CancellationToken        cancellationToken = default) =>

@@ -1,4 +1,5 @@
 using Banned.Qbittorrent;
+using Banned.Qbittorrent.Exceptions;
 using Banned.Qbittorrent.Models.Enums;
 using Banned.Qbittorrent.Models.Requests;
 using Banned.Qbittorrent.Models.Torrent;
@@ -87,6 +88,20 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
                                     file.Name ?? throw new InvalidOperationException("下载器没有返回文件路径。"),
                                     file.Size, file.Progress, file.Priority != EnumTorrentFilePriority.DoNotDownload))
                             .ToList();
+    }
+
+    public async Task<byte[]> ExportTorrentAsync(string infoHash, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await client.Torrent.ExportTorrent(NormalizeHash(infoHash), cancellationToken);
+        }
+        catch (QbittorrentNotSupportedException exception)
+        {
+            // 库按服务器 WebAPI 版本抛 QbittorrentNotSupportedException（非系统 NotSupportedException）：
+            // 在适配层翻译成接口约定的「不支持」，业务层统一按会话能力缺失区分，其余协议错误照常包装。
+            throw new NotSupportedException("下载器版本不支持种子导出。", exception);
+        }
     }
 
     public Task SetTorrentFileSelectionAsync(string                   infoHash,
