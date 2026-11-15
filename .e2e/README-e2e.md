@@ -1,10 +1,11 @@
 # .e2e 端到端验收（隔离 qB 4.6.4 容器 + 真机 Banori host）
 
-三个独立验收：冒烟（SeedPipelineSmokeTests）、跨站搬运复用场景1（CrossSeedScenario1Tests）、
-场景2（CrossSeedScenario2Tests）。使用 Xunit.SkippableFact 的动态跳过：对应环境变量未设置时显示 [SKIP]
+四个独立验收：冒烟（SeedPipelineSmokeTests）、跨站搬运复用场景1（CrossSeedScenario1Tests）、
+场景2（CrossSeedScenario2Tests）、元数据恢复（MetadataRecoveryScenarioTests）。
+使用 Xunit.SkippableFact 的动态跳过：对应环境变量未设置时显示 [SKIP]
 （只检查环境变量和操作系统，不访问文件系统、不启动 python/Docker），不影响常规 `dotnet test`。
 每个场景自动管理自己的 qB 容器（测试内 up/down，串行绝不并行），
-场景证据落盘 `.e2e/s1`、`.e2e/s2`（目录不存在时自动创建；本地保留不删，重跑覆盖）。
+场景证据落盘 `.e2e/s1`、`.e2e/s2`、`.e2e/meta`（目录不存在时自动创建；本地保留不删，重跑覆盖）。
 另有 `E2ePathResolutionTests` 的 3 个目录定位 [Fact]：无 gate、始终运行、自清理，
 用于在干净源码布局下验证根定位与场景目录自动创建。
 
@@ -42,6 +43,11 @@ set E2E_S1=1 && dotnet test .e2e/Banori.E2E.Tests --no-build --filter "FullyQual
 
 # 场景2：正常完整链 + v2 受管候选映射修正（18086/16886）；两场景串行跑，绝不并行
 set E2E_S2=1 && dotnet test .e2e/Banori.E2E.Tests --no-build --filter "FullyQualifiedName~CrossSeedScenario2" > .e2e/s2/test-output.txt 2>&1
+
+# 元数据恢复：旧任务缺失 TorrentFile 元数据经 qB /torrents/export 补存（18087/16887）
+# 重定向需目录预先存在：FindSceneRoot 在 gate 内才自动创建，干净检出没有 .e2e/meta/。
+mkdir -p .e2e/meta
+set E2E_META=1 && dotnet test .e2e/Banori.E2E.Tests --no-build --filter "FullyQualifiedName~MetadataRecovery" > .e2e/meta/test-output.txt 2>&1
 ```
 
 （Git Bash 下用 `E2E_S1=1 dotnet test …` 形式。）测试结束自动 `qb_container.py down --remove`；

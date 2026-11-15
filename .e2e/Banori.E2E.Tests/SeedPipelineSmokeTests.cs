@@ -43,8 +43,24 @@ public sealed class SeedPipelineSmokeTests : IAsyncLifetime
     [SkippableFact]
     public async Task 搭建环境_冒烟_上传种子到qB可见()
     {
+        // 跳过判定先于获取串行门：gate 关闭时空等没有意义。
         Skip.IfNot(SmokeEnabled && RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
 
+        // E2E_QB_* 环境变量的读者与三个场景共用（场景写入、运行期即便恢复也存在窗口），
+        // 持同一把进程内串行门串行读写，避免 xUnit 并行测试类时互串 qB 实例。
+        await ScenarioSupport.SerialGate.WaitAsync();
+        try
+        {
+            await RunSmokeAsync();
+        }
+        finally
+        {
+            ScenarioSupport.SerialGate.Release();
+        }
+    }
+
+    private async Task RunSmokeAsync()
+    {
         // 前置：外部 qb_container.py up 已起 4.6.4 容器（E2E_QB_* 环境变量指向它）。
         _qb = new QbApiClient(
             Environment.GetEnvironmentVariable("E2E_QB_BASE_URL") ?? "http://127.0.0.1:18081",

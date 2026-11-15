@@ -395,6 +395,12 @@ public sealed class CrossSeedScenario1Tests
                                            $"up --name {ContainerName} --scene-dir \"{sceneRoot}\" " +
                                            $"--webui-port {WebUiPort} --bt-port {BtPort} " +
                                            $"--username admin --password {QbPassword} --state \"{containerState}\"");
+        // 进程级环境变量覆盖必须可恢复：SeedPipelineSmokeTests 读取同一组变量但不经过
+        // SerialGate，只写不恢复会让同会话后跑的冒烟读到残留值（meta 场景已按此模式验证）。
+        // 原值可能不存在（null），恢复时 SetEnvironmentVariable(name, null) 即删除。
+        var qbEnvironment = (BaseUrl:  Environment.GetEnvironmentVariable("E2E_QB_BASE_URL"),
+                             Username: Environment.GetEnvironmentVariable("E2E_QB_USERNAME"),
+                             Password: Environment.GetEnvironmentVariable("E2E_QB_PASSWORD"));
         Environment.SetEnvironmentVariable("E2E_QB_BASE_URL", $"http://127.0.0.1:{WebUiPort}");
         Environment.SetEnvironmentVariable("E2E_QB_USERNAME", "admin");
         Environment.SetEnvironmentVariable("E2E_QB_PASSWORD", QbPassword);
@@ -467,10 +473,28 @@ public sealed class CrossSeedScenario1Tests
         }
         finally
         {
-            if (host is not null)
+            // 环境变量最先恢复（先于容器清理与外层串行门释放）。
+            Environment.SetEnvironmentVariable("E2E_QB_BASE_URL", qbEnvironment.BaseUrl);
+            Environment.SetEnvironmentVariable("E2E_QB_USERNAME", qbEnvironment.Username);
+            Environment.SetEnvironmentVariable("E2E_QB_PASSWORD", qbEnvironment.Password);
+            // 停机尽力而为：NotificationDeliveryWorker 的 PeriodicTimer 循环不捕获
+            // OperationCanceledException（Workers/NotificationDeliveryWorker.cs:31，已另行记录），
+            // .NET 11 的 Host 会把它从 StopAsync/DisposeAsync 重新抛出——只吞取消异常，
+            // 真实清理失败（SQLite 文件锁、DI 释放错误等）向上抛出以便观察。
+            // 与 MetadataRecoveryScenarioTests 的停机防护同型。
+            try
             {
-                await host.ResetAsync();
-                await host.DisposeAsync();
+                if (host is not null) await host.ResetAsync();
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            try
+            {
+                if (host is not null) await host.DisposeAsync();
+            }
+            catch (OperationCanceledException)
+            {
             }
             qb.Dispose();
             await ScenarioSupport.TryDownAsync(containerState);
@@ -671,6 +695,12 @@ public sealed class CrossSeedScenario2Tests
                                            $"up --name {ContainerName} --scene-dir \"{sceneRoot}\" " +
                                            $"--webui-port {WebUiPort} --bt-port {BtPort} " +
                                            $"--username admin --password {QbPassword} --state \"{containerState}\"");
+        // 进程级环境变量覆盖必须可恢复：SeedPipelineSmokeTests 读取同一组变量但不经过
+        // SerialGate，只写不恢复会让同会话后跑的冒烟读到残留值（meta 场景已按此模式验证）。
+        // 原值可能不存在（null），恢复时 SetEnvironmentVariable(name, null) 即删除。
+        var qbEnvironment = (BaseUrl:  Environment.GetEnvironmentVariable("E2E_QB_BASE_URL"),
+                             Username: Environment.GetEnvironmentVariable("E2E_QB_USERNAME"),
+                             Password: Environment.GetEnvironmentVariable("E2E_QB_PASSWORD"));
         Environment.SetEnvironmentVariable("E2E_QB_BASE_URL", $"http://127.0.0.1:{WebUiPort}");
         Environment.SetEnvironmentVariable("E2E_QB_USERNAME", "admin");
         Environment.SetEnvironmentVariable("E2E_QB_PASSWORD", QbPassword);
@@ -784,10 +814,28 @@ public sealed class CrossSeedScenario2Tests
         }
         finally
         {
-            if (host is not null)
+            // 环境变量最先恢复（先于容器清理与外层串行门释放）。
+            Environment.SetEnvironmentVariable("E2E_QB_BASE_URL", qbEnvironment.BaseUrl);
+            Environment.SetEnvironmentVariable("E2E_QB_USERNAME", qbEnvironment.Username);
+            Environment.SetEnvironmentVariable("E2E_QB_PASSWORD", qbEnvironment.Password);
+            // 停机尽力而为：NotificationDeliveryWorker 的 PeriodicTimer 循环不捕获
+            // OperationCanceledException（Workers/NotificationDeliveryWorker.cs:31，已另行记录），
+            // .NET 11 的 Host 会把它从 StopAsync/DisposeAsync 重新抛出——只吞取消异常，
+            // 真实清理失败（SQLite 文件锁、DI 释放错误等）向上抛出以便观察。
+            // 与 MetadataRecoveryScenarioTests 的停机防护同型。
+            try
             {
-                await host.ResetAsync();
-                await host.DisposeAsync();
+                if (host is not null) await host.ResetAsync();
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            try
+            {
+                if (host is not null) await host.DisposeAsync();
+            }
+            catch (OperationCanceledException)
+            {
             }
             qb.Dispose();
             await ScenarioSupport.TryDownAsync(containerState);
