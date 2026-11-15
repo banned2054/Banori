@@ -1,6 +1,8 @@
 using Banned.AniParser;
 using Banned.Qbittorrent;
+using Banned.Qbittorrent.Exceptions;
 using Banned.Qbittorrent.Models;
+using Banned.Qbittorrent.Models.Application;
 using Banori.Core.Downloads;
 using Banori.Core.Rules;
 using Banori.Core.Subjects;
@@ -191,6 +193,405 @@ public sealed class DownloadFileServiceTests
         await h.Update(task => task.TorrentFile = []);
         await Assert.ThrowsAsync<DownloadFileIdentityException>(() => h.Service.InitializeAsync(h.Task.Id));
         Assert.Empty((await h.Load()).Files);
+    }
+
+    [Fact]
+    public async Task Initialize_MissingTorrentMetadataRecoversFromDownloaderExport()
+    {
+        await using var h     = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
+        var             bytes = h.Task.TorrentFile;
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportedTorrents[h.Task.InfoHash] = bytes;
+
+        await h.Service.InitializeAsync(h.Task.Id);
+        var restored = await h.Load();
+        Assert.Equal(bytes, restored.TorrentFile);
+        var file = Assert.Single(restored.Files);
+        Assert.Equal("Original/【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv", file.OriginalRelativePath);
+        Assert.Equal("Original/【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv", file.CurrentRelativePath);
+        Assert.Single(h.Store.ExportCalls);
+        Assert.Empty(h.Store.RenameFileCalls);
+
+        var view = await h.Service.ApplyAsync(h.Task.Id, 0,
+                                              new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 3));
+        Assert.Equal("E03.mkv", view.Files.Single().CurrentPath);
+        Assert.Single(h.Store.ExportCalls);
+    }
+
+    [Fact]
+    public async Task Initialize_InvalidTorrentMetadataRecoversFromDownloaderExport()
+    {
+        await using var h     = await Harness.Create("video.mkv");
+        var             bytes = h.Task.TorrentFile;
+        await h.Update(task => task.TorrentFile = [0x69, 0x6e, 0x76]);
+        h.Store.ExportedTorrents[h.Task.InfoHash] = bytes;
+
+        await h.Service.InitializeAsync(h.Task.Id);
+        var restored = await h.Load();
+        Assert.Equal(bytes, restored.TorrentFile);
+        Assert.Equal("Original/video.mkv", restored.Files.Single().OriginalRelativePath);
+        Assert.Single(h.Store.ExportCalls);
+    }
+
+    [Fact]
+    public async Task Initialize_WithValidMetadataDoesNotExport()
+    {
+        await using var h = await Harness.Create("video.mkv");
+        await h.Service.InitializeAsync(h.Task.Id);
+        await h.Service.ListAsync(h.Task.Id);
+        Assert.Empty(h.Store.ExportCalls);
+    }
+
+    [Fact]
+    public async Task Initialize_RecoveredMetadataIsNotExportedAgain()
+    {
+        await using var h     = await Harness.Create("video.mkv");
+        var             bytes = h.Task.TorrentFile;
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportedTorrents[h.Task.InfoHash] = bytes;
+
+        await h.Service.InitializeAsync(h.Task.Id);
+        await h.Service.InitializeAsync(h.Task.Id);
+        await h.Service.ListAsync(h.Task.Id);
+        var view = await h.Service.ApplyAsync(h.Task.Id, 0,
+                                              new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 2));
+        Assert.Single(h.Store.ExportCalls);
+        Assert.Equal("E02.mkv", view.Files.Single().CurrentPath);
+    }
+
+    [Fact]
+    public async Task Initialize_RecoveryKeepsRenamedRemotePathAndOriginalIdentity()
+    {
+        await using var h     = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
+        var             bytes = h.Task.TorrentFile;
+        await h.Service.ApplyAsync(h.Task.Id, 0, new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 4));
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportedTorrents[h.Task.InfoHash] = bytes;
+
+        await h.Service.InitializeAsync(h.Task.Id);
+        var recovered = await h.Load();
+        Assert.Equal(bytes, recovered.TorrentFile);
+        var file = recovered.Files.Single();
+        Assert.Equal("Original/【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv", file.OriginalRelativePath);
+        Assert.Equal("E04.mkv", file.CurrentRelativePath);
+        Assert.Single(h.Store.ExportCalls);
+
+        var view = await h.Service.ApplyAsync(h.Task.Id, 0,
+                                              new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 5));
+        Assert.Equal("E05.mkv", view.Files.Single().CurrentPath);
+    }
+
+    [Fact]
+    public async Task Initialize_RecoveryPreservesMaterializedManualFileRecords()
+    {
+        await using var h        = await Harness.Create("video.mkv");
+        var             manualId = Guid.NewGuid();
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            db.DownloadTaskFiles.Add(new DownloadTaskFile
+            {
+                Id                    = manualId, DownloadTaskId = h.Task.Id, FileIndex = 42,
+                OriginalRelativePath  = "Original/video.mkv", CurrentRelativePath = "Manual/E07.mkv",
+                Size                  = 1024, Kind = DownloadFileKind.Anime, IsManualOverride = true,
+                EpisodeNumberOverride = 7, AnimeRelativePathOverride = "Manual/E07.mkv",
+                ClassificationReason  = "人工分类"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        h.Store.FileIdentities[h.Task.InfoHash] = [new TorrentFileSnapshot(5, "Manual/E07.mkv", 1024)];
+        var bytes = h.Task.TorrentFile;
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportedTorrents[h.Task.InfoHash] = bytes;
+
+        await h.Service.InitializeAsync(h.Task.Id);
+        var recovered = await h.Load();
+        Assert.Equal(bytes, recovered.TorrentFile);
+        var file = Assert.Single(recovered.Files);
+        Assert.Equal(manualId, file.Id);
+        Assert.Equal(h.Task.Id, file.DownloadTaskId);
+        Assert.Equal(42, file.FileIndex);
+        Assert.True(file.IsManualOverride);
+        Assert.Equal(7m, file.EpisodeNumberOverride);
+        Assert.Equal("Manual/E07.mkv", file.AnimeRelativePathOverride);
+        Assert.Equal("人工分类", file.ClassificationReason);
+        Assert.Equal(DownloadFileKind.Anime, file.Kind);
+        Assert.Equal("Original/video.mkv", file.OriginalRelativePath);
+        Assert.Single(h.Store.ExportCalls);
+    }
+
+    [Fact]
+    public async Task Preview_MissingMetadataRecoversWithoutDraftOrRemoteWrites()
+    {
+        await using var h     = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
+        var             bytes = h.Task.TorrentFile;
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportedTorrents[h.Task.InfoHash] = bytes;
+
+        var preview =
+            await h.Service.PreviewAsync(h.Task.Id, 0,
+                                         new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 2.5m));
+        Assert.Equal("/downloads/Media/Anime/E02.5.mkv", preview.TargetPath);
+        var restored = await h.Load();
+        Assert.Equal(bytes, restored.TorrentFile);
+        Assert.Null(restored.Files.Single().EpisodeNumberOverride);
+        Assert.Equal("Original/【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv",
+                     restored.Files.Single().CurrentRelativePath);
+        h.AssertNoRemoteWrites();
+    }
+
+    [Fact]
+    public async Task Initialize_ExportedHashMismatchRejectsWithoutPersisting()
+    {
+        await using var h = await Harness.Create("video.mkv");
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportedTorrents[h.Task.InfoHash] = TestTorrentBytes.Create("Different Name");
+
+        await Assert.ThrowsAsync<DownloadFileIdentityException>(() => h.Service.InitializeAsync(h.Task.Id));
+        var restored = await h.Load();
+        Assert.Empty(restored.TorrentFile);
+        Assert.Empty(restored.Files);
+        h.AssertNoRemoteWrites();
+    }
+
+    [Fact]
+    public async Task Initialize_InvalidExportedContentRejectsWithoutPersisting()
+    {
+        await using var h = await Harness.Create("video.mkv");
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportedTorrents[h.Task.InfoHash] = [0x69, 0x6e, 0x76];
+
+        await Assert.ThrowsAsync<DownloadFileIdentityException>(() => h.Service.InitializeAsync(h.Task.Id));
+        var restored = await h.Load();
+        Assert.Empty(restored.TorrentFile);
+        Assert.Empty(restored.Files);
+        h.AssertNoRemoteWrites();
+    }
+
+    [Fact]
+    public async Task Initialize_ExportFailureWrapsDownloaderErrorInIdentityException()
+    {
+        await using var h = await Harness.Create("video.mkv");
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportException = new QbittorrentException("模拟导出失败");
+
+        var exception =
+            await Assert.ThrowsAsync<DownloadFileIdentityException>(() => h.Service.InitializeAsync(h.Task.Id));
+        Assert.Same(h.Store.ExportException, exception.InnerException);
+        var restored = await h.Load();
+        Assert.Empty(restored.TorrentFile);
+        Assert.Empty(restored.Files);
+        h.AssertNoRemoteWrites();
+    }
+
+    [Fact]
+    public async Task Initialize_UnsupportedExportPropagatesWithoutPersisting()
+    {
+        await using var h = await Harness.Create("video.mkv");
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportUnsupported = true;
+
+        await Assert.ThrowsAsync<NotSupportedException>(() => h.Service.InitializeAsync(h.Task.Id));
+        var restored = await h.Load();
+        Assert.Empty(restored.TorrentFile);
+        Assert.Empty(restored.Files);
+        h.AssertNoRemoteWrites();
+    }
+
+    [Fact]
+    public async Task Initialize_CanceledExportPropagatesCancellationWithoutPersisting()
+    {
+        await using var h = await Harness.Create("video.mkv");
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportException = new OperationCanceledException("模拟导出被取消");
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => h.Service.InitializeAsync(h.Task.Id));
+        var restored = await h.Load();
+        Assert.Empty(restored.TorrentFile);
+        Assert.Empty(restored.Files);
+        h.AssertNoRemoteWrites();
+    }
+
+    [Fact]
+    public async Task Initialize_PreCanceledTokenLeavesTaskUntouched()
+    {
+        await using var h     = await Harness.Create("video.mkv");
+        var             bytes = h.Task.TorrentFile;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                                                                    h.Service.InitializeAsync(h.Task.Id,
+                                                                        new CancellationToken(true)));
+        var restored = await h.Load();
+        Assert.Equal(bytes, restored.TorrentFile);
+        Assert.Empty(restored.Files);
+        h.AssertNoRemoteWrites();
+    }
+
+    [Fact]
+    public async Task Initialize_ExportCannotMaskPersistedIdentityMismatch()
+    {
+        await using var h = await Harness.Create("video.mkv");
+        await h.Service.InitializeAsync(h.Task.Id);
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var file = await db.DownloadTaskFiles.SingleAsync();
+            file.OriginalRelativePath = "Original/missing.mkv";
+            await db.SaveChangesAsync();
+        }
+
+        var bytes = h.Task.TorrentFile;
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportedTorrents[h.Task.InfoHash] = bytes;
+
+        await Assert.ThrowsAsync<DownloadFileIdentityException>(() => h.Service.InitializeAsync(h.Task.Id));
+        var restored = await h.Load();
+        Assert.Equal("Original/missing.mkv", restored.Files.Single().OriginalRelativePath);
+        Assert.Equal(1024, restored.Files.Single().Size);
+        Assert.Empty(restored.TorrentFile);
+        Assert.Single(h.Store.ExportCalls);
+        h.AssertNoRemoteWrites();
+    }
+
+    [Fact]
+    public async Task Initialize_IdentityMismatchWithValidMetadataDoesNotExport()
+    {
+        await using var h = await Harness.Create("video.mkv");
+        await h.Service.InitializeAsync(h.Task.Id);
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var file = await db.DownloadTaskFiles.SingleAsync();
+            file.Size = 1025;
+            await db.SaveChangesAsync();
+        }
+
+        await Assert.ThrowsAsync<DownloadFileIdentityException>(() => h.Service.InitializeAsync(h.Task.Id));
+        Assert.Empty(h.Store.ExportCalls);
+        Assert.Equal(1025, (await h.Load()).Files.Single().Size);
+        h.AssertNoRemoteWrites();
+    }
+
+    [Theory]
+    [InlineData("extra")]
+    [InlineData("missing")]
+    [InlineData("wrong-size")]
+    [InlineData("duplicate-path")]
+    public async Task Initialize_MissingMetadataRemoteManifestAnomaliesRejectWithoutPersisting(string invalid)
+    {
+        await using var h = await Harness.CreateWithFiles(("one.txt", 1024), ("two.txt", 1024));
+        await h.Service.InitializeAsync(h.Task.Id);
+        var persisted = (await h.Load()).Files.OrderBy(file => file.FileIndex)
+                          .Select(file => (file.FileIndex, file.OriginalRelativePath, file.CurrentRelativePath,
+                                           file.Size))
+                          .ToList();
+        var bytes = h.Task.TorrentFile;
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportedTorrents[h.Task.InfoHash] = bytes;
+        switch (invalid)
+        {
+            case "extra" :
+                h.Store.FileIdentities[h.Task.InfoHash].Add(new TorrentFileSnapshot(90, ".pad/123", 123));
+                break;
+            case "missing" :
+                h.Store.FileIdentities[h.Task.InfoHash].RemoveAt(1);
+                break;
+            case "wrong-size" :
+                h.Store.FileIdentities[h.Task.InfoHash][0] =
+                    h.Store.FileIdentities[h.Task.InfoHash][0] with { Size = 999 };
+                break;
+            case "duplicate-path" :
+                h.Store.FileIdentities[h.Task.InfoHash] =
+                [
+                    new TorrentFileSnapshot(0, "Original\\one.txt", 1024),
+                    new TorrentFileSnapshot(1, "Original/one.txt", 1024)
+                ];
+                break;
+        }
+
+        // 导出成功但下游身份核验仍拒绝：零落库（元数据与文件行都保持原样）、零远端写。
+        await Assert.ThrowsAsync<DownloadFileIdentityException>(() => h.Service.InitializeAsync(h.Task.Id));
+        Assert.Single(h.Store.ExportCalls);
+        var restored = await h.Load();
+        Assert.Empty(restored.TorrentFile);
+        Assert.Equal(persisted,
+                     restored.Files.OrderBy(file => file.FileIndex)
+                           .Select(file => (file.FileIndex, file.OriginalRelativePath, file.CurrentRelativePath,
+                                            file.Size))
+                           .ToList());
+        h.AssertNoRemoteWrites();
+    }
+
+    [Fact]
+    public async Task Initialize_MissingMetadataIncompleteJournalRejectsWithoutPersisting()
+    {
+        await using var h = await Harness.CreateWithFiles(("one.txt", 1024), ("two.txt", 1024));
+        await h.Service.InitializeAsync(h.Task.Id);
+        var bytes = h.Task.TorrentFile;
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var task = await db.DownloadTasks.Include(task => task.Files).SingleAsync();
+            task.PendingSavePath = h.Task.SavePath;
+            foreach (var file in task.Files)
+            {
+                file.PendingRenameFrom = file.CurrentRelativePath;
+                file.PendingRenameTo   = "Archived/" + file.FileIndex + ".txt";
+            }
+
+            await db.SaveChangesAsync();
+        }
+
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportedTorrents[h.Task.InfoHash] = bytes;
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var task = await db.DownloadTasks.Include(task => task.Files).SingleAsync();
+            task.Files.Single(file => file.FileIndex == 0).PendingRenameTo = null;
+            await db.SaveChangesAsync();
+        }
+
+        await Assert.ThrowsAsync<DownloadFileIdentityException>(() => h.Service.InitializeAsync(h.Task.Id));
+        Assert.Single(h.Store.ExportCalls);
+        var restored = await h.Load();
+        Assert.Empty(restored.TorrentFile);
+        var incomplete = restored.Files.Single(file => file.FileIndex == 0);
+        Assert.Equal("Original/one.txt", incomplete.PendingRenameFrom);
+        Assert.Null(incomplete.PendingRenameTo);
+        Assert.NotNull(restored.Files.Single(item => item.FileIndex == 1).PendingRenameTo);
+        h.AssertNoRemoteWrites();
+    }
+
+    [Fact]
+    public async Task Initialize_MissingMetadataJournalRemoteMismatchRejectsWithoutPersisting()
+    {
+        await using var h = await Harness.CreateWithFiles(("one.txt", 1024), ("two.txt", 1024));
+        await h.Service.InitializeAsync(h.Task.Id);
+        var bytes = h.Task.TorrentFile;
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var task = await db.DownloadTasks.Include(task => task.Files).SingleAsync();
+            task.PendingSavePath = h.Task.SavePath;
+            foreach (var file in task.Files)
+            {
+                file.PendingRenameFrom = file.CurrentRelativePath;
+                file.PendingRenameTo   = "Archived/" + file.FileIndex + ".txt";
+            }
+
+            await db.SaveChangesAsync();
+        }
+
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportedTorrents[h.Task.InfoHash] = bytes;
+        h.Store.FileIdentities[h.Task.InfoHash][0] =
+            h.Store.FileIdentities[h.Task.InfoHash][0] with { Path = "external.txt" };
+
+        await Assert.ThrowsAsync<DownloadFileIdentityException>(() => h.Service.InitializeAsync(h.Task.Id));
+        Assert.Single(h.Store.ExportCalls);
+        var restored = await h.Load();
+        Assert.Empty(restored.TorrentFile);
+        Assert.All(restored.Files, file =>
+        {
+            Assert.NotNull(file.PendingRenameFrom);
+            Assert.NotNull(file.PendingRenameTo);
+        });
+        h.AssertNoRemoteWrites();
     }
 
     [Fact]
@@ -553,6 +954,44 @@ public sealed class DownloadFileServiceTests
     }
 
     [Fact]
+    public async Task PendingRecovery_MetadataRecoveryKeepsJournalUntilExistingRecoveryRules()
+    {
+        await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
+        await h.Service.InitializeAsync(h.Task.Id);
+        h.Store.AfterRenameFile = () => h.FailSave.Enabled = true;
+        await Assert.ThrowsAsync<DbUpdateException>(() =>
+                                                        h.Service.ApplyAsync(h.Task.Id, 0,
+                                                                             new
+                                                                                 DownloadFileEditRequest(DownloadFileKind
+                                                                                    .Anime, Episode : 4)));
+        h.FailSave.Enabled      = false;
+        h.Store.AfterRenameFile = null;
+        var pending = await h.Load();
+        Assert.NotNull(pending.Files.Single().PendingRenameTo);
+        var bytes = h.Task.TorrentFile;
+        await h.Update(task => task.TorrentFile = []);
+        h.Store.ExportedTorrents[h.Task.InfoHash] = bytes;
+
+        await h.Service.InitializeAsync(h.Task.Id);
+        var recovered = await h.Load();
+        Assert.Equal(bytes, recovered.TorrentFile);
+        Assert.Equal("E04.mkv", recovered.Files.Single().PendingRenameTo);
+        Assert.Equal("Original/【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv",
+                     recovered.Files.Single().PendingRenameFrom);
+        Assert.Equal(4m, recovered.Files.Single().EpisodeNumberOverride);
+        Assert.Single(h.Store.ExportCalls);
+        using (await h.Gate.EnterAsync())
+        await using (var session = await h.Sessions.CreateAsync())
+        {
+            Assert.True(await h.Service.RecoverPendingUnderGateAsync(session, h.Task.Id));
+        }
+
+        Assert.Single(h.Store.RenameFileCalls);
+        Assert.Equal("E04.mkv", (await h.Load()).Files.Single().CurrentRelativePath);
+        Assert.Single(h.Store.ExportCalls);
+    }
+
+    [Fact]
     public async Task LastSeedChangedToAnime_DoesNotMoveMixedRootBackToClean()
     {
         await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
@@ -848,16 +1287,51 @@ public sealed class DownloadFileServiceTests
         Assert.Contains(new string('a', 40), handler.LocationBody);
     }
 
+    [Fact]
+    public async Task QbAdapter_ExportTorrentReturnsBytesWithLowercaseHashRequest()
+    {
+        var       handler = new ProtocolHandler();
+        using var http    = new HttpClient(handler);
+        var client = await QBittorrentClient.Create("http://protocol.test", "admin", "password",
+                                                    new QBittorrentClientOptions { HttpClient = http, MaxRetries = 1 });
+        await using var session = new QbittorrentSession(client);
+        var exported = await session.ExportTorrentAsync(new string('A', 40));
+        Assert.Equal("d4:infod4:name4:testee", Encoding.UTF8.GetString(exported));
+        Assert.Contains(new string('a', 40), handler.ExportBody);
+        Assert.DoesNotContain(new string('A', 40), handler.ExportBody);
+    }
+
+    [Fact]
+    public async Task QbAdapter_ExportTorrentTranslatesOldServerVersionToNotSupported()
+    {
+        var       handler = new ProtocolHandler { WebApiVersion = "2.8.2" };
+        using var http    = new HttpClient(handler);
+        var client = await QBittorrentClient.Create("http://protocol.test", "admin", "password",
+                                                    new QBittorrentClientOptions { HttpClient = http, MaxRetries = 1 });
+        await using var session = new QbittorrentSession(client);
+        var exception = await Assert.ThrowsAsync<NotSupportedException>(
+                            () => session.ExportTorrentAsync(new string('A', 40)));
+        var notSupported = Assert.IsType<QbittorrentNotSupportedException>(exception.InnerException);
+        Assert.Equal(new ApiVersion(2, 8, 14), notSupported.RequiredVersion);
+        Assert.Equal(new ApiVersion(2, 8, 2), notSupported.CurrentVersion);
+        Assert.Contains("export", notSupported.Endpoint, StringComparison.Ordinal);
+    }
+
     private sealed class ProtocolHandler : HttpMessageHandler
     {
+        /// <summary>服务器 WebAPI 版本应答，默认新版；旧版本用于验证端点版本门槛的异常翻译。</summary>
+        public string WebApiVersion { get; set; } = "2.11.2";
+
         public string AddBody      { get; private set; } = "";
         public string LocationBody { get; private set; } = "";
+        public string ExportBody   { get; private set; } = "";
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
                                                                      CancellationToken  cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
-            var text = path.EndsWith("auth/login") ? "Ok." : path.EndsWith("webapiVersion") ? "2.11.2" : "v5.0.0";
+            var text = path.EndsWith("auth/login") ? "Ok."
+                     : path.EndsWith("webapiVersion") ? WebApiVersion : "v5.0.0";
             if (path.EndsWith("torrents/add"))
             {
                 AddBody = await request.Content!.ReadAsStringAsync(cancellationToken);
@@ -871,6 +1345,18 @@ public sealed class DownloadFileServiceTests
             {
                 LocationBody = await request.Content!.ReadAsStringAsync(cancellationToken);
                 text         = "";
+            }
+
+            if (path.EndsWith("torrents/export"))
+            {
+                ExportBody = request.RequestUri.Query +
+                             (request.Content is null
+                                  ? ""
+                                  : await request.Content.ReadAsStringAsync(cancellationToken));
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes("d4:infod4:name4:testee"))
+                };
             }
 
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(text) };
@@ -919,6 +1405,15 @@ public sealed class DownloadFileServiceTests
             Store.FileIdentities[Task.InfoHash] = Store.FileIdentities[Task.InfoHash]
                                                        .Select(file => file with { Progress = 1 }).ToList();
             await Service.InitializeAsync(Task.Id);
+        }
+
+        /// <summary>断言远端零写操作：改名、移动、暂停与启动调用全部为空（元数据恢复路径专用）。</summary>
+        public void AssertNoRemoteWrites()
+        {
+            Assert.Empty(Store.RenameFileCalls);
+            Assert.Empty(Store.SetLocationCalls);
+            Assert.Empty(Store.PauseCalls);
+            Assert.Empty(Store.ResumeCalls);
         }
 
         public static Task<Harness> Create(params string[] names) =>

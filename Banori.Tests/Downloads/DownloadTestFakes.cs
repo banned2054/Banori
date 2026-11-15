@@ -134,6 +134,18 @@ public sealed class FakeTorrentStore
     public List<string> RecheckCalls { get; } = [];
     public List<string> ReannounceCalls { get; } = [];
 
+    /// <summary>测试显式播种的可导出种子字节（qBittorrent /export 的内存对应物）；未播种视为导出失败。</summary>
+    public Dictionary<string, byte[]> ExportedTorrents { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>导出调用记录，供断言调用次数与时机。</summary>
+    public List<string> ExportCalls { get; } = [];
+
+    /// <summary>设置后导出抛出该异常，模拟下载器导出失败。</summary>
+    public Exception? ExportException { get; set; }
+
+    /// <summary>设置为 true 时导出抛 NotSupportedException，模拟不支持种子导出的旧会话。</summary>
+    public bool ExportUnsupported { get; set; }
+
     /// <summary>放行延迟的选择变更：一次性应用到文件身份。</summary>
     public void CompleteSelections()
     {
@@ -401,6 +413,18 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
             store.Files.TryGetValue(infoHash, out var names)
                 ? names.Select((name, index) => new TorrentFileSnapshot(index, name, 1024)).ToList()
                 : []);
+    }
+
+    public Task<byte[]> ExportTorrentAsync(string infoHash, CancellationToken cancellationToken = default)
+    {
+        store.ExportCalls.Add(infoHash);
+        // 取消优先于一切故障注入：贴近真实 HTTP 语义（请求未发出即被取消）。
+        cancellationToken.ThrowIfCancellationRequested();
+        if (store.ExportUnsupported) throw new NotSupportedException("会话不支持种子导出。");
+        if (store.ExportException is not null) throw store.ExportException;
+        if (!store.ExportedTorrents.TryGetValue(infoHash, out var bytes))
+            throw new QbittorrentException("模拟导出失败：测试未播种该种子的导出字节。");
+        return Task.FromResult(bytes);
     }
 
     public Task SetTorrentFileSelectionAsync(string                   infoHash,
