@@ -89,6 +89,7 @@
 	<s:Int64 x:Key="/Default/PatternsAndTemplates/LiveTemplates/Template/=DDE95C42052B4557924B6E68F16EC8F1/Field/=size/Order/@EntryValue">1</s:Int64>
 	<s:Int64 x:Key="/Default/PatternsAndTemplates/LiveTemplates/Template/=DDE95C42052B4557924B6E68F16EC8F1/Field/=table/Order/@EntryValue">0</s:Int64>
 	<s:Boolean x:Key="/Default/UserDictionary/Words/=Bangumi/@EntryIndexedValue">True</s:Boolean>
+	<s:Boolean x:Key="/Default/UserDictionary/Words/=Banori/@EntryIndexedValue">True</s:Boolean>
 	<s:Boolean x:Key="/Default/UserDictionary/Words/=bilibili/@EntryIndexedValue">True</s:Boolean>
 	<s:Boolean x:Key="/Default/UserDictionary/Words/=Byrbt/@EntryIndexedValue">True</s:Boolean>
 	<s:Boolean x:Key="/Default/UserDictionary/Words/=Dandan/@EntryIndexedValue">True</s:Boolean>

@@ -67,7 +67,7 @@
 {
 	<p>正在加载…</p>
 }
-else if (_vm.TotalCount == 0 && !_vm.HasActiveFilters)
+else if (_vm is { TotalCount: 0, HasActiveFilters: false })
 {
 	<p class="text-body-secondary">还没有下载任务。上传 .torrent 文件，或使用总览页的 RSS 链接下载。</p>
 }
@@ -124,10 +124,14 @@ else
 		}
 		<span class="ms-auto d-flex align-items-center gap-2">
 			<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(!_vm.HasPreviousPage)"
-			        @onclick="() => _vm.GoToPageAsync(_vm.PageNumber - 1)">上一页</button>
+			        @onclick="() => _vm.GoToPageAsync(_vm.PageNumber - 1)">
+				上一页
+			</button>
 			<span class="small text-body-secondary">第 @_vm.PageNumber / @_vm.TotalPages 页</span>
 			<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(!_vm.HasNextPage)"
-			        @onclick="() => _vm.GoToPageAsync(_vm.PageNumber + 1)">下一页</button>
+			        @onclick="() => _vm.GoToPageAsync(_vm.PageNumber + 1)">
+				下一页
+			</button>
 			<span class="small text-body-secondary">共 @_vm.TotalCount 个任务 · 本页 @_vm.Tasks.Count 个</span>
 		</span>
 	</div>
@@ -201,7 +205,7 @@ else
 						}
 					</td>
 					<td>
-						@if (task.ShowsProgress && task.Progress is { } progress)
+						@if (task is { ShowsProgress: true, Progress: { } progress })
 						{
 							<div class="progress" style="height: 8px;">
 								<div class="progress-bar" style="width: @(Math.Clamp(progress * 100, 0, 100).ToString("0.#"))%;"></div>
@@ -216,7 +220,7 @@ else
 						{
 							<span class="text-body-secondary">—</span>
 						}
-						@if (task.ShowsLastSync && task.LastSyncedAtUtc is { } synced)
+						@if (task is { ShowsLastSync: true, LastSyncedAtUtc: { } synced })
 						{
 							<div class="small text-body-secondary">观察于 @synced.ToLocalTime().ToString("MM-dd HH:mm:ss")</div>
 						}
@@ -264,9 +268,8 @@ else
 								case DownloadTaskStatus.Paused when task.IsUserPaused :
 									<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => ResumeAsync(task.Id)">恢复</button>
 									break;
-								case DownloadTaskStatus.Completed when task.RunState is DownloadRunStates.FailedRetryable
-								                                                          or DownloadRunStates.DownloaderStopped :
-									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ResumeRunAsync(task.Id)">恢复做种</button>
+								case DownloadTaskStatus.Completed when task.RunState is DownloadRunStates.FailedRetryable or DownloadRunStates.DownloaderStopped :
+									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ResumeRunAsync(task.Id)"> 恢复做种 </button>
 									break;
 								case DownloadTaskStatus.Failed or DownloadTaskStatus.Lost :
 									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RetryAsync(task.Id)">重试</button>
@@ -421,7 +424,7 @@ else
 
 	protected override void OnInitialized()
 	{
-		_vm = new DownloadTasksPageViewModel(DownloadService, IntakeService, TaskQueries, Logger, FileService);
+		_vm                =  new DownloadTasksPageViewModel(DownloadService, IntakeService, TaskQueries, Logger, FileService);
 		_vm.ResultsChanged += OnResultsChanged;
 	}
 
@@ -597,26 +600,26 @@ else
 			// 准备与校验等待属于受控推进，用 info 区分于真实下载的 primary；
 			// 需要用户注意或人工干预的等待（停止确认、隔离迁移、添加确认）用 warning。
 			DownloadDisplayPhase.Preparing or
-			DownloadDisplayPhase.PreparingLayout or
-			DownloadDisplayPhase.WaitingCheckStart or
-			DownloadDisplayPhase.Checking or
-			DownloadDisplayPhase.WaitingResultStable or
-			DownloadDisplayPhase.WaitingStartConfirm => "text-bg-info",
-			DownloadDisplayPhase.WaitingAddConfirm   => "text-bg-warning",
-			DownloadDisplayPhase.WaitingStopConfirm  => "text-bg-warning",
-			DownloadDisplayPhase.IsolationMigrating  => "text-bg-warning",
+				DownloadDisplayPhase.PreparingLayout or
+				DownloadDisplayPhase.WaitingCheckStart or
+				DownloadDisplayPhase.Checking or
+				DownloadDisplayPhase.WaitingResultStable or
+				DownloadDisplayPhase.WaitingStartConfirm => "text-bg-info",
+			DownloadDisplayPhase.WaitingAddConfirm       => "text-bg-warning",
+			DownloadDisplayPhase.WaitingStopConfirm      => "text-bg-warning",
+			DownloadDisplayPhase.IsolationMigrating      => "text-bg-warning",
 			DownloadDisplayPhase.VerificationUnconfirmed => "text-bg-warning",
-			DownloadDisplayPhase.WaitingSubmit       => "text-bg-secondary",
-			DownloadDisplayPhase.Archiving           => "text-bg-success",
-			DownloadDisplayPhase.Downloading         => "text-bg-primary",
+			DownloadDisplayPhase.WaitingSubmit           => "text-bg-secondary",
+			DownloadDisplayPhase.Archiving               => "text-bg-success",
+			DownloadDisplayPhase.Downloading             => "text-bg-primary",
 			DownloadDisplayPhase.PausedManually or
-			DownloadDisplayPhase.PausedByDownloader or
-			DownloadDisplayPhase.Paused              => "text-bg-secondary",
-			DownloadDisplayPhase.Completed           => "text-bg-success",
-			DownloadDisplayPhase.Failed              => "text-bg-danger",
-			DownloadDisplayPhase.Lost                => "text-bg-danger",
-			DownloadDisplayPhase.Replaced            => "text-bg-dark",
-			_                                        => "text-bg-light"
+				DownloadDisplayPhase.PausedByDownloader or
+				DownloadDisplayPhase.Paused => "text-bg-secondary",
+			DownloadDisplayPhase.Completed => "text-bg-success",
+			DownloadDisplayPhase.Failed    => "text-bg-danger",
+			DownloadDisplayPhase.Lost      => "text-bg-danger",
+			DownloadDisplayPhase.Replaced  => "text-bg-dark",
+			_                              => "text-bg-light"
 		};
 	}
 
