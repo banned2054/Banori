@@ -26,7 +26,11 @@ public sealed class DownloadTaskViewNextStepTests
         {
             Assert.Equal(scenario.Phase, scenario.Task.Phase);
             AssertReadableText(scenario.Task.WaitingForText, $"{scenario.Name} / WaitingForText");
-            AssertReadableText(scenario.Task.NextStepText, $"{scenario.Name} / NextStepText");
+            if (scenario.Phase == DownloadDisplayPhase.Completed ||
+                scenario is { Phase: DownloadDisplayPhase.Replaced, Task.IsSelectionTombstone: false })
+                Assert.Empty(scenario.Task.NextStepText);
+            else
+                AssertReadableText(scenario.Task.NextStepText, $"{scenario.Name} / NextStepText");
         }
     }
 
@@ -62,6 +66,7 @@ public sealed class DownloadTaskViewNextStepTests
         Assert.NotEqual(tombstone.NextStepText, retired.NextStepText);
         Assert.Equal("同集落选（未下载）", tombstone.StatusText);
         Assert.Equal("已被替换", retired.StatusText);
+        Assert.Empty(retired.NextStepText);
         Assert.Contains("如需重新下载请删除后重新添加", tombstone.NextStepText);
         Assert.DoesNotContain("自动重新排队", tombstone.NextStepText);
     }
@@ -73,7 +78,7 @@ public sealed class DownloadTaskViewNextStepTests
         var completed = CreateTask(DownloadTaskStatus.Completed);
         var blocked   = completed with { ArchiveReviewReason = "目标被其他任务占用" };
 
-        Assert.Equal("无需操作；文件与归档结果可在文件列表中查看。", completed.NextStepText);
+        Assert.Empty(completed.NextStepText);
         Assert.Contains("请核对归档冲突后点击「重新核对归档」", blocked.NextStepText);
         Assert.DoesNotContain("无需操作", blocked.NextStepText);
     }

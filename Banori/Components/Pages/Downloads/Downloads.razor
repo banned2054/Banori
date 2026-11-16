@@ -191,7 +191,10 @@ else
 						{
 							<div class="small text-body-secondary">@note</div>
 						}
-						<div class="small text-body-secondary">下一步：@task.NextStepText</div>
+						@if (!string.IsNullOrEmpty(task.NextStepText))
+						{
+							<div class="small text-body-secondary">下一步：@task.NextStepText</div>
+						}
 						@if (task.NextObservationAtUtc is { } nextObservation && !task.Status.IsFinal())
 						{
 							<div class="small text-body-secondary">下次观察 @nextObservation.ToLocalTime().ToString("HH:mm:ss")</div>

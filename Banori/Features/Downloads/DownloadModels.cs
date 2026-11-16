@@ -929,13 +929,13 @@ public sealed record DownloadTaskView
             DownloadRunStates.UserPaused =>
                 "需要继续时先在下载器或任务页恢复；对账不会自动启动。",
             _ => ArchiveReviewReason is null
-                     ? "无需操作；文件与归档结果可在文件列表中查看。"
+                     ? string.Empty
                      : "请核对归档冲突后点击「重新核对归档」。",
         },        DownloadDisplayPhase.Failed                  => FailedNextStepText,
         DownloadDisplayPhase.Lost                    => "可能已在下载器内手动删除；可点击「重试」重新提交，或删除本任务记录。",
         DownloadDisplayPhase.Replaced                => IsSelectionTombstone
             ? "保留该记录用于同资源查重；如需重新下载请删除后重新添加。"
-            : "无需操作；旧任务与文件默认保留，可在文件列表中查看。",
+            : string.Empty,
         _ => "未知阶段，请查看错误详情后人工处理。"
     };
 
