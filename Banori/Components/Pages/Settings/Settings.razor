@@ -103,6 +103,15 @@ else
 					</div>
 
 					<div class="mb-3">
+						<label for="downloader-collection-naming-template" class="form-label">合集种子名称模板</label>
+						<InputText id="downloader-collection-naming-template" class="form-control" placeholder="留空沿用上方种子名称模板" @bind-Value="_vm.Downloader.CollectionNamingTemplate"/>
+						<ValidationMessage For="() => _vm.Downloader.CollectionNamingTemplate"/>
+						<div class="form-text">
+							用于包含多集正片的种子，只控制 qB 中的种子名。集数根据包内视频生成，字幕和附件不计，缺集按逗号分段。可用与普通种子模板相同的变量；范围格式由模板决定，例如 {episode:Eee-Eee} → E01-E06，{episode:ee-ee} → 01-06，E{episode:ee-ee} → E01-06。小写 ee/eee 表示集数位数，大写 E 表示原样输出的前缀；需让缺集后的每段都带 E 时，使用 {episode:Eee-Eee}（如 E01-E02,E04-E06）。只影响新任务，已登记任务沿用命名快照。
+						</div>
+					</div>
+
+					<div class="mb-3">
 						<label for="downloader-file-naming-template" class="form-label">种子内文件名称模板</label>
 						<InputText id="downloader-file-naming-template" class="form-control" placeholder="@_vm.DefaultFileNamingTemplate" @bind-Value="_vm.Downloader.FileNamingTemplate"/>
 						<ValidationMessage For="() => _vm.Downloader.FileNamingTemplate"/>

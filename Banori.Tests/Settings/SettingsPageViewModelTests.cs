@@ -119,6 +119,7 @@ public sealed class SettingsPageViewModelTests
         await store.SetProtectedAsync(ManageQbittorrentSettings.HookTokenKey, "saved-hook-token");
         await naming.SaveAsync("saved-torrent-template");
         await naming.SaveFileTemplateAsync("saved-file-template");
+        await naming.SaveCollectionTemplateAsync("saved-collection-template");
         await directories.SaveAsync("SavedMedia", "SavedSeed");
         await telegram.SaveAsync(new TelegramSettings("saved-chat", savedProxyId, false, NotificationEvents.All),
                                  "saved-bot-token");
@@ -128,24 +129,25 @@ public sealed class SettingsPageViewModelTests
                                            ProxyServiceTestFactory.CreateEphemeral(),
                                            NullLogger<SettingsPageViewModel>.Instance);
         // 不调用 LoadAsync：ephemeral 代理库没有表，直接构造与已保存值不同的三张卡片草稿。
-        vm.Downloader.BaseUrl             = "http://draft-qb.test";
-        vm.Downloader.Username            = "draft-user";
-        vm.Downloader.Password            = "draft-password";
-        vm.Downloader.SavePath            = "/draft";
-        vm.Downloader.Enabled             = true;
-        vm.Downloader.HookBaseUrl         = "http://draft-banori.test";
-        vm.Downloader.NamingTemplate      = "draft-torrent-template";
-        vm.Downloader.FileNamingTemplate  = "draft-file-template";
-        vm.Downloader.MediaDirectory      = "DraftMedia";
-        vm.Downloader.SeedDirectory       = "DraftSeed";
-        vm.Telegram.ChatId                = "draft-chat";
-        vm.Telegram.BotToken              = "draft-bot-token";
-        vm.Telegram.Enabled               = true;
-        vm.Telegram.NotifyDownloadStarted = false;
-        vm.Gotify.BaseUrl                 = "http://draft-gotify.test";
-        vm.Gotify.AppToken                = "draft-app-token";
-        vm.Gotify.Enabled                 = true;
-        vm.Gotify.NotifyDownloadFailed    = false;
+        vm.Downloader.BaseUrl                  = "http://draft-qb.test";
+        vm.Downloader.Username                 = "draft-user";
+        vm.Downloader.Password                 = "draft-password";
+        vm.Downloader.SavePath                 = "/draft";
+        vm.Downloader.Enabled                  = true;
+        vm.Downloader.HookBaseUrl              = "http://draft-banori.test";
+        vm.Downloader.NamingTemplate           = "draft-torrent-template";
+        vm.Downloader.FileNamingTemplate       = "draft-file-template";
+        vm.Downloader.CollectionNamingTemplate = "draft-collection-template";
+        vm.Downloader.MediaDirectory           = "DraftMedia";
+        vm.Downloader.SeedDirectory            = "DraftSeed";
+        vm.Telegram.ChatId                     = "draft-chat";
+        vm.Telegram.BotToken                   = "draft-bot-token";
+        vm.Telegram.Enabled                    = true;
+        vm.Telegram.NotifyDownloadStarted      = false;
+        vm.Gotify.BaseUrl                      = "http://draft-gotify.test";
+        vm.Gotify.AppToken                     = "draft-app-token";
+        vm.Gotify.Enabled                      = true;
+        vm.Gotify.NotifyDownloadFailed         = false;
         return (vm, store);
     }
 
@@ -207,6 +209,7 @@ public sealed class SettingsPageViewModelTests
                             clearedSecret ? null : vm.Downloader.Password, vm.Downloader.SavePath,
                             vm.Downloader.Enabled, vm.Downloader.ProxyId, vm.Downloader.HookBaseUrl,
                             vm.Downloader.NamingTemplate, vm.Downloader.FileNamingTemplate,
+                            vm.Downloader.CollectionNamingTemplate,
                             vm.Downloader.MediaDirectory, vm.Downloader.SeedDirectory),
         Card.Telegram => (vm.Telegram.ChatId, clearedSecret ? null : vm.Telegram.BotToken,
                           vm.Telegram.Enabled, vm.Telegram.ProxyId,
@@ -230,6 +233,7 @@ public sealed class SettingsPageViewModelTests
             [ManageQbittorrentSettings.HookBaseUrlKey] = ("http://draft-banori.test", false),
             [NamingTemplateStore.Key]                  = ("draft-torrent-template", false),
             [NamingTemplateStore.FileKey]              = ("draft-file-template", false),
+            [NamingTemplateStore.CollectionKey]        = ("draft-collection-template", false),
             [DownloadDirectorySettingsStore.Key] =
                 (JsonSerializer.Serialize(new DownloadDirectorySettings("DraftMedia", "DraftSeed")), false)
         },

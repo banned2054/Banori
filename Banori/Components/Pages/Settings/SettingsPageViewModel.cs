@@ -54,6 +54,8 @@ public sealed class SettingsPageViewModel(
         Downloader.ProxyId            = downloader.ProxyId?.ToString();
         Downloader.NamingTemplate     = await namingTemplateStore.GetAsync(cancellationToken);
         Downloader.FileNamingTemplate = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
+        Downloader.CollectionNamingTemplate =
+            await namingTemplateStore.GetConfiguredCollectionTemplateAsync(cancellationToken);
         var directories = await directorySettingsStore.GetAsync(cancellationToken);
         Downloader.MediaDirectory = directories.MediaDirectory;
         Downloader.SeedDirectory  = directories.SeedDirectory;
@@ -102,6 +104,7 @@ public sealed class SettingsPageViewModel(
             HookCommands = BuildHookCommands(await qbittorrentSettings.GetHookBaseUrlAsync(token), _hookToken);
             await namingTemplateStore.SaveAsync(Downloader.NamingTemplate, token);
             await namingTemplateStore.SaveFileTemplateAsync(Downloader.FileNamingTemplate, token);
+            await namingTemplateStore.SaveCollectionTemplateAsync(Downloader.CollectionNamingTemplate, token);
             await directorySettingsStore.SaveAsync(directories.MediaDirectory, directories.SeedDirectory, token);
             Downloader.MediaDirectory = directories.MediaDirectory;
             Downloader.SeedDirectory  = directories.SeedDirectory;
@@ -293,6 +296,10 @@ public sealed class QbittorrentSettingsDraft
     /// <summary>种子内文件名称模板；留空表示恢复默认模板。</summary>
     [StringLength(200, ErrorMessage = "文件名称模板不能超过 200 个字符。")]
     public string? FileNamingTemplate { get; set; }
+
+    /// <summary>合集种子名称模板；留空沿用普通种子模板。</summary>
+    [StringLength(200, ErrorMessage = "合集种子名称模板不能超过 200 个字符。")]
+    public string? CollectionNamingTemplate { get; set; }
 
     [StringLength(500, ErrorMessage = "媒体目录不能超过 500 个字符。")]
     public string? MediaDirectory { get; set; }

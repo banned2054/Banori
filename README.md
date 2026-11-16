@@ -41,6 +41,8 @@
 - **通知与代理** — 支持 Telegram、Gotify 通知与投递记录，统一管理各服务使用的命名代理。
 - **数据库** — 默认使用 SQLite，也可配置 MySQL。
 
+设置页可分别配置普通种子名、合集种子名和种子内文件名。合集模板留空沿用普通种子模板，集数由包内可识别的视频生成；字幕、附件不计入，缺集按逗号分段。范围前缀与位数可自行指定：`{episode:Eee-Eee}` 输出 `E01-E06`，`{episode:ee-ee}` 输出 `01-06`，`E{episode:ee-ee}` 输出 `E01-06`；`{ani.episode:…}` 同样适用。缺集时 `{episode:Eee-Eee}` 可输出 `E01-E02,E04-E06`。模板在创建任务时保存为快照，修改配置不会重新命名已经登记或完成的任务。
+
 ## 🐳 Docker 部署
 
 需要安装 Docker Engine 和 Docker Compose；镜像已包含 ASP.NET Core 11 运行时，宿主机无需另装 .NET。容器发布工作流配置为构建 `linux/amd64` 与 `linux/arm64`，使用同一镜像标签；Docker 按主机架构选择镜像。容器将 Web 服务监听在 `7340` 端口，默认将 Compose 文件所在目录的 `config/` 映射到容器 `/app/config`，持久化数据库与加密密钥。

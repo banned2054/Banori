@@ -148,8 +148,24 @@ public sealed class ReleaseNamePreviewPolicy
 
     private static string FormatEpisodeTextValue(string value, string format)
     {
+        // 显式范围格式中的 E 是字面前缀，ee/eee 是位数；缺集的每一段分别应用同一格式。
+        var rangeFormat = Regex.Match(format, @"^(?<left>E?e{2,3})-(?<right>E?e{2,3})$");
+        if (rangeFormat.Success)
+            return string.Join(",", value.Split(',').Select(segment =>
+            {
+                var match = Regex.Match(segment.Trim(), @"^(?<start>\d+(?:\.\d+)?)(?:-E(?<end>\d+(?:\.\d+)?))?$",
+                                        RegexOptions.IgnoreCase);
+                if (!match.Success) return segment;
+                var left = FormatRangeEpisode(match.Groups["start"].Value, rangeFormat.Groups["left"].Value);
+                return !match.Groups["end"].Success
+                    ? left
+                    : left + "-" + FormatRangeEpisode(match.Groups["end"].Value, rangeFormat.Groups["right"].Value);
+            }));
+
         if (format.Length is < 2 or > 3 || format.Any(character => char.ToLowerInvariant(character) != 'e'))
             return value;
+        if (value.Contains(','))
+            return string.Join(",", value.Split(',').Select(segment => FormatEpisodeTextValue(segment, format)));
         var width = format.Length;
         var match = Regex.Match(value, @"^(?<start>\d+(?:\.\d+)?)(?:-E(?<end>\d+(?:\.\d+)?))?$",
                                 RegexOptions.IgnoreCase);
@@ -158,6 +174,10 @@ public sealed class ReleaseNamePreviewPolicy
         if (!match.Groups["end"].Success) return start;
         return $"{start}-E{FormatEpisodeComponent(match.Groups["end"].Value, width)}";
     }
+
+    private static string FormatRangeEpisode(string value, string format) =>
+        (format.StartsWith('E') ? "E" : string.Empty) +
+        FormatEpisodeComponent(value, format.Count(character => character == 'e'));
 
     private static string FormatEpisodeComponent(string value, int width)
     {

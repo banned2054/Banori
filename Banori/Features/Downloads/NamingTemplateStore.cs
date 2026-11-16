@@ -3,12 +3,13 @@ using Banori.Features.Settings;
 
 namespace Banori.Features.Downloads;
 
-/// <summary>种子名与种子内文件名模板分别存取；空白时各自回退默认模板。</summary>
+/// <summary>普通种子、合集种子与文件模板分别存取；合集未配置时沿用普通种子模板。</summary>
 public sealed class NamingTemplateStore(IApplicationSettingStore settingStore)
 {
-    public const string Key       = "Downloads.NamingTemplate";
-    public const string FileKey   = "Downloads.FileNamingTemplate";
-    public const int    MaxLength = 200;
+    public const string Key           = "Downloads.NamingTemplate";
+    public const string FileKey       = "Downloads.FileNamingTemplate";
+    public const string CollectionKey = "Downloads.CollectionNamingTemplate";
+    public const int    MaxLength     = 200;
 
     public Task<string> GetAsync(CancellationToken cancellationToken = default) =>
         GetAsync(Key, ReleaseNamePreviewPolicy.DefaultTemplate, cancellationToken);
@@ -16,11 +17,20 @@ public sealed class NamingTemplateStore(IApplicationSettingStore settingStore)
     public Task<string> GetFileTemplateAsync(CancellationToken cancellationToken = default) =>
         GetAsync(FileKey, ReleaseNamePreviewPolicy.DefaultFileTemplate, cancellationToken);
 
+    public async Task<string> GetCollectionTemplateAsync(CancellationToken cancellationToken = default) =>
+        await GetAsync(CollectionKey, await GetAsync(cancellationToken), cancellationToken);
+
+    public async Task<string?> GetConfiguredCollectionTemplateAsync(CancellationToken cancellationToken = default) =>
+        (await settingStore.GetAsync(CollectionKey, cancellationToken))?.Trim();
+
     public Task SaveAsync(string? template, CancellationToken cancellationToken = default) =>
         SaveAsync(Key, template, cancellationToken);
 
     public Task SaveFileTemplateAsync(string? template, CancellationToken cancellationToken = default) =>
         SaveAsync(FileKey, template, cancellationToken);
+
+    public Task SaveCollectionTemplateAsync(string? template, CancellationToken cancellationToken = default) =>
+        SaveAsync(CollectionKey, template, cancellationToken);
 
     private async Task<string> GetAsync(string key, string defaultTemplate, CancellationToken cancellationToken)
     {

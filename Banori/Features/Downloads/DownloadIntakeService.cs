@@ -140,7 +140,7 @@ public sealed class DownloadIntakeService(
         var config       = await ruleProvider.GetAsync(cancellationToken);
         var fileAnalysis = AnalyzeTorrentFiles(infoHash, torrent, isMultiFile, config);
         var (namingSnapshot, namingIngredients, namingParsed) =
-            await BuildNamingAsync(displayName, fileAnalysis.IdentityParse, null, resolvedSource,
+            await BuildNamingAsync(displayName, fileAnalysis, null, resolvedSource,
                                    $"上传种子：{infoHash[..8]}",
                                    uploadedParsed, binding, cancellationToken);
         var directorySettings = await GetDirectoriesAsync(cancellationToken);
@@ -405,7 +405,7 @@ public sealed class DownloadIntakeService(
         var displayName    = torrent.Name;
         var fileAnalysis   = AnalyzeTorrentFiles(infoHash, torrent, isMultiFile, config);
         var (namingSnapshot, namingIngredients, namingParsed) =
-            await BuildNamingAsync(item.Title, fileAnalysis.IdentityParse, displayName, resolvedSource,
+            await BuildNamingAsync(item.Title, fileAnalysis, displayName, resolvedSource,
                                    $"RSS 下载：{infoHash[..8]}", parsed,
                                    binding, cancellationToken);
         var directorySettings = await GetDirectoriesAsync(cancellationToken);
@@ -485,11 +485,12 @@ public sealed class DownloadIntakeService(
     ///     后缀优先字幕组名、缺失退回语言），要素一并落库供完成改名按文件集数重渲染；
     ///     {title} 用已绑定的 Bangumi 作品名（中文名非空用之，否则原名），subjectName 由调用方
     ///     在登记门禁（必须绑定 Subject）中解析后传入。标题解析失败时依次尝试包内文件集胜者、
-    ///     种子内 info.name；均无法解析时回退原始标题并返回 null 要素，完成时按快照兜底。
+    ///     种子内 info.name；合集优先按包内实际集数和独立合集模板命名，不借某一集充当任务身份。
+    ///     均无法解析时回退原始标题，保留文件命名所需的 Bangumi 要素。
     ///     成功渲染的那次解析随要素一并返回，供同集裁决复用同一解析口径。
     /// </summary>
     private async Task<(string Snapshot, string? IngredientsJson, ParseResult? Parsed)> BuildNamingAsync(
-        string? primaryTitle, ParseResult? fallbackParse, string? fallbackTitle, string? siteSource, string lastResort,
+        string? primaryTitle, TorrentFileAnalysis fileAnalysis, string? fallbackTitle, string? siteSource, string lastResort,
         ParseResult? primaryParsed, SubjectBinding subject, CancellationToken cancellationToken)
     {
         var template     = await namingTemplateStore.GetAsync(cancellationToken);
@@ -498,6 +499,19 @@ public sealed class DownloadIntakeService(
         var bgmName      = metadata?.Name   ?? subject.DisplayName;
         var bgmNameCn    = metadata?.NameCn ?? string.Empty;
 
+        if (CollectionNaming(fileAnalysis, subject.SubjectId) is { } collection)
+        {
+            var parsed = collection.Parsed;
+            var group  = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
+            var ingredients =
+                NamingIngredientsComposer.Compose(await namingTemplateStore.GetCollectionTemplateAsync(cancellationToken),
+                                                  fileTemplate, parsed, collection.EpisodeText, group, siteSource,
+                                                  subject.SubjectId, bgmName, bgmNameCn,
+                                                  metadata?.Platform ?? string.Empty, metadata?.AirDate);
+            return (namingPolicy.Create(ingredients), ingredients.ToJson(), null);
+        }
+
+        var fallbackParse = fileAnalysis.IdentityParse;
         var attempts = new (string? Title, ParseResult? Parsed)[]
         {
             (primaryTitle, primaryParsed),
@@ -512,7 +526,10 @@ public sealed class DownloadIntakeService(
             if (parsed is null || episodeText is null || string.IsNullOrWhiteSpace(parsed.Title)) continue;
 
             var group = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
-            var ingredients = NamingIngredientsComposer.Compose(template, fileTemplate, parsed, episodeText, group,
+            var seedTemplate = parsed.StartEpisode is { } start && parsed.EndEpisode > start
+                ? await namingTemplateStore.GetCollectionTemplateAsync(cancellationToken)
+                : template;
+            var ingredients = NamingIngredientsComposer.Compose(seedTemplate, fileTemplate, parsed, episodeText, group,
                                                                 siteSource, subject.SubjectId, bgmName, bgmNameCn,
                                                                 metadata?.Platform ?? string.Empty, metadata?.AirDate);
             return (namingPolicy.Create(ingredients), ingredients.ToJson(), parsed);
@@ -526,6 +543,48 @@ public sealed class DownloadIntakeService(
                                                                BangumiDate : metadata?.AirDate);
         return (TruncateSnapshot(primaryTitle) ?? TruncateSnapshot(fallbackTitle) ?? lastResort,
                 fallbackIngredients.ToJson(), null);
+    }
+
+    /// <summary>合集名的集数展示与单集身份分开；合并连续整数区间，保留缺集与小数集的边界。</summary>
+    private (string EpisodeText, ParseResult Parsed)? CollectionNaming(TorrentFileAnalysis analysis, int? subjectId)
+    {
+        var parses = analysis.EpisodeIdentities.Select(value => value.Parse).Concat(analysis.RangeParses).ToList();
+        var ranges = parses.Select(parsed =>
+        {
+            var start =
+                episodeCorrectionPolicy.Apply(subjectId, (parsed.Episode ?? parsed.StartEpisode)!.Value).Episode;
+            var end = episodeCorrectionPolicy.Apply(subjectId, parsed.Episode ?? parsed.EndEpisode!.Value).Episode;
+            return (Start : start, End : end, Parsed : parsed);
+        }).OrderBy(value => value.Start).ThenBy(value => value.End).ToList();
+        if (ranges.Count == 0) return null;
+
+        var merged = new List<(decimal Start, decimal End)>();
+        foreach (var range in ranges)
+        {
+            if (merged.Count > 0)
+            {
+                var previous = merged[^1];
+                var adjacent = previous.End               == decimal.Truncate(previous.End) &&
+                               range.Start                == decimal.Truncate(range.Start)  &&
+                               range.Start - previous.End == 1;
+                if (range.Start <= previous.End || adjacent)
+                {
+                    merged[^1] = (previous.Start, Math.Max(previous.End, range.End));
+                    continue;
+                }
+            }
+
+            merged.Add((range.Start, range.End));
+        }
+
+        if (merged.Count == 1 && merged[0].Start == merged[0].End) return null;
+
+        var text =
+            string.Join(",", merged.Select(range => range.Start == range.End
+                ? ReleaseNamePreviewPolicy.FormatEpisodeText(range.Start)
+                : ReleaseNamePreviewPolicy.FormatEpisodeText(range.Start) + "-E" +
+                  ReleaseNamePreviewPolicy.FormatEpisodeText(range.End)));
+        return (text, ranges[0].Parsed);
     }
 
     /// <summary>
@@ -1180,10 +1239,11 @@ public sealed class DownloadIntakeService(
     private TorrentFileAnalysis AnalyzeTorrentFiles(
         string infoHash, Torrent torrent, bool isMultiFile, SelectionRuleConfig config)
     {
-        var policy     = fileClassificationPolicy ?? new DownloadFileClassificationPolicy(aniParser);
-        var demoted    = new Dictionary<string, string>();
-        var byEpisode  = new Dictionary<decimal, List<(string Path, ParseResult Parsed)>>();
-        var multiScope = false;
+        var policy      = fileClassificationPolicy ?? new DownloadFileClassificationPolicy(aniParser);
+        var demoted     = new Dictionary<string, string>();
+        var byEpisode   = new Dictionary<decimal, List<(string Path, ParseResult Parsed)>>();
+        var rangeParses = new List<ParseResult>();
+        var multiScope  = false;
 
         foreach (var file in torrent.Files)
         {
@@ -1193,6 +1253,8 @@ public sealed class DownloadIntakeService(
             if (!DownloadFileClassificationPolicy.IsVideo(path)) continue;
             if (parsed.Episode is not { } episode)
             {
+                if (parsed.StartEpisode is { } start && parsed.EndEpisode is { } end && end >= start)
+                    rangeParses.Add(parsed);
                 // 剧场版（无集数）或合集区间命名的正片：无法归入单集，整个种子按合集处理。
                 multiScope = true;
                 continue;
@@ -1208,7 +1270,7 @@ public sealed class DownloadIntakeService(
                 multiScope = true;
                 break;
             case 0 :
-                return new TorrentFileAnalysis(demoted, null, []);
+                return new TorrentFileAnalysis(demoted, null, [], rangeParses);
         }
 
         ParseResult? identity          = null;
@@ -1246,7 +1308,7 @@ public sealed class DownloadIntakeService(
             }
         }
 
-        return new TorrentFileAnalysis(demoted, multiScope ? null : identity, episodeIdentities);
+        return new TorrentFileAnalysis(demoted, multiScope ? null : identity, episodeIdentities, rangeParses);
     }
 
     /// <summary>确保 Subject 元数据在本地可用：缓存行直接用，否则调 Bangumi API 拉取并落库（失败抛出，由调用方拒绝登记）。</summary>
@@ -1301,13 +1363,29 @@ public sealed class DownloadIntakeService(
         // 来源优先取条目评估时落库的作用域（非 legacy），旧条目才解密订阅地址回退推导；展示标签
         // 仍按解密后的实际 RSS 地址主机判定（mikanani.me → mikan、anibt.net → anibt），
         // 种子内 tracker 不得覆盖。
-        var feedUrl        = FeedUrlProtection.TryUnprotectUrl(_feedUrlProtector, item.Subscription.FeedUrlProtected);
+        var feedUrl = FeedUrlProtection.TryUnprotectUrl(_feedUrlProtector, item.Subscription.FeedUrlProtected);
         var resolvedSource = TorrentSiteSource.FromFeedUrl(feedUrl);
-        var sourceScope    = SourceScopes.Normalize(item.SourceScope);
+        var sourceScope = SourceScopes.Normalize(item.SourceScope);
         if (sourceScope == SourceScopes.Legacy) sourceScope = SourceScopes.FromFeedUrl(feedUrl);
         var (namingSnapshot, namingIngredients) = AlignNamingSource(item, resolvedSource);
-        var config            = await ruleProvider.GetAsync(cancellationToken);
-        var fileAnalysis      = AnalyzeTorrentFiles(infoHash, torrent, isMultiFile, config);
+        var config       = await ruleProvider.GetAsync(cancellationToken);
+        var fileAnalysis = AnalyzeTorrentFiles(infoHash, torrent, isMultiFile, config);
+        if (CollectionNaming(fileAnalysis, item.SubjectId) is { } collection)
+        {
+            var ingredients  = TorrentNamingIngredients.FromJson(namingIngredients)!;
+            var fileTemplate = ingredients.FileTemplate ?? ingredients.Template;
+            ingredients = ingredients with
+            {
+                Template = await namingTemplateStore.GetCollectionTemplateAsync(cancellationToken),
+                EpisodeText = collection.EpisodeText,
+                FileTemplate = string.IsNullOrWhiteSpace(fileTemplate)
+                    ? ReleaseNamePreviewPolicy.DefaultFileTemplate
+                    : fileTemplate
+            };
+            namingSnapshot    = namingPolicy.Create(ingredients);
+            namingIngredients = ingredients.ToJson();
+        }
+
         var settings          = await qbittorrentSettings.GetAsync(cancellationToken);
         var directorySettings = await GetDirectoriesAsync(cancellationToken);
         var taskId            = Guid.NewGuid();
@@ -1640,5 +1718,6 @@ public sealed class DownloadIntakeService(
     private sealed record TorrentFileAnalysis(
         IReadOnlyDictionary<string, string>                 DemotedSeedPaths,
         ParseResult?                                        IdentityParse,
-        IReadOnlyList<(decimal Episode, ParseResult Parse)> EpisodeIdentities);
+        IReadOnlyList<(decimal Episode, ParseResult Parse)> EpisodeIdentities,
+        IReadOnlyList<ParseResult>                          RangeParses);
 }

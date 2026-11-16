@@ -6,6 +6,17 @@ namespace Banori.Tests.Rules;
 
 public sealed class ReleaseNamePreviewPolicyTests
 {
+    [Theory]
+    [InlineData("E{episode:ee-Eee}", "E01-E06")]
+    [InlineData("{episode:ee-ee}", "01-06")]
+    [InlineData("E{ani.episode:ee-ee}", "E01-06")]
+    [InlineData("{episode:Eeee-Eeee}", "E001-E006")]
+    public void Create_CollectionRangeFormat_ControlsBothPrefixesAndWidths(string template, string expected)
+    {
+        var ingredients = new TorrentNamingIngredients(template, "作品", "01-E06", 1, null, null);
+        Assert.Equal(expected, new ReleaseNamePreviewPolicy().Create(ingredients));
+    }
+
     [Fact]
     public void Create_DefaultTemplate_RendersTitleEpisodeAndSource()
     {
