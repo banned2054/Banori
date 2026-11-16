@@ -635,7 +635,8 @@ public sealed class CandidateSelectionService(
                             selection.IntentTaskId =
                                 await intakeService.CreateTaskWithinContextAsync(db, winnerItem, torrentBytes!,
                                     infoHash!,
-                                    cancellationToken);
+                                    cancellationToken,
+                                    selectionWinnerConfirmed: true);
                             selection.IntentFailedReason = null;
                         }
                     }

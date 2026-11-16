@@ -80,3 +80,33 @@ set E2E_META=1 && dotnet test .e2e/Banori.E2E.Tests --no-build --filter "FullyQu
 - 复检秒级完成的种子，`Requested/ReadyToRun` 等意图子步骤在单个对账轮内落库并清除，
   2s 采样只见 Mapping→Observing；「本轮请求确已发出」由意图请求台账
   （RecheckRequestedAtUtc + RequestState=Sent）证明。
+
+## 订阅择优替换与存量重试（qB 4.6.4）
+
+`SelectionReplacementScenarioTests` 用两个隔离场景验证 ANi／Tc → 喵萌／JpSc 的同源规则升级：
+
+- 新任务在登记时建立旧成片现任与待完成优胜关系，进入 `.tasks/{taskId}`，完成后迁让旧文件并归档。
+- 抹去待完成关系模拟 0.3.0 旧数据，经真实提交和准备链产生“文件整理：目标占用”失败；保留 qB
+  中已提交、停止且位于正式根的种子，调用 `RetryAsync` 补建关系、恢复暂存，再调用 `ResumeAsync`
+  继续准备，最终完成替换。
+
+PowerShell 运行：
+
+```powershell
+$env:E2E_SELECTION = '1'
+dotnet test .e2e/Banori.E2E.Tests/Banori.E2E.Tests.csproj --filter 'FullyQualifiedName~SelectionReplacementScenarioTests'
+```
+
+每轮生成唯一的 `.e2e/smoke-tmp/selection-{new|retry}-{guid}/`，并自动创建、清理专用
+`linuxserver/qbittorrent:4.6.4` 容器（WebUI 18088、BT 16888，仅绑定回环；端口占用时拒绝启动）。
+原始种子由本地回环 HTTP 源提供，生产 `HttpTorrentFileSource`、择优、登记、qB 会话、文件操作和
+SQLite 均真实执行。为精确构造中断状态，只停止 `DownloadReconcileWorker` 调度，显式调用生产
+`ReconcileAsync`；不替换下载器、会话或时间策略。
+
+内容通过隔离挂载卷准备，再由 qB 做真实 piece 校验；本场景不验证 BT peer 网络下载、远端 RSS
+抓取、浏览器界面或用户正在运行的数据库。断言旧成片在新版完成前保持原 SHA-256，替换后旧文件
+位于 `.replaced/` 且内容不变，新正式文件内容匹配新种子，`EpisodeVersions` 现任切换并清空待完成项。
+`evidence.jsonl` 保存阶段、任务状态、路径决策与 qB 快照，`summary.json` 保存版本、hash、文件校验值
+和最终登记关系；失败现场与成功证据均保留在本地。
+
+2026-11-16 实测：以上两项在 qB API 返回 `v4.6.4` 的容器中通过（2 通过、0 失败、0 跳过）。

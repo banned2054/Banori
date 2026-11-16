@@ -688,16 +688,20 @@ public sealed class FakeTorrentFileSource(Func<Uri, byte[]> resolver) : ITorrent
     /// <summary>最近一次下载请求携带的代理 Id，供传递断言使用。</summary>
     public Guid? LastProxyId { get; private set; }
 
+    /// <summary>下载前回调：用于在“预检通过、种子下载中、尚未进入协调锁”的窗口内改变择优状态。</summary>
+    public Func<Uri, Task>? BeforeDownload { get; set; }
+
     /// <summary>按绝对 URI 注入的下载异常，模拟个别源站失败。</summary>
     public Dictionary<string, Exception> ThrowOnUri { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-    public Task<byte[]> DownloadAsync(
+    public async Task<byte[]> DownloadAsync(
         Uri torrentUri, Guid? proxyId = default, CancellationToken cancellationToken = default)
     {
         CallCount++;
         LastProxyId = proxyId;
+        if (BeforeDownload is not null) await BeforeDownload(torrentUri);
         if (ThrowOnUri.TryGetValue(torrentUri.AbsoluteUri, out var exception)) throw exception;
-        return Task.FromResult(resolver(torrentUri));
+        return resolver(torrentUri);
     }
 }
 

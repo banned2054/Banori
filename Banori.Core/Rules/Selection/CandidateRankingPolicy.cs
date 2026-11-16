@@ -66,6 +66,33 @@ public sealed class CandidateRankingPolicy
     }
 
     /// <summary>
+    ///     规则侧严格优于：挑战者处于更高的规则优先级层，或同一优先级层内同分区版本更高、
+    ///     初始候选正片数严格更多时成立；同层跨分区只认正片数严格更多。发布时间、稳定标识与
+    ///     数据库 ID 只是同层平级的确定性兜底，不构成“规则严格更优”，不得据此建立替换关系。
+    ///     任一方被规则排除（如未命中 NeedsReview）时也不成立：排除者没有参与胜负，不能宣称
+    ///     挑战者比它更优。
+    /// </summary>
+    public bool IsStrictlyPreferred(EpisodeCandidate challenger, EpisodeCandidate incumbent,
+                                    SelectionRuleConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(challenger);
+        ArgumentNullException.ThrowIfNull(incumbent);
+        ArgumentNullException.ThrowIfNull(config);
+
+        var challengerRank = RankCandidate(challenger, config);
+        var incumbentRank  = RankCandidate(incumbent, config);
+        if (challengerRank.ExcludedReason is not null || incumbentRank.ExcludedReason is not null) return false;
+        if (challengerRank.Priority != incumbentRank.Priority) return challengerRank.Priority < incumbentRank.Priority;
+
+        if (PartitionKey(challenger) == PartitionKey(incumbent))
+            return challenger.Version > incumbent.Version ||
+                   (challenger.Version == incumbent.Version &&
+                    challenger.PackageVideoFileCount > incumbent.PackageVideoFileCount);
+
+        return challenger.PackageVideoFileCount > incumbent.PackageVideoFileCount;
+    }
+
+    /// <summary>
     ///     同组内选出优胜。现任优胜的保留不进入排序链（排序链要求全序，否则会形成
     ///     “v2 优于 v1、现任 v1 优于他组、他组按组名优于 v2”的循环），而是做一次两层归约：
     ///     取规则优先级最高的候选层，按字幕组（忽略大小写）与语言（枚举值全等）分区，分区内

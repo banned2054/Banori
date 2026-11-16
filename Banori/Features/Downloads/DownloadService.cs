@@ -38,7 +38,8 @@ public sealed class DownloadService(
     DownloadFileService?                    downloadFileService     = null,
     DownloadSubmissionPathValidator?        submissionPathValidator = null,
     DownloadEpisodeResolver?                episodeResolver         = null,
-    DownloadTimingPolicy?                   timingPolicy            = null)
+    DownloadTimingPolicy?                   timingPolicy            = null,
+    DownloadIntakeService?                  intakeService           = null)
 {
     /// <summary>响应丢失后的自动重新提交上限；达到上限视为提交失败，等待人工重试。</summary>
     public const int MaxAutoSubmitAttempts = 5;
@@ -382,6 +383,24 @@ public sealed class DownloadService(
         var       task              = await LoadTaskAsync(taskId, cancellationToken);
         if (task.Status is not (DownloadTaskStatus.Failed or DownloadTaskStatus.Lost))
             throw new InvalidOperationException("只有失败或丢失的任务可以重试。");
+
+        // 存量失败任务可能在登记时未建立“规则优胜 → 旧成片”的替换关系：重试前按已落库的
+        // 优胜选择补建一次，只补已完成现任，不改写其他任务或本任务已有的文件选择。补建失败
+        // 不阻塞重试——已提交的种子由接管流程先恢复任务专属暂存布局，后续归档仍按同一占用
+        // 检查给出真实原因。
+        if (task.FeedItemId is not null && intakeService is not null)
+            try
+            {
+                await intakeService.EnsureSelectionWinnerReplacementAsync(taskId, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "任务 {TaskId} 重试前补建同集替换关系失败，按现有记录继续重试。", taskId);
+            }
 
         if (DownloadVerificationIntent.FromJson(task.VerificationIntent) is { } intent)
             await EnterIsolationAsync(task, intent, "人工重试校验失败的任务，废弃旧证据并转为独立下载。", cancellationToken);
@@ -2851,7 +2870,10 @@ public sealed class DownloadService(
         }
     }
 
-    /// <summary>接管下载器中已存在的同 hash 种子：补打来源 tag、把本地隔离路径对齐为种子真实位置，再按快照推进。</summary>
+    /// <summary>
+    ///     接管下载器中已存在的同 hash 种子：补打来源 tag、把本地隔离路径对齐为种子真实位置，再按快照推进。
+    ///     存量任务在补建替换关系前已提交到正式根时，先恢复任务专属暂存布局，避免接管后整理再次撞占用。
+    /// </summary>
     private async Task AdoptExistingAsync(
         DownloadTask task, TorrentSnapshot snapshot, IQbittorrentSession session, CancellationToken cancellationToken)
     {
@@ -2860,17 +2882,36 @@ public sealed class DownloadService(
             !snapshot.Tags.Contains(siteSource, StringComparer.OrdinalIgnoreCase))
             await session.AddTagAsync(task.InfoHash, siteSource, cancellationToken);
 
-        // 接管即路径决策：对齐为种子真实位置，原因落库可追溯。
+        var staging = false;
+        if (downloadFileService is not null)
+            try
+            {
+                staging = await downloadFileService.EnsureReplacementStagingUnderGateAsync(session, task.Id,
+                                                                                           cancellationToken);
+                if (staging) task = await LoadTaskAsync(task.Id, cancellationToken);
+            }
+            catch (InvalidOperationException exception)
+            {
+                await MarkFailedAsync(task.Id, task.Status, "文件整理", exception.Message, cancellationToken);
+                return;
+            }
+
+        // 接管即路径决策：对齐为种子真实位置，原因落库可追溯。恢复替换暂存时记录暂存根，
+        // 移动请求由随后的接管流程执行或续做，这里不猜种子此刻的真实位置。
+        var stagingRoot = staging ? DownloadTaskPlacement.TaskRoot(task.DownloadRootPath!, task.Id) : null;
         await UpdateTaskAsync(task.Id, task.Status, update =>
         {
             update.PathDecision = new DownloadPathDecision
             {
-                Kind         = DownloadPathDecisionKinds.SameHashAdoption,
-                Reason       = "下载器已存在同 Hash 种子，接管其真实保存位置。",
-                Root         = DownloadPathNamePolicy.NormalizePath(snapshot.SavePath),
+                Kind         = staging ? DownloadPathDecisionKinds.ReplacementStaging
+                                       : DownloadPathDecisionKinds.SameHashAdoption,
+                Reason       = staging
+                    ? "存量任务已提交在正式根且存在待替换旧版：接管后迁入任务专属根暂存，完成后再迁让旧文件并归档。"
+                    : "下载器已存在同 Hash 种子，接管其真实保存位置。",
+                Root         = stagingRoot ?? DownloadPathNamePolicy.NormalizePath(snapshot.SavePath),
                 DecidedAtUtc = timeProvider.GetUtcNow()
             }.ToJson();
-            if (!MatchesIsolationPath(snapshot.SavePath, task.SavePath))
+            if (!staging && !MatchesIsolationPath(snapshot.SavePath, task.SavePath))
                 // 隔离路径让位于种子的真实位置：接管外部种子时它通常不在本应用约定的目录里，
                 // 后续对账与完成改名都以真实位置为准。
                 update.SavePath = DownloadPathNamePolicy.NormalizePath(snapshot.SavePath);

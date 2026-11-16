@@ -374,6 +374,47 @@ public sealed class DownloadFileService(
         return await PlanAndExecuteUnderGateAsync(session, taskId, snapshot, cancellationToken, true);
     }
 
+    /// <summary>
+    ///     存量已提交任务恢复替换暂存布局：任务在补建替换关系前把种子添加到正式根，若重试只补登记
+    ///     关系，后续接管仍会在正式根整理并与待替换的已完成旧成片撞占用。这里只登记一个把种子根整体
+    ///     迁入 {下载根}/.tasks/{taskId} 的布局计划（相对路径与已下载进度不变），由接管流程在同一
+    ///     协调锁内执行；完成期仍按既有迁让与归档链处理旧成片。仅在种子真实布局与登记一致、下载
+    ///     未完成、停止且稳定、且确有已完成现任可迁让时登记；否则不做任何修改——外部目录、已完成
+    ///     种子和无法确认身份的任务都不在这里移动。
+    ///     返回 true 表示任务已位于任务专属根或暂存计划已登记，调用方可继续按替换任务接管。
+    /// </summary>
+    public async Task<bool> EnsureReplacementStagingUnderGateAsync(
+        IQbittorrentSession session, Guid taskId, CancellationToken cancellationToken = default)
+    {
+        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var task = await LoadAsync(db, taskId, cancellationToken);
+        if (task is { SubmittedAtUtc: null } || string.IsNullOrWhiteSpace(task.DownloadRootPath)) return false;
+        if (task.VerificationIntent is not null || task.IsolationState != DownloadIsolationState.None) return false;
+
+        var targetRoot = DownloadTaskPlacement.TaskRoot(task.DownloadRootPath, task.Id);
+        // 同目标待执行计划已登记：交给接管流程继续确认，不重复规划。
+        if (task.PendingSavePath is not null && SameRoot(task.PendingSavePath, targetRoot)) return true;
+        if (HasPending(task)) return false;
+        // 只有确有已完成现任需要迁让时才暂存；没有旧成片的新任务继续走普通接管。
+        if ((await LoadReplacementAsideFilesAsync(db, task, cancellationToken)).Count == 0) return false;
+        if (DownloadTaskPlacement.IsTaskScoped(task)) return true;
+        // 只恢复本应用提交到正式根的布局：接管到其他目录的种子不在这里搬迁。
+        if (!SameRoot(task.SavePath, task.DownloadRootPath)) return false;
+
+        var snapshot = await SnapshotAsync(session, task.InfoHash, cancellationToken);
+        if (snapshot.IsMoving || snapshot.Progress >= 1 || !SameRoot(snapshot.SavePath, task.SavePath)) return false;
+        if (snapshot.Category != QbittorrentTorrentCategory.Stopped) return false;
+
+        // 路径或大小无法与持久化身份唯一对应时不得移动：身份不明时既不能证明目标可写，也不能猜测布局。
+        MatchRemoteFiles(task.Files, await session.ListFilesAsync(task.InfoHash, cancellationToken));
+
+        var plan = new FilePlan(targetRoot,
+                                task.Files.ToDictionary(file => file.FileIndex, file => file.CurrentRelativePath));
+        Stage(task, plan);
+        await db.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
     private async Task<bool> PlanAndExecuteUnderGateAsync(IQbittorrentSession session, Guid taskId,
                                                           TorrentSnapshot snapshot, CancellationToken cancellationToken,
                                                           bool adoptExisting = false)

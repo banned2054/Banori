@@ -688,6 +688,84 @@ public sealed class CandidateRankingPolicyTests
     }
 
     [Fact]
+    public void IsStrictlyPreferred_HigherPriorityTierWinsAcrossGroupAndLanguage()
+    {
+        var policy   = new CandidateRankingPolicy();
+        var config   = IndependentConfig();
+        var loliJpSc = Candidate("LoliHouse", EnumLanguage.JpSc);
+        var aniJpSc  = Candidate("ANi", EnumLanguage.JpSc);
+
+        Assert.True(policy.IsStrictlyPreferred(loliJpSc, aniJpSc, config));
+        Assert.False(policy.IsStrictlyPreferred(aniJpSc, loliJpSc, config));
+    }
+
+    [Fact]
+    public void IsStrictlyPreferred_SamePartitionRequiresHigherVersionOrMoreVideos()
+    {
+        var policy = new CandidateRankingPolicy();
+        var config = IndependentConfig();
+
+        Assert.True(policy.IsStrictlyPreferred(Candidate("LoliHouse", EnumLanguage.JpSc, 2),
+                                               Candidate("LoliHouse", EnumLanguage.JpSc),
+                                               config));
+        Assert.False(policy.IsStrictlyPreferred(Candidate("LoliHouse", EnumLanguage.JpSc),
+                                                Candidate("LoliHouse", EnumLanguage.JpSc, 2),
+                                                config));
+        Assert.True(policy.IsStrictlyPreferred(Candidate("LoliHouse", EnumLanguage.JpSc,
+                                                         packageVideoFileCount : 2),
+                                               Candidate("LoliHouse", EnumLanguage.JpSc),
+                                               config));
+        Assert.False(policy.IsStrictlyPreferred(Candidate("LoliHouse", EnumLanguage.JpSc),
+                                                Candidate("LoliHouse", EnumLanguage.JpSc),
+                                                config));
+    }
+
+    [Fact]
+    public void IsStrictlyPreferred_SameTierCrossPartitionNeedsStrictlyMoreVideos()
+    {
+        var policy = new CandidateRankingPolicy();
+        var config = SameTierConfig();
+
+        Assert.True(policy.IsStrictlyPreferred(Candidate("LoliHouse", EnumLanguage.JpSc,
+                                                         packageVideoFileCount : 2),
+                                               Candidate("ANi", EnumLanguage.JpSc),
+                                               config));
+        Assert.False(policy.IsStrictlyPreferred(Candidate("LoliHouse", EnumLanguage.JpSc,
+                                                          packageVideoFileCount : 2),
+                                                Candidate("ANi", EnumLanguage.JpSc,
+                                                          packageVideoFileCount : 3),
+                                                config));
+        Assert.False(policy.IsStrictlyPreferred(Candidate("LoliHouse", EnumLanguage.JpSc),
+                                                Candidate("ANi", EnumLanguage.JpSc),
+                                                config));
+    }
+
+    [Fact]
+    public void IsStrictlyPreferred_TieBreakAndExcludedCandidatesDoNotCount()
+    {
+        var policy = new CandidateRankingPolicy();
+        var config = IndependentConfig();
+
+        // 同分区同版本同计数：仅发布时间 / 稳定标识更早，不构成规则严格更优。
+        Assert.False(policy.IsStrictlyPreferred(Candidate("LoliHouse", EnumLanguage.JpSc,
+                                                          publishedAtUtc : new DateTimeOffset(2026, 9, 1, 0, 0, 0,
+                                                                                              TimeSpan.Zero),
+                                                          stableId : "guid:a"),
+                                                Candidate("LoliHouse", EnumLanguage.JpSc,
+                                                          publishedAtUtc : new DateTimeOffset(2026, 9, 2, 0, 0, 0,
+                                                                                              TimeSpan.Zero),
+                                                          stableId : "guid:b"),
+                                                config));
+
+        // NeedsReview 排除者没有参与胜负：不能宣称任何一方比它严格更优。
+        var reviewConfig = IndependentConfig(unmatched : UnmatchedPolicy.NeedsReview);
+        var sakuratoJpSc = Candidate("Sakurato", EnumLanguage.JpSc);
+        var loliJpSc     = Candidate("LoliHouse", EnumLanguage.JpSc);
+        Assert.False(policy.IsStrictlyPreferred(sakuratoJpSc, loliJpSc, reviewConfig));
+        Assert.False(policy.IsStrictlyPreferred(loliJpSc, sakuratoJpSc, reviewConfig));
+    }
+
+    [Fact]
     public void Select_EmptyCandidates_Throws()
     {
         Assert.Throws<ArgumentException>(() =>

@@ -3825,27 +3825,27 @@ public sealed partial class DownloadServiceTests
             IsEnabled        = false, RefreshIntervalMinutes = 30
         });
         var itemId = Guid.NewGuid();
+        // P4 批量择优：条目必须是其所在同集组的当前优胜候选才能创建下载任务。
+        // 组键 (SubjectId, MediaType, Episode) 有唯一索引；同一测试内同组再播种条目时以 stableId
+        // 区分 MediaType，条目与选择记录必须使用同一个组键，创建前置核验才能按完整组键命中。
+        var groupKey  = $"{subjectId}|SingleEpisode|{episode}";
+        var mediaType = harness.UsedWinnerGroups.Add(groupKey) ? "SingleEpisode" : $"SingleEpisode#{stableId}";
         db.FeedItems.Add(new FeedItem
         {
             Id                = itemId, SubscriptionId = subscriptionId, StableId = stableId, Title = torrentName,
             TorrentUrl        = $"https://mikanani.me/Download/{stableId}.torrent",
             FirstSeenAtUtc    = harness.Timestamp.AddHours(-1), Status      = FeedItemStatus.Accepted,
             DecisionStatus    = ReleaseDecisionStatus.Accepted, ParsedTitle = parsedTitle ?? torrentName,
-            MediaType         = "SingleEpisode", Episode                    = episode, Version = version, Group = "S1",
-            Language          = language ?? "Sc", Resolution                = "R1080P", SubjectId = subjectId,
-            Preference        = preference, Reason                          = "测试决策。",
+            MediaType         = mediaType, Episode = episode, Version = version, Group = "S1",
+            Language          = language ?? "Sc", Resolution = "R1080P", SubjectId = subjectId,
+            Preference        = preference, Reason = "测试决策。",
             NamingPreview     = naming,
             NamingIngredients = BuildNamingIngredients(episode, version),
             EvaluatedAtUtc    = harness.Timestamp
         });
-        // P4 批量择优：条目必须是其所在同集组的当前优胜候选才能创建下载任务。
-        // 组键 (SubjectId, MediaType, Episode) 有唯一索引；同一测试内同组再播种条目时
-        // 以 stableId 区分 MediaType，保证每个条目都能作为优胜通过创建前置核验。
-        var groupKey  = $"42|SingleEpisode|{episode}";
-        var mediaType = harness.UsedWinnerGroups.Add(groupKey) ? "SingleEpisode" : $"SingleEpisode#{stableId}";
         db.CandidateSelections.Add(new CandidateSelection
         {
-            Id               = Guid.NewGuid(), SubjectId = 42, MediaType       = mediaType, Episode = episode,
+            Id               = Guid.NewGuid(), SubjectId = subjectId ?? 42, MediaType = mediaType, Episode = episode,
             WinnerFeedItemId = itemId, RuleVersion       = 1, RankingBasis     = "测试优胜",
             NamingSnapshot   = naming, IntentTaskId      = null, SelectedAtUtc = harness.Timestamp
         });

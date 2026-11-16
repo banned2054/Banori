@@ -73,10 +73,9 @@ public sealed class DownloadIntakeService(
                 ?? throw new KeyNotFoundException("找不到指定条目。");
 
             // P4 起手动创建与自动登记共用同一门槛：条目必须是所在同集组的当前优胜候选，
-            // 历史 Accepted 条目需经人工重评触发组内重选后才能创建任务。
-            var isWinner = await db.CandidateSelections.AsNoTracking()
-                                   .AnyAsync(selection => selection.WinnerFeedItemId == itemId, cancellationToken);
-            if (!isWinner)
+            // 历史 Accepted 条目需经人工重评触发组内重选后才能创建任务。这里先按完整组键预检，
+            // 下载种子并取得协调锁后还要复核——择优可能在等待期间切换。
+            if (!await IsCurrentSelectionWinnerAsync(db, item, cancellationToken))
                 throw new InvalidOperationException("该条目不是所在集的当前优胜候选，请先重新评估或调整选择规则。");
         }
 
@@ -89,7 +88,12 @@ public sealed class DownloadIntakeService(
         using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
         await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
-            return await CreateTaskWithinContextAsync(db, item, torrentBytes, infoHash, cancellationToken);
+            // 下载种子期间自动择优可能已经把获胜条目切到同集组其他条目：锁内按完整组键重读，
+            // 过期优胜不得携带 selectionWinnerConfirmed 建立替换关系。
+            if (!await IsCurrentSelectionWinnerAsync(db, item, cancellationToken))
+                throw new InvalidOperationException("该条目已不是所在集的当前优胜候选，请先重新评估或调整选择规则。");
+            return await CreateTaskWithinContextAsync(db, item, torrentBytes, infoHash, cancellationToken,
+                                                      selectionWinnerConfirmed: true);
         }
     }
 
@@ -184,7 +188,7 @@ public sealed class DownloadIntakeService(
                                             : BuildAdhocCandidate(infoHash, null, identity, binding.SubjectId));
         var verdicts = await ArbitrateEpisodesAsync(db, task, config, scopes, binding.SubjectId,
                                                     TitleNormalizer.Normalize(identity?.Title ?? string.Empty),
-                                                    sourceScope, infoHash, null, cancellationToken);
+                                                    sourceScope, infoHash, null, false, cancellationToken);
         ApplyLosingSelections(task, verdicts);
         if (AllContentLost(task, verdicts))
         {
@@ -444,7 +448,7 @@ public sealed class DownloadIntakeService(
                                                                   binding.SubjectId));
         var verdicts = await ArbitrateEpisodesAsync(db, task, config, scopes, binding.SubjectId,
                                                     TitleNormalizer.Normalize(identity?.Title ?? string.Empty),
-                                                    sourceScope, infoHash, null, cancellationToken);
+                                                    sourceScope, infoHash, null, false, cancellationToken);
         ApplyLosingSelections(task, verdicts);
         if (AllContentLost(task, verdicts))
         {
@@ -601,7 +605,10 @@ public sealed class DownloadIntakeService(
     ///     冠军，再由分区冠军按逐集裁决前的初始正片数决胜：只有同分区版本/计数升级，或异分区冠军
     ///     计数严格更大时才顶替，计数相同保留现任侧代表。占用者以
     ///     任务级集数（单集任务既有身份）或文件级集数（合集任务的选中正片）覆盖该集；跨路径互认与
-    ///     订阅豁免口径沿用既有任务级裁决。纯决策无副作用，结论由调用方应用。
+    ///     订阅豁免口径沿用既有任务级裁决。订阅条目任务默认豁免规则对决（替换由评估/择优链治理），
+    ///     只有调用方确认本条目是其同集组的当前优胜、且规则严格更优时才把已完成旧任务记入登记表，
+    ///     完成期再按现有迁让与逐集切换机制替换；平级、较差或未经确认的条目不得借此跨组顶替。
+    ///     纯决策无副作用，结论由调用方应用。
     ///     例外（包含关系承接，设计第四阶段）：同内容平级的现任保留可被覆盖面更大的新包翻转——
     ///     占用者全部职责文件都能由新包最终承担集合逐文件承担、且该集合确有独有内容时，该集
     ///     改判新包胜出。承接判定采用有界单调剔除：先以全部当前选中文件找出乐观承接候选，再
@@ -613,6 +620,7 @@ public sealed class DownloadIntakeService(
                                                                     IReadOnlyList<EpisodeScope> scopes, int? subjectId,
                                                                     string seriesKey, string sourceScope,
                                                                     string infoHash, int? exemptSubjectId,
+                                                                    bool selectionWinnerConfirmed,
                                                                     CancellationToken cancellationToken)
     {
         if (scopes.Count == 0) return [];
@@ -628,6 +636,7 @@ public sealed class DownloadIntakeService(
 
         var occupants = await db.DownloadTasks.AsNoTracking()
                                 .Include(task => task.Files)
+                                .Include(task => task.FeedItem)
                                 .Where(task => task.SubjectId        == subjectId                 &&
                                                task.ReplacedByTaskId == null                      &&
                                                task.Status           != DownloadTaskStatus.Failed &&
@@ -639,15 +648,15 @@ public sealed class DownloadIntakeService(
         {
             var candidates = new List<(Guid TaskId, string Naming, EpisodeCandidate Candidate, bool Completed,
                 Guid? VideoFileId)>();
-            // 登记期版本守卫候选：同来源、同 Subject 已完成且覆盖该集的占用者（不区分豁免——它们
-            // 不参与规则对决，但沿用条目链完成期替换的语义记入每集登记表，供完成期迁让与现任切换；
-            // 旧任务本身不动）。跨来源占用者不在本集竞争域内，绝不能写入本来源的登记表。
+            // 登记期已完成现任候选：版本守卫（同组同语言升级）与已确认优胜的规则升级（可跨组/
+            // 跨语言）都记入每集登记表，供完成期迁让与现任切换；它们不参与规则对决，旧任务本身
+            // 不动。跨来源占用者不在本集竞争域内，绝不能写入本来源的登记表。
             var registryIncumbents = new List<(Guid TaskId, string Naming, int Version, DateTimeOffset CreatedAtUtc,
                 Guid VideoFileId)>();
             foreach (var occupant in occupants)
             {
                 if (occupant.InfoHash == infoHash) continue;
-                if (SourceScopes.FromSiteSource(occupant.SiteSource) != sourceScope) continue;
+                if (OccupantSourceScope(occupant) != sourceScope) continue;
 
                 var covered = CoveringFiles(occupant, scope.Episode);
                 var carrier = covered.FirstOrDefault(file => file.Kind == DownloadFileKind.Anime) ??
@@ -661,20 +670,31 @@ public sealed class DownloadIntakeService(
                                         aniParser.Parse(DownloadEpisodeResolver.FileName(
                                                             carrier.OriginalRelativePath)),
                                         scope, carrier.Id);
-                if (DownloadTaskLookups.IsTakeoverEligibleIncumbent(occupant.Status, occupant.ReplacedByTaskId,
+                var exemptionApplies = exemptSubjectId is not null && occupant.FeedItemId != null &&
+                                       occupant.SubjectId                                 == exemptSubjectId;
+                // 版本守卫只在同组同语言内成立；订阅条目的规则升级另由“已确认优胜 + 规则严格更优”
+                // 判定，仍要求同来源、同 Subject、同集、已完成且未被声明替换，并只记入登记表——
+                // 旧成片保留到新版本完成，再由完成链迁让与逐集切换。
+                var versionGuardEligible =
+                    DownloadTaskLookups.IsTakeoverEligibleIncumbent(occupant.Status, occupant.ReplacedByTaskId,
                                                                     incumbentVersion, scope.Incoming.Version,
                                                                     incumbentCandidate?.Group,
                                                                     incumbentCandidate?.Language,
                                                                     scope.Incoming.Group,
-                                                                    scope.Incoming.Language))
-                    if (carrier is not null)
-                        registryIncumbents.Add((occupant.Id, occupant.NamingSnapshot, incumbentVersion,
-                                                occupant.CreatedAtUtc, carrier.Id));
+                                                                    scope.Incoming.Language);
+                var ruleUpgradeEligible = exemptionApplies                                &&
+                                          selectionWinnerConfirmed                        &&
+                                          occupant.Status == DownloadTaskStatus.Completed &&
+                                          occupant.ReplacedByTaskId is null               &&
+                                          incumbentCandidate is not null                  &&
+                                          rankingPolicy.IsStrictlyPreferred(scope.Incoming, incumbentCandidate, config);
+                if ((versionGuardEligible || ruleUpgradeEligible) && carrier is not null)
+                    registryIncumbents.Add((occupant.Id, occupant.NamingSnapshot, incumbentVersion,
+                                            occupant.CreatedAtUtc, carrier.Id));
 
                 // 同 Subject 豁免只覆盖订阅条目任务（其替换由评估/择优/版本守卫链治理）；
                 // RSS/上传任务（无 FeedItem）即使同 Subject 也参与跨路径裁决。
-                if (exemptSubjectId is not null && occupant.FeedItemId != null &&
-                    occupant.SubjectId                                 == exemptSubjectId) continue;
+                if (exemptionApplies) continue;
                 if (occupant.SubjectId is null)
                 {
                     var taskSeriesKey = TorrentNamingIngredients.FromJson(occupant.NamingIngredients) is
@@ -785,6 +805,17 @@ public sealed class DownloadIntakeService(
         return baselineVerdicts.Select(verdict =>
                                            takeovers.FirstOrDefault(item => item.Episode == verdict.Episode) ?? verdict)
                                .ToList();
+    }
+
+    /// <summary>
+    ///     占用者的真实竞争来源：订阅条目任务优先取条目落库的 SourceScope（只有迁移前 legacy 行才
+    ///     回退展示标签推导）；上传/RSS 任务没有条目来源，只能按标签推导。界面的 mikan 标签不单独
+    ///     作为同源依据，来源不同的旧任务不得进入本来源的规则对决或登记表。
+    /// </summary>
+    private static string OccupantSourceScope(DownloadTask occupant)
+    {
+        var scope = SourceScopes.Normalize(occupant.FeedItem?.SourceScope);
+        return scope == SourceScopes.Legacy ? SourceScopes.FromSiteSource(occupant.SiteSource) : scope;
     }
 
     /// <summary>
@@ -1245,9 +1276,13 @@ public sealed class DownloadIntakeService(
     /// <summary>
     ///     在给定上下文内核验重复、决定替换对象并落库任务，由调用方控制事务提交。
     ///     自动登记与手动创建共用该核心，保证查重与替换判定一致。
+    ///     <paramref name="selectionWinnerConfirmed" /> 表示调用方已确认该条目是其同集组的当前
+    ///     优胜（自动择优提交或手动创建前置核验）；只有此时才允许把规则严格更优的已完成订阅
+    ///     旧任务记入替换关系，未确认时订阅任务继续豁免跨组规则对决。
     /// </summary>
     public async Task<Guid> CreateTaskWithinContextAsync(ApplicationDbContext db, FeedItem item, byte[] torrentBytes,
-                                                         string infoHash, CancellationToken cancellationToken)
+                                                         string infoHash, CancellationToken cancellationToken,
+                                                         bool selectionWinnerConfirmed = false)
     {
         if (await DownloadTaskLookups.FindActiveDuplicateIdAsync(db, infoHash, item.Id, cancellationToken) is not null)
             throw new InvalidOperationException("该条目或同一资源已有进行中的下载任务。");
@@ -1298,38 +1333,13 @@ public sealed class DownloadIntakeService(
         };
         AddOriginalFiles(task, torrent, isMultiFile, fileAnalysis.DemotedSeedPaths);
 
-        EpisodeCandidate? identityCandidate = null;
-        if (item.MediaType is not null                                                  &&
-            !string.Equals(item.MediaType, "MultipleEpisode", StringComparison.Ordinal) &&
-            item.Episode is not null)
-        {
-            var language = Enum.TryParse(item.Language, true, out EnumLanguage parsedLanguage)
-                ? parsedLanguage
-                : (EnumLanguage?)null;
-            var resolution = Enum.TryParse(item.Resolution, true, out EnumResolution parsedResolution)
-                ? parsedResolution
-                : EnumResolution.Unknown;
-            identityCandidate = new EpisodeCandidate
-            {
-                FeedItemId = item.Id,
-                SubjectId = item.SubjectId ?? 0,
-                MediaType = item.MediaType,
-                Episode = item.Episode.Value,
-                Group = string.IsNullOrWhiteSpace(item.Preference) ? item.Group ?? string.Empty : item.Preference,
-                Language = language,
-                Resolution = resolution,
-                Version = item.Version,
-                PublishedAtUtc = item.PublishedAtUtc,
-                StableId = item.StableId
-            };
-        }
-
+        var identityCandidate = BuildItemIdentityCandidate(item);
         var scopes = BuildEpisodeScopes(task, fileAnalysis, identityCandidate is null ? null : item.Episode,
                                         identityCandidate);
         var verdicts = await ArbitrateEpisodesAsync(db, task, config, scopes, item.SubjectId,
                                                     TitleNormalizer.Normalize(item.ParsedTitle),
                                                     sourceScope, infoHash, item.SubjectId,
-                                                    cancellationToken);
+                                                    selectionWinnerConfirmed, cancellationToken);
         ApplyLosingSelections(task, verdicts);
         if (AllContentLost(task, verdicts))
             throw new InvalidOperationException(ComposeLossReason(verdicts));
@@ -1348,6 +1358,127 @@ public sealed class DownloadIntakeService(
         logger.LogInformation("已为条目 {ItemId} 创建下载任务 {TaskId}（hash {InfoHash}）。", item.Id, task.Id,
                               infoHash);
         return task.Id;
+    }
+
+    /// <summary>
+    ///     按条目所属同集组的完整组键（Subject、MediaType、Episode、SourceScope）确认它仍是已落库的
+    ///     当前优胜。来源按写入时的归一化口径比较，兼容迁移前空来源的 legacy 行；组键不完整或合集
+    ///     条目没有可竞争的择优组，不能借其他组的选择记录通过核验。
+    /// </summary>
+    private static async Task<bool> IsCurrentSelectionWinnerAsync(ApplicationDbContext db, FeedItem item,
+                                                                  CancellationToken      cancellationToken)
+    {
+        if (item is not { SubjectId: { } subjectId, MediaType: { } mediaType, Episode: { } episode }) return false;
+        if (string.Equals(mediaType, "MultipleEpisode", StringComparison.Ordinal)) return false;
+
+        var sourceScope = SourceScopes.Normalize(item.SourceScope);
+        var winnerScopes = await db.CandidateSelections.AsNoTracking()
+                                     .Where(selection => selection.SubjectId        == subjectId &&
+                                                         selection.MediaType        == mediaType &&
+                                                         selection.Episode          == episode   &&
+                                                         selection.WinnerFeedItemId == item.Id)
+                                     .Select(selection => selection.SourceScope)
+                                     .ToListAsync(cancellationToken);
+        return winnerScopes.Any(scope => string.Equals(SourceScopes.Normalize(scope), sourceScope,
+                                                       StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    ///     存量任务人工重试前的替换关系补建：任务所属订阅条目仍是其同集组已落库的当前优胜
+    ///     （Subject/MediaType/Episode/SourceScope 全等）且条目仍为已选择状态时，按与新建任务
+    ///     相同的逐集裁决补登记已完成现任与待完成优胜，供重试后的下载暂存、完成期迁让与逐集
+    ///     切换。条目已不是优胜、来源不符、任务缺少条目或缺少可用种子时不做任何写入，重试沿用
+    ///     原行为；不因“失败过”、“完成顺序”或“同名路径”授予替换权限，也不改写其他任务的
+    ///     下载状态。
+    /// </summary>
+    public async Task EnsureSelectionWinnerReplacementAsync(Guid taskId, CancellationToken cancellationToken = default)
+    {
+        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var task = await db.DownloadTasks.Include(value => value.Files)
+                           .SingleOrDefaultAsync(value => value.Id == taskId, cancellationToken);
+        if (task is not { FeedItemId: { } itemId, SubjectId: not null, Episode: not null }) return;
+
+        var item = await db.FeedItems.Include(value => value.Subscription)
+                           .SingleOrDefaultAsync(value => value.Id == itemId, cancellationToken);
+        if (item is null || item.SubjectId != task.SubjectId || item.Episode != task.Episode) return;
+        if (item.Status != FeedItemStatus.Accepted || item.DecisionStatus != ReleaseDecisionStatus.Accepted) return;
+        if (item.MediaType is null ||
+            string.Equals(item.MediaType, "MultipleEpisode", StringComparison.Ordinal)) return;
+        if (!await IsCurrentSelectionWinnerAsync(db, item, cancellationToken)) return;
+
+        // 选择记录按条目落库来源分组；legacy 条目才解密订阅地址推导实际竞争来源。
+        var feedUrl     = FeedUrlProtection.TryUnprotectUrl(_feedUrlProtector, item.Subscription.FeedUrlProtected);
+        var sourceScope = SourceScopes.Normalize(item.SourceScope);
+        if (sourceScope == SourceScopes.Legacy) sourceScope = SourceScopes.FromFeedUrl(feedUrl);
+
+        var ownVideoIds = task.Files
+                              .Where(file => file is { Kind: DownloadFileKind.Anime, IsSelectedForDownload: true })
+                              .Select(file => file.Id).ToHashSet();
+        if (ownVideoIds.Count == 0) return;
+        // 关系已建立时不再重复裁决：本任务已是该来源登记在案、且有已完成现任可迁让的待完成优胜。
+        var alreadyLinked = await db.EpisodeVersions.AsNoTracking()
+                                     .AnyAsync(row => row.SubjectId            == item.SubjectId  &&
+                                                      row.SourceScope        == sourceScope      &&
+                                                      row.PendingVideoFileId != null             &&
+                                                      row.IncumbentVideoFileId != null           &&
+                                                      ownVideoIds.Contains(row.PendingVideoFileId.Value),
+                                               cancellationToken);
+        if (alreadyLinked) return;
+
+        if (!TorrentDownloadPolicy.TryLoad(task.TorrentFile, out var torrent, out var isMultiFile)) return;
+        var infoHash = torrent.InfoHashes.V1!.ToHex().ToLowerInvariant();
+        if (!string.Equals(infoHash, task.InfoHash, StringComparison.OrdinalIgnoreCase)) return;
+
+        var config            = await ruleProvider.GetAsync(cancellationToken);
+        var fileAnalysis      = AnalyzeTorrentFiles(infoHash, torrent, isMultiFile, config);
+        var identityCandidate = BuildItemIdentityCandidate(item);
+        var scopes = BuildEpisodeScopes(task, fileAnalysis, identityCandidate is null ? null : item.Episode,
+                                        identityCandidate);
+        if (scopes.Count == 0) return;
+
+        var verdicts = await ArbitrateEpisodesAsync(db, task, config, scopes, item.SubjectId,
+                                                    TitleNormalizer.Normalize(item.ParsedTitle),
+                                                    sourceScope, infoHash, item.SubjectId, true, cancellationToken);
+        // 只补建已完成现任的登记关系：重试不取消其他任务的下载，也不改本任务已有的文件选择。
+        var replacements = verdicts
+                          .Where(verdict => verdict is { Winner: true, IncumbentCompleted: true,
+                                                         IncumbentTaskId: not null })
+                          .ToList();
+        if (replacements.Count == 0) return;
+
+        await ApplyWinningEpisodesAsync(db, task, scopes, replacements, sourceScope, cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    ///     订阅条目的任务级身份候选：单集/剧场版才有集数身份，合集与缺少集数时不参与任务级裁决。
+    ///     字幕组用 preference 口径（缺失回退条目解析出的字幕组），与命名要素、择优候选保持同域。
+    /// </summary>
+    private static EpisodeCandidate? BuildItemIdentityCandidate(FeedItem item)
+    {
+        if (item.MediaType is null                                                  ||
+            string.Equals(item.MediaType, "MultipleEpisode", StringComparison.Ordinal) ||
+            item.Episode is not { } episode) return null;
+
+        var language = Enum.TryParse(item.Language, true, out EnumLanguage parsedLanguage)
+            ? parsedLanguage
+            : (EnumLanguage?)null;
+        var resolution = Enum.TryParse(item.Resolution, true, out EnumResolution parsedResolution)
+            ? parsedResolution
+            : EnumResolution.Unknown;
+        return new EpisodeCandidate
+        {
+            FeedItemId     = item.Id,
+            SubjectId      = item.SubjectId ?? 0,
+            MediaType      = item.MediaType,
+            Episode        = episode,
+            Group          = string.IsNullOrWhiteSpace(item.Preference) ? item.Group ?? string.Empty : item.Preference,
+            Language       = language,
+            Resolution     = resolution,
+            Version        = item.Version,
+            PublishedAtUtc = item.PublishedAtUtc,
+            StableId       = item.StableId
+        };
     }
 
     /// <summary>解析结果是否能构成同集裁决标识：单集（有集数）或剧场版；合集与解析失败不参与。</summary>
