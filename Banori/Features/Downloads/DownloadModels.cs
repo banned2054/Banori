@@ -1,5 +1,5 @@
-using System.Text.Json;
 using Banori.Integrations.Qbittorrent;
+using System.Text.Json;
 
 namespace Banori.Features.Downloads;
 
@@ -684,13 +684,13 @@ public sealed record DownloadTaskView
     /// <summary>启动恢复状态的中文说明：回答「种子是否已恢复/在等什么」。</summary>
     public string RunStateSummary => RunState switch
     {
-        DownloadRunStates.AwaitingConfirm  => "已请求启动，等待下载器确认运行",
-        DownloadRunStates.ResponseUnknown  => "启动请求响应丢失，正在观察是否已生效",
-        DownloadRunStates.ConfirmedRunning => "已确认运行",
-        DownloadRunStates.FailedRetryable  => "启动未恢复，可人工重试",
-        DownloadRunStates.UserPaused       => "已按你的暂停停止自动恢复",
+        DownloadRunStates.AwaitingConfirm   => "已请求启动，等待下载器确认运行",
+        DownloadRunStates.ResponseUnknown   => "启动请求响应丢失，正在观察是否已生效",
+        DownloadRunStates.ConfirmedRunning  => "已确认运行",
+        DownloadRunStates.FailedRetryable   => "启动未恢复，可人工重试",
+        DownloadRunStates.UserPaused        => "已按你的暂停停止自动恢复",
         DownloadRunStates.DownloaderStopped => "下载器已停止（不自动拉起）",
-        _                                  => RunState ?? string.Empty
+        _                                   => RunState ?? string.Empty
     };
 
     /// <summary>最近一次成功对账下载器的时间（最后观察时间）。</summary>
@@ -743,6 +743,7 @@ public sealed record DownloadTaskView
                     ? DownloadDisplayPhase.PausedManually
                     : DownloadDisplayPhase.PausedByDownloader;
             }
+
             switch (Status)
             {
                 case DownloadTaskStatus.PendingSubmit :
@@ -767,64 +768,64 @@ public sealed record DownloadTaskView
                     return ExternalStopObservedAtUtc is null
                         ? DownloadDisplayPhase.PausedManually
                         : DownloadDisplayPhase.PausedByDownloader;
-                default :
-                    break;
             }
 
             // Downloading：未准备暂停即真实运行；普通任务最近观察到下载器端校验（qB 端 recheck）时
             // 如实显示校验中（进度前缀随之标注），退出校验后的下一次观察覆盖类别、恢复对应展示。
             if (!IsSystemPaused)
                 return LastObservedCategory == QbittorrentTorrentCategory.Checking
-                           ? DownloadDisplayPhase.Checking
-                           : DownloadDisplayPhase.Downloading;
+                    ? DownloadDisplayPhase.Checking
+                    : DownloadDisplayPhase.Downloading;
             if (IsolationState != DownloadIsolationState.None) return DownloadDisplayPhase.IsolationMigrating;
-            if (VerificationStep is not null)
+            switch (VerificationStep)
             {
-                if (VerificationStep == DownloadVerificationStep.ReadyToRun) return DownloadDisplayPhase.WaitingStartConfirm;
-                if (StopConfirmPending) return DownloadDisplayPhase.WaitingStopConfirm;
-                // 已取得完成见证：校验执行已被替代证据证明，展示等待结果稳定，而不是等待校验开始。
-                if (CompletionEvidence is not null) return DownloadDisplayPhase.WaitingResultStable;
-                if (VerificationStep == DownloadVerificationStep.Mapping) return DownloadDisplayPhase.PreparingLayout;
-                if (!ObservedChecking) return DownloadDisplayPhase.WaitingCheckStart;
-                return ResultStabilizing ? DownloadDisplayPhase.WaitingResultStable : DownloadDisplayPhase.Checking;
+                case null :
+                    return PreparationStage switch
+                    {
+                        DownloadPreparationStage.Planned
+                         or DownloadPreparationStage.Applying => DownloadDisplayPhase.PreparingLayout,
+                        DownloadPreparationStage.ReadyToRun => DownloadDisplayPhase.WaitingStartConfirm,
+                        _                                   => DownloadDisplayPhase.Preparing
+                    };
+                case DownloadVerificationStep.ReadyToRun :
+                    return DownloadDisplayPhase.WaitingStartConfirm;
             }
 
-            return PreparationStage switch
-            {
-                DownloadPreparationStage.Planned or DownloadPreparationStage.Applying =>
-                    DownloadDisplayPhase.PreparingLayout,
-                DownloadPreparationStage.ReadyToRun => DownloadDisplayPhase.WaitingStartConfirm,
-                _                                   => DownloadDisplayPhase.Preparing
-            };
+            if (StopConfirmPending) return DownloadDisplayPhase.WaitingStopConfirm;
+            // 已取得完成见证：校验执行已被替代证据证明，展示等待结果稳定，而不是等待校验开始。
+            if (CompletionEvidence is not null) return DownloadDisplayPhase.WaitingResultStable;
+            if (VerificationStep == DownloadVerificationStep.Mapping) return DownloadDisplayPhase.PreparingLayout;
+            if (!ObservedChecking) return DownloadDisplayPhase.WaitingCheckStart;
+            return ResultStabilizing ? DownloadDisplayPhase.WaitingResultStable : DownloadDisplayPhase.Checking;
         }
     }
 
     /// <summary>状态徽章文案：按派生阶段解释当前等待位置。</summary>
     public string StatusText => Phase switch
     {
-        DownloadDisplayPhase.WaitingSubmit       => "等待提交",
-        DownloadDisplayPhase.WaitingAddConfirm   => "等待添加确认",
-        DownloadDisplayPhase.Preparing           => "准备中（未启动下载）",
-        DownloadDisplayPhase.PreparingLayout     => "整理路径中",
-        DownloadDisplayPhase.WaitingCheckStart   => "等待校验开始",
-        DownloadDisplayPhase.Checking            => "校验中",
-        DownloadDisplayPhase.WaitingResultStable => "等待结果稳定",
-        DownloadDisplayPhase.WaitingStopConfirm  => "等待停止确认",
-        DownloadDisplayPhase.WaitingStartConfirm => "等待启动确认",
-        DownloadDisplayPhase.IsolationMigrating  => "隔离迁移中",
-        DownloadDisplayPhase.Archiving           => "归档中",
-        DownloadDisplayPhase.Downloading         => "下载中",
-        DownloadDisplayPhase.PausedManually      => "已暂停（人工）",
-        DownloadDisplayPhase.PausedByDownloader  => "已暂停（下载器端停止）",
-        DownloadDisplayPhase.Paused              => "已暂停",
+        DownloadDisplayPhase.WaitingSubmit           => "等待提交",
+        DownloadDisplayPhase.WaitingAddConfirm       => "等待添加确认",
+        DownloadDisplayPhase.Preparing               => "准备中（未启动下载）",
+        DownloadDisplayPhase.PreparingLayout         => "整理路径中",
+        DownloadDisplayPhase.WaitingCheckStart       => "等待校验开始",
+        DownloadDisplayPhase.Checking                => "校验中",
+        DownloadDisplayPhase.WaitingResultStable     => "等待结果稳定",
+        DownloadDisplayPhase.WaitingStopConfirm      => "等待停止确认",
+        DownloadDisplayPhase.WaitingStartConfirm     => "等待启动确认",
+        DownloadDisplayPhase.IsolationMigrating      => "隔离迁移中",
+        DownloadDisplayPhase.Archiving               => "归档中",
+        DownloadDisplayPhase.Downloading             => "下载中",
+        DownloadDisplayPhase.PausedManually          => "已暂停（人工）",
+        DownloadDisplayPhase.PausedByDownloader      => "已暂停（下载器端停止）",
+        DownloadDisplayPhase.Paused                  => "已暂停",
         DownloadDisplayPhase.VerificationUnconfirmed => "校验未确认",
-        DownloadDisplayPhase.Completed           => "已完成",
-        DownloadDisplayPhase.Failed              => "失败",
-        DownloadDisplayPhase.Lost                => "任务丢失",
-        DownloadDisplayPhase.Replaced            => IsSelectionTombstone
+        DownloadDisplayPhase.Completed               => "已完成",
+        DownloadDisplayPhase.Failed                  => "失败",
+        DownloadDisplayPhase.Lost                    => "任务丢失",
+        DownloadDisplayPhase.Replaced => IsSelectionTombstone
             ? "同集落选（未下载）"
             : "已被替换",
-        _                                       => Phase.ToString()
+        _ => Phase.ToString()
     };
 
     /// <summary>
@@ -842,23 +843,23 @@ public sealed record DownloadTaskView
         DownloadDisplayPhase.WaitingSubmit => DownloaderReady
             ? "等待提交到下载器"
             : "等待提交：下载器未启用或未配置",
-        DownloadDisplayPhase.WaitingAddConfirm       => "等待下载器确认添加",
-        DownloadDisplayPhase.Preparing               => "准备文件选择与命名",
-        DownloadDisplayPhase.PreparingLayout         => "整理下载路径与文件布局",
-        DownloadDisplayPhase.WaitingCheckStart       => "等待下载器开始校验",
-        DownloadDisplayPhase.Checking                => "下载器正在校验文件",
-        DownloadDisplayPhase.WaitingResultStable     => "等待校验结果稳定",
-        DownloadDisplayPhase.WaitingStopConfirm      => "等待下载器确认停止",
+        DownloadDisplayPhase.WaitingAddConfirm   => "等待下载器确认添加",
+        DownloadDisplayPhase.Preparing           => "准备文件选择与命名",
+        DownloadDisplayPhase.PreparingLayout     => "整理下载路径与文件布局",
+        DownloadDisplayPhase.WaitingCheckStart   => "等待下载器开始校验",
+        DownloadDisplayPhase.Checking            => "下载器正在校验文件",
+        DownloadDisplayPhase.WaitingResultStable => "等待校验结果稳定",
+        DownloadDisplayPhase.WaitingStopConfirm  => "等待下载器确认停止",
         DownloadDisplayPhase.WaitingStartConfirm => RunPurpose == DownloadRunPurposes.ContinueDownload
             ? RunState switch
-              {
-                  DownloadRunStates.AwaitingConfirm or
-                  DownloadRunStates.ResponseUnknown                 => "候选已校验；等待确认下载已启动",
-                  DownloadRunStates.FailedRetryable or
-                  DownloadRunStates.DownloaderStopped               => "候选已校验；下载启动失败，可重试",
-                  DownloadRunStates.UserPaused                      => "候选已校验；下载因你的暂停未启动",
-                  _                                                 => "等待启动确认"
-              }
+            {
+                DownloadRunStates.AwaitingConfirm or
+                    DownloadRunStates.ResponseUnknown => "候选已校验；等待确认下载已启动",
+                DownloadRunStates.FailedRetryable or
+                    DownloadRunStates.DownloaderStopped => "候选已校验；下载启动失败，可重试",
+                DownloadRunStates.UserPaused => "候选已校验；下载因你的暂停未启动",
+                _                            => "等待启动确认"
+            }
             : "等待启动确认",
         DownloadDisplayPhase.IsolationMigrating      => "正在隔离迁移为独立下载",
         DownloadDisplayPhase.VerificationUnconfirmed => "校验结果未确认，文件保持原样",
@@ -874,11 +875,11 @@ public sealed record DownloadTaskView
             DownloadRunStates.FailedRetryable   => "内容已完成；做种未恢复",
             DownloadRunStates.DownloaderStopped => "内容已完成；下载器已停止做种",
             DownloadRunStates.UserPaused        => "内容已完成；做种因你的暂停未启动",
-            _                                   => "内容已完成",
+            _                                   => "内容已完成"
         },
-        DownloadDisplayPhase.Failed                  => "任务已失败，等待处理",
-        DownloadDisplayPhase.Lost                    => "下载器中已找不到任务",
-        DownloadDisplayPhase.Replaced                => IsSelectionTombstone
+        DownloadDisplayPhase.Failed => "任务已失败，等待处理",
+        DownloadDisplayPhase.Lost   => "下载器中已找不到任务",
+        DownloadDisplayPhase.Replaced => IsSelectionTombstone
             ? "同集落选，未下载任何文件"
             : "已被更新版本替代",
         _ => "状态未识别，请查看任务详情"
@@ -893,31 +894,31 @@ public sealed record DownloadTaskView
         DownloadDisplayPhase.WaitingSubmit => DownloaderReady
             ? "下一轮对账会提交种子，并先以停止状态完成文件选择与命名。"
             : "请在设置页启用下载器并填写地址与保存路径；配置完成后对账会自动提交。",
-        DownloadDisplayPhase.WaitingAddConfirm       => "按下载器记录观察添加结果；确认后停在停止状态准备文件选择与命名。",
-        DownloadDisplayPhase.Preparing               => "下一轮对账会应用文件选择与命名计划，确认一致后才启动下载。",
-        DownloadDisplayPhase.PreparingLayout         => "核对文件选择、命名与移动；一致后进入启动确认。",
-        DownloadDisplayPhase.WaitingCheckStart       => "等待校验开始；校验结果确认前不会启动下载。",
-        DownloadDisplayPhase.Checking                => "等待校验结束并读取逐文件结果；校验完成前不会启动下载。",
-        DownloadDisplayPhase.WaitingResultStable     => "跨采样间隔核对逐文件结果，一致后才决定复用或隔离。",
-        DownloadDisplayPhase.WaitingStopConfirm      => "停止生效后继续处理；共享数据在确认停止前保持原样。",
+        DownloadDisplayPhase.WaitingAddConfirm   => "按下载器记录观察添加结果；确认后停在停止状态准备文件选择与命名。",
+        DownloadDisplayPhase.Preparing           => "下一轮对账会应用文件选择与命名计划，确认一致后才启动下载。",
+        DownloadDisplayPhase.PreparingLayout     => "核对文件选择、命名与移动；一致后进入启动确认。",
+        DownloadDisplayPhase.WaitingCheckStart   => "等待校验开始；校验结果确认前不会启动下载。",
+        DownloadDisplayPhase.Checking            => "等待校验结束并读取逐文件结果；校验完成前不会启动下载。",
+        DownloadDisplayPhase.WaitingResultStable => "跨采样间隔核对逐文件结果，一致后才决定复用或隔离。",
+        DownloadDisplayPhase.WaitingStopConfirm  => "停止生效后继续处理；共享数据在确认停止前保持原样。",
         DownloadDisplayPhase.WaitingStartConfirm => RunPurpose == DownloadRunPurposes.ContinueDownload
             ? RunState switch
             {
                 DownloadRunStates.FailedRetryable or DownloadRunStates.DownloaderStopped =>
                     "可点击「继续下载」重试；不会重新校验或隔离。",
-                _ => "已发出启动请求；对账会继续观察下载器，确认后回到普通下载跟踪。",
+                _ => "已发出启动请求；对账会继续观察下载器，确认后回到普通下载跟踪。"
             }
             : "文件选择与命名已确认，下一轮对账会恢复下载。",
-        DownloadDisplayPhase.IsolationMigrating      => "按步骤删除候选种子并在任务目录重新添加，布局确认后继续。",
+        DownloadDisplayPhase.IsolationMigrating => "按步骤删除候选种子并在任务目录重新添加，布局确认后继续。",
         DownloadDisplayPhase.VerificationUnconfirmed =>
             VerificationRequestState == DownloadVerificationRequestState.SendFailed
                 ? "请求发送失败（可能已送达），未计入请求次数；文件保持原样，可重新校验，不重新下载。"
                 : "文件保持原样，可重新校验，不重新下载。",
-        DownloadDisplayPhase.Archiving               => "下一步会完成归档移动或改名；目标被占用时会提示归档待核对。",
-        DownloadDisplayPhase.Downloading             => "无需操作；对账会持续刷新进度，完成后自动归档。",
-        DownloadDisplayPhase.PausedManually          => "需要继续时点击「恢复」；对账不会自动恢复。",
-        DownloadDisplayPhase.PausedByDownloader      => "如需继续请先核对下载器端状态；对账不会自动恢复。",
-        DownloadDisplayPhase.Paused                  => "请核对下载器与任务状态，必要时删除本任务记录。",
+        DownloadDisplayPhase.Archiving          => "下一步会完成归档移动或改名；目标被占用时会提示归档待核对。",
+        DownloadDisplayPhase.Downloading        => "无需操作；对账会持续刷新进度，完成后自动归档。",
+        DownloadDisplayPhase.PausedManually     => "需要继续时点击「恢复」；对账不会自动恢复。",
+        DownloadDisplayPhase.PausedByDownloader => "如需继续请先核对下载器端状态；对账不会自动恢复。",
+        DownloadDisplayPhase.Paused             => "请核对下载器与任务状态，必要时删除本任务记录。",
         DownloadDisplayPhase.Completed => RunState switch
         {
             DownloadRunStates.AwaitingConfirm or DownloadRunStates.ResponseUnknown =>
@@ -929,11 +930,12 @@ public sealed record DownloadTaskView
             DownloadRunStates.UserPaused =>
                 "需要继续时先在下载器或任务页恢复；对账不会自动启动。",
             _ => ArchiveReviewReason is null
-                     ? string.Empty
-                     : "请核对归档冲突后点击「重新核对归档」。",
-        },        DownloadDisplayPhase.Failed                  => FailedNextStepText,
-        DownloadDisplayPhase.Lost                    => "可能已在下载器内手动删除；可点击「重试」重新提交，或删除本任务记录。",
-        DownloadDisplayPhase.Replaced                => IsSelectionTombstone
+                ? string.Empty
+                : "请核对归档冲突后点击「重新核对归档」。"
+        },
+        DownloadDisplayPhase.Failed => FailedNextStepText,
+        DownloadDisplayPhase.Lost   => "可能已在下载器内手动删除；可点击「重试」重新提交，或删除本任务记录。",
+        DownloadDisplayPhase.Replaced => IsSelectionTombstone
             ? "保留该记录用于同资源查重；如需重新下载请删除后重新添加。"
             : string.Empty,
         _ => "未知阶段，请查看错误详情后人工处理。"
@@ -960,16 +962,16 @@ public sealed record DownloadTaskView
                 "请求发送失败（可能已送达），未计入请求次数；可核对下载器后人工处理。",
             _ => "可点击「重试」重新开始（会放弃复用、转为独立下载），或核对下载器后人工处理。"
         },
-        "下载器"  => "请检查下载器连接与状态后点击「重试」。",
-        "择优"   => "同集落选，不是故障；无需重试。",
-        _      => "未知步骤，请查看错误详情后人工处理。"
+        "下载器" => "请检查下载器连接与状态后点击「重试」。",
+        "择优"  => "同集落选，不是故障；无需重试。",
+        _     => "未知步骤，请查看错误详情后人工处理。"
     };
 
     /// <summary>是否展示进度：运行、暂停与受阻（失败/丢失）任务保留最后一次观察进度；未获取显示未知，不造 0%。</summary>
     public bool ShowsProgress =>
         Progress is not null &&
         Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused
-               or DownloadTaskStatus.Failed or DownloadTaskStatus.Lost;
+                                                 or DownloadTaskStatus.Failed or DownloadTaskStatus.Lost;
 
     /// <summary>进度数值前缀：校验期的总进度是校验进度，不是所选内容完成度。</summary>
     public string? ProgressCaption => Phase == DownloadDisplayPhase.Checking ? "校验 " : null;
@@ -993,7 +995,7 @@ public sealed record DownloadTaskView
     {
         get
         {
-            if (!Status.IsActive() ||
+            if (!Status.IsActive()                                              ||
                 PathDecisionKind is null or DownloadPathDecisionKinds.FinalRoot ||
                 string.IsNullOrWhiteSpace(PathDecisionReason)) return null;
 
@@ -1011,20 +1013,24 @@ public sealed record DownloadTaskView
             var notes = new List<string>();
             if (VerificationStep is not null && VerificationRound > 0)
                 notes.Add($"复用校验第 {VerificationRound} 轮");
-            if (Phase == DownloadDisplayPhase.VerificationUnconfirmed)
-                notes.Add("校验执行或结果未确认；文件保持原样，可「重新校验」再次发起，不重新下载");
-            if (Phase == DownloadDisplayPhase.PausedByDownloader)
-                notes.Add("在下载器端观察到停止，原因未记录（可能为下载器内人工暂停或分享限制）");
-            if (PathDecisionNote is { } decision) notes.Add(decision);
-            if (RunState is not null)
+            switch (Phase)
             {
-                if (RunPurpose == DownloadRunPurposes.Seeding)
-                    notes.Add($"数据完整性已确认；做种恢复：{RunStateSummary}");
-                else
-                    notes.Add($"候选复用已确认；启动状态：{RunStateSummary}");
-                if (RunState is DownloadRunStates.FailedRetryable or DownloadRunStates.DownloaderStopped)
-                    notes.Add("仅启动/做种未恢复，文件保持原样；不会自动重新校验或重新下载");
+                case DownloadDisplayPhase.VerificationUnconfirmed :
+                    notes.Add("校验执行或结果未确认；文件保持原样，可「重新校验」再次发起，不重新下载");
+                    break;
+                case DownloadDisplayPhase.PausedByDownloader :
+                    notes.Add("在下载器端观察到停止，原因未记录（可能为下载器内人工暂停或分享限制）");
+                    break;
             }
+
+            if (PathDecisionNote is { } decision) notes.Add(decision);
+            if (RunState is null) return notes;
+            notes.Add(RunPurpose == DownloadRunPurposes.Seeding
+                          ? $"数据完整性已确认；做种恢复：{RunStateSummary}"
+                          : $"候选复用已确认；启动状态：{RunStateSummary}");
+            if (RunState is DownloadRunStates.FailedRetryable or DownloadRunStates.DownloaderStopped)
+                notes.Add("仅启动/做种未恢复，文件保持原样；不会自动重新校验或重新下载");
+
             return notes;
         }
     }
@@ -1120,29 +1126,29 @@ public static class DownloadStatusFilter
     /// <summary>把派生显示阶段穷举归组；新增显示阶段时由编译器与兜底桶独占性测试提示补齐。</summary>
     public static DownloadStatusFilterGroup GroupOf(DownloadDisplayPhase phase) => phase switch
     {
-        DownloadDisplayPhase.WaitingSubmit                      => DownloadStatusFilterGroup.WaitingSubmit,
-        DownloadDisplayPhase.WaitingAddConfirm                  => DownloadStatusFilterGroup.WaitingAddConfirm,
+        DownloadDisplayPhase.WaitingSubmit     => DownloadStatusFilterGroup.WaitingSubmit,
+        DownloadDisplayPhase.WaitingAddConfirm => DownloadStatusFilterGroup.WaitingAddConfirm,
         DownloadDisplayPhase.Preparing or
-        DownloadDisplayPhase.PreparingLayout or
-        DownloadDisplayPhase.WaitingCheckStart or
-        DownloadDisplayPhase.Checking or
-        DownloadDisplayPhase.WaitingResultStable or
-        DownloadDisplayPhase.WaitingStopConfirm or
-        DownloadDisplayPhase.WaitingStartConfirm or
-        DownloadDisplayPhase.IsolationMigrating                 => DownloadStatusFilterGroup.PreparingChecking,
-        DownloadDisplayPhase.VerificationUnconfirmed            => DownloadStatusFilterGroup.PreparingChecking,
-        DownloadDisplayPhase.Downloading                        => DownloadStatusFilterGroup.Downloading,
+            DownloadDisplayPhase.PreparingLayout or
+            DownloadDisplayPhase.WaitingCheckStart or
+            DownloadDisplayPhase.Checking or
+            DownloadDisplayPhase.WaitingResultStable or
+            DownloadDisplayPhase.WaitingStopConfirm or
+            DownloadDisplayPhase.WaitingStartConfirm or
+            DownloadDisplayPhase.IsolationMigrating => DownloadStatusFilterGroup.PreparingChecking,
+        DownloadDisplayPhase.VerificationUnconfirmed => DownloadStatusFilterGroup.PreparingChecking,
+        DownloadDisplayPhase.Downloading             => DownloadStatusFilterGroup.Downloading,
         DownloadDisplayPhase.PausedManually or
-        DownloadDisplayPhase.PausedByDownloader or
-        DownloadDisplayPhase.Paused                             => DownloadStatusFilterGroup.Paused,
+            DownloadDisplayPhase.PausedByDownloader or
+            DownloadDisplayPhase.Paused => DownloadStatusFilterGroup.Paused,
         DownloadDisplayPhase.Completed or
-        DownloadDisplayPhase.Archiving                          => DownloadStatusFilterGroup.Completed,
-        DownloadDisplayPhase.Failed                             => DownloadStatusFilterGroup.Failed,
-        DownloadDisplayPhase.Lost                               => DownloadStatusFilterGroup.Lost,
-        DownloadDisplayPhase.Replaced                           => DownloadStatusFilterGroup.Replaced,
+            DownloadDisplayPhase.Archiving => DownloadStatusFilterGroup.Completed,
+        DownloadDisplayPhase.Failed   => DownloadStatusFilterGroup.Failed,
+        DownloadDisplayPhase.Lost     => DownloadStatusFilterGroup.Lost,
+        DownloadDisplayPhase.Replaced => DownloadStatusFilterGroup.Replaced,
 
         // 兜底仅针对未命名的枚举值；新增命名阶段应由独占性测试提示归组。
-        _                                                       => DownloadStatusFilterGroup.Replaced
+        _ => DownloadStatusFilterGroup.Replaced
     };
 
     public static string Text(DownloadStatusFilterGroup group) => group switch

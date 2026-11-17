@@ -24,21 +24,21 @@ public sealed class DownloadTaskQueriesFilterTests
     public async Task Search_ReachesTasksBeyondLatestFiveHundred()
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
-        await DownloadTaskListTestSeed.SeedAsync(harness, Enumerable.Range(0, 505)
-                                                                    .Select(index => DownloadTaskListTestSeed.NewTask(
-                                                                                 $"Bulk - {index:0000}",
-                                                                                 DownloadTaskListTestSeed.At(index))));
+        await DownloadTaskListTestSeed.SeedAsync(harness,
+                                                 Enumerable.Range(0, 505)
+                                                           .Select(index =>
+                                                                       DownloadTaskListTestSeed
+                                                                          .NewTask($"Bulk - {index:0000}",
+                                                                                    DownloadTaskListTestSeed
+                                                                                       .At(index))));
 
         var all = await QueryAsync(harness);
-        Assert.Multiple(
-                        () => Assert.Equal(505, all.TotalCount),
-                        () => Assert.Equal(6, all.TotalPages),
+        Assert.Multiple(() => Assert.Equal(505, all.TotalCount), () => Assert.Equal(6, all.TotalPages),
                         () => Assert.Equal(100, all.Items.Count));
 
         var oldest = await QueryAsync(harness, new DownloadTaskListFilter { SearchText = "Bulk - 0000" });
         var item   = Assert.Single(oldest.Items);
-        Assert.Multiple(
-                        () => Assert.Equal("Bulk - 0000", item.NamingSnapshot),
+        Assert.Multiple(() => Assert.Equal("Bulk - 0000", item.NamingSnapshot),
                         () => Assert.Equal(1, oldest.TotalCount));
 
         var partial = await QueryAsync(harness, new DownloadTaskListFilter { SearchText = "Bulk - 05" });
@@ -51,15 +51,12 @@ public sealed class DownloadTaskQueriesFilterTests
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
         // 两行同刻创建：次级 Id 排序保证同刻行的翻页位置确定。
         var tasks = Enumerable.Range(0, 248)
-                              .Select(index => DownloadTaskListTestSeed.NewTask(
-                                                                                $"Page - {index:0000}",
-                                                                                DownloadTaskListTestSeed.At(index)))
-                              .Concat(
-                               [
+                              .Select(index => DownloadTaskListTestSeed.NewTask($"Page - {index:0000}",
+                                                                                    DownloadTaskListTestSeed.At(index)))
+                              .Concat([
                                    DownloadTaskListTestSeed.NewTask("Tie A", DownloadTaskListTestSeed.At(600)),
                                    DownloadTaskListTestSeed.NewTask("Tie B", DownloadTaskListTestSeed.At(600))
-                               ])
-                              .ToList();
+                               ]).ToList();
         await DownloadTaskListTestSeed.SeedAsync(harness, tasks);
 
         var first     = await QueryAsync(harness);
@@ -67,15 +64,12 @@ public sealed class DownloadTaskQueriesFilterTests
         for (var page = 1; page <= 3; page++)
         {
             var result = await QueryAsync(harness, new DownloadTaskListFilter { Page = page });
-            Assert.Multiple(
-                            () => Assert.Equal(250, result.TotalCount),
-                            () => Assert.Equal(page, result.Page));
+            Assert.Multiple(() => Assert.Equal(250, result.TotalCount), () => Assert.Equal(page, result.Page));
             collected.AddRange(result.Items.Select(task => task.NamingSnapshot));
         }
 
         var repeat = await QueryAsync(harness);
-        Assert.Multiple(
-                        () => Assert.Equal(250, collected.Count),
+        Assert.Multiple(() => Assert.Equal(250, collected.Count),
                         // 全量翻页恰好覆盖所有任务，不重不漏；重复查询页序确定。
                         () => Assert.Equal(tasks.Select(task => task.NamingSnapshot)
                                                 .OrderBy(name => name, StringComparer.Ordinal),
@@ -96,9 +90,7 @@ public sealed class DownloadTaskQueriesFilterTests
                                                                                  DownloadTaskListTestSeed.At(index))));
 
         var beyond = await QueryAsync(harness, new DownloadTaskListFilter { Page = 99 });
-        Assert.Multiple(
-                        () => Assert.Equal(1, beyond.Page),
-                        () => Assert.Equal(5, beyond.Items.Count));
+        Assert.Multiple(() => Assert.Equal(1, beyond.Page), () => Assert.Equal(5, beyond.Items.Count));
 
         var zero = await QueryAsync(harness, new DownloadTaskListFilter { Page = 0 });
         Assert.Equal(1, zero.Page);
@@ -207,8 +199,7 @@ public sealed class DownloadTaskQueriesFilterTests
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
         await using (var db = await harness.CreateDbContextAsync())
         {
-            db.MediaSubjects.AddRange(
-                                      new MediaSubject
+            db.MediaSubjects.AddRange(new MediaSubject
                                       {
                                           Id          = 43, Name = "FallbackEmptyCn", NameCn = "", Platform = "TV",
                                           CachedAtUtc = DownloadTaskListTestSeed.Base
@@ -296,7 +287,7 @@ public sealed class DownloadTaskQueriesFilterTests
                                              verificationIntent : unconfirmedIntent.ToJson()),
             // 人工暂停优先：未确认意图保留人工暂停时展示为 PausedManually，归「已暂停」桶。
             DownloadTaskListTestSeed.NewTask("S13UM", DownloadTaskListTestSeed.At(13),
-                                             DownloadTaskStatus.Paused, userPaused : true,
+                                             DownloadTaskStatus.Paused, true,
                                              verificationIntent : unconfirmedIntent.ToJson()),
             DownloadTaskListTestSeed.NewTask("S14", DownloadTaskListTestSeed.At(14)),
             DownloadTaskListTestSeed.NewTask("S15", DownloadTaskListTestSeed.At(15),
@@ -345,8 +336,7 @@ public sealed class DownloadTaskQueriesFilterTests
     public async Task Languages_FiltersCombineWithStatus_AndSentinelMatchesMissing()
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
-        await DownloadTaskListTestSeed.SeedAsync(harness,
-        [
+        await DownloadTaskListTestSeed.SeedAsync(harness, [
             DownloadTaskListTestSeed.NewTask("简体已完成", DownloadTaskListTestSeed.At(0),
                                              ingredients : DownloadTaskListTestSeed.Ingredients("VCB-Studio", "简")),
             DownloadTaskListTestSeed.NewTask("繁体已完成", DownloadTaskListTestSeed.At(1),
@@ -388,20 +378,18 @@ public sealed class DownloadTaskQueriesFilterTests
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
         var tasks = Enumerable.Range(0, 550)
-                              .Select(index => DownloadTaskListTestSeed.NewTask(
-                                                                                $"无语言 - {index:0000}",
-                                                                                DownloadTaskListTestSeed.At(index)))
-                              .Concat(Enumerable.Range(0, 50).Select(index => DownloadTaskListTestSeed.NewTask(
-                                                                          $"有语言 - {index:0000}",
-                                                                          DownloadTaskListTestSeed.At(1000 + index),
-                                                                          ingredients : DownloadTaskListTestSeed
-                                                                             .Ingredients("VCB-Studio", "简"))))
+                              .Select(index => DownloadTaskListTestSeed.NewTask($"无语言 - {index:0000}",
+                                                                                    DownloadTaskListTestSeed.At(index)))
+                              .Concat(Enumerable.Range(0, 50)
+                                                .Select(index => DownloadTaskListTestSeed.NewTask($"有语言 - {index:0000}",
+                                                                 DownloadTaskListTestSeed.At(1000 + index),
+                                                                 ingredients : DownloadTaskListTestSeed
+                                                                    .Ingredients("VCB-Studio", "简"))))
                               .ToList();
         await DownloadTaskListTestSeed.SeedAsync(harness, tasks);
 
         var page = await QueryAsync(harness);
-        Assert.Multiple(
-                        () => Assert.Equal(600, page.TotalCount),
+        Assert.Multiple(() => Assert.Equal(600, page.TotalCount),
                         // 语言选项取自全部历史任务而非最新 500 条；哨兵排在真实语言之后。
                         () => Assert.Equal(["简", ""], page.Languages));
     }

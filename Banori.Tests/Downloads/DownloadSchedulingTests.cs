@@ -1,27 +1,13 @@
-using Banned.AniParser;
-using Banned.AniParser.Models.Enums;
 using Banned.Qbittorrent.Exceptions;
-using Banori.Core.Downloads;
-using Banori.Core.Rules;
-using Banori.Core.Rules.Selection;
-using Banori.Core.Subjects;
 using Banori.Data;
-using Banori.Features.Anime;
 using Banori.Features.Downloads;
 using Banori.Features.Settings;
-using Banori.Features.Subscriptions;
-using Banori.Integrations;
 using Banori.Integrations.Qbittorrent;
-using Banori.Tests.Notifications;
 using Banori.Workers;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging.Abstractions;
 using System.Reflection;
 using System.Text;
-using DownloadFileKind = Banori.Features.Downloads.DownloadFileKind;
 
 namespace Banori.Tests.Downloads;
 

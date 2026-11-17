@@ -1,4 +1,3 @@
-using System.Text;
 using Banori.Core.Torrents;
 using Banori.Data;
 using Banori.Features.Downloads;
@@ -6,6 +5,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Text;
 
 namespace Banori.Tests.Downloads;
 
@@ -23,8 +23,9 @@ public sealed partial class DownloadServiceTests
         await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
 
         // 旧任务 v1 先完成并归档，成为 byrbt 第 12 集现任。
-        var oldTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(
-            NekoTitle("简日双语"), "https://tracker.byr.pt/announce.php?passkey=old"));
+        var oldTaskId =
+            await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语"),
+                                                                    "https://tracker.byr.pt/announce.php?passkey=old"));
         var oldTask = await harness.GetTaskAsync(oldTaskId);
         await harness.ReconcileAsync();
         CompleteTorrent(harness, oldTask.InfoHash);
@@ -36,9 +37,8 @@ public sealed partial class DownloadServiceTests
         // v2 是同一来源的待完成优胜；构造与现有替换用例相同的同名不同大小种子。
         var replacementName = NekoTitle("简日双语").Replace("[12]", "[12v2]", StringComparison.Ordinal);
         var replacementBytes = Encoding.UTF8.GetBytes(Encoding.UTF8
-                                                              .GetString(TestTorrentBytes.Create(
-                                                                  replacementName,
-                                                                  "https://tracker.byr.pt/announce.php?passkey=old"))
+                                                              .GetString(TestTorrentBytes.Create(replacementName,
+                                                                             "https://tracker.byr.pt/announce.php?passkey=old"))
                                                               .Replace("6:lengthi1024e", "6:lengthi2048e",
                                                                        StringComparison.Ordinal));
         var newTaskId = await harness.CreateUploadAsync(replacementBytes);
@@ -51,8 +51,8 @@ public sealed partial class DownloadServiceTests
         int legacyRowId;
         await using (var db = await harness.CreateDbContextAsync())
         {
-            var row = await db.EpisodeVersions.SingleAsync(value => value.SubjectId   == 42   &&
-                                                                    value.Episode     == 12   &&
+            var row = await db.EpisodeVersions.SingleAsync(value => value.SubjectId   == 42 &&
+                                                                    value.Episode     == 12 &&
                                                                     value.SourceScope == "byrbt");
             Assert.Equal(oldFileId, row.IncumbentVideoFileId);
             Assert.Equal(newFileId, row.PendingVideoFileId);
@@ -107,8 +107,9 @@ public sealed partial class DownloadServiceTests
         await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
 
         // byrbt 第 12 集先完成并归档；它只承担自己的来源行，不能被 u2 完成链顶替或清理。
-        var byrbtTaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(
-            NekoTitle("简日双语"), "https://tracker.byr.pt/announce.php"));
+        var byrbtTaskId =
+            await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语"),
+                                                                    "https://tracker.byr.pt/announce.php"));
         var byrbtTask = await harness.GetTaskAsync(byrbtTaskId);
         await harness.ReconcileAsync();
         CompleteTorrent(harness, byrbtTask.InfoHash);
@@ -117,9 +118,10 @@ public sealed partial class DownloadServiceTests
         Assert.NotNull(byrbtFileId);
 
         // u2 第 13 集是另一个来源的新任务；仅登记，不完成。
-        var u2TaskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(
-            NekoTitle("繁日双语", episode : 13), "https://daydream.dmhy.best/announce"));
-        var u2Task = await harness.GetTaskAsync(u2TaskId);
+        var u2TaskId =
+            await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("繁日双语", episode : 13),
+                                                                    "https://daydream.dmhy.best/announce"));
+        var u2Task   = await harness.GetTaskAsync(u2TaskId);
         var u2FileId = await FindAnimeFileIdAsync(harness, u2TaskId);
         Assert.NotNull(u2FileId);
 
@@ -128,13 +130,13 @@ public sealed partial class DownloadServiceTests
         {
             db.EpisodeVersions.Add(new EpisodeVersion
             {
-                SubjectId             = 42,
-                Episode               = 13,
-                MediaType             = "SingleEpisode",
-                SourceScope           = SourceScopes.Legacy,
-                IncumbentVideoFileId  = byrbtFileId,
-                PendingVideoFileId    = u2FileId,
-                UpdatedAtUtc          = harness.Timestamp
+                SubjectId            = 42,
+                Episode              = 13,
+                MediaType            = "SingleEpisode",
+                SourceScope          = SourceScopes.Legacy,
+                IncumbentVideoFileId = byrbtFileId,
+                PendingVideoFileId   = u2FileId,
+                UpdatedAtUtc         = harness.Timestamp
             });
             await db.SaveChangesAsync();
         }

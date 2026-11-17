@@ -181,16 +181,16 @@ public sealed class FakeTorrentStore
         PiecesDropped.Add(hash);
         PiecesHaveOverrides.Remove(hash);
         if (!Torrents.TryGetValue(hash, out var snapshot)) return;
-        var files         = FileIdentities.TryGetValue(hash, out var identities) ? identities : null;
-        var complete      = files is { Count: > 0 } && files.All(file => file.Size <= 0 || file.Progress >= 1.0);
-        var progress      = complete ? 1.0
-                            : files is { Count: > 0 } ? files.Average(file => file.Progress)
-                            : snapshot.Progress;
+        var files    = FileIdentities.TryGetValue(hash, out var identities) ? identities : null;
+        var complete = files is { Count: > 0 } && files.All(file => file.Size <= 0 || file.Progress >= 1.0);
+        var progress = complete       ? 1.0
+            : files is { Count: > 0 } ? files.Average(file => file.Progress)
+                                        : snapshot.Progress;
         Torrents[hash] = snapshot with
         {
-            Progress     = progress,
-            AmountLeft   = complete ? 0 : (long)Math.Round(snapshot.TotalSize * (1 - progress)),
-            Completed    = complete ? snapshot.TotalSize : (long)Math.Round(snapshot.TotalSize * progress),
+            Progress = progress,
+            AmountLeft = complete ? 0 : (long)Math.Round(snapshot.TotalSize                 * (1 - progress)),
+            Completed = complete ? snapshot.TotalSize : (long)Math.Round(snapshot.TotalSize * progress),
             CompletionOn = complete ? DateTimeOffset.UtcNow : snapshot.CompletionOn
         };
     }
@@ -381,11 +381,16 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     public Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(
         string? tag, CancellationToken cancellationToken = default)
     {
-        return Task.FromResult<IReadOnlyList<TorrentSnapshot>>(
-            store.Torrents.Values
-                 .Where(snapshot => !store.HiddenTorrents.Contains(snapshot.Hash) &&
-                                    (tag is null || SnapshotFor(snapshot.Hash).Tags.Contains(tag, StringComparer.OrdinalIgnoreCase)))
-                 .Select(snapshot => SnapshotFor(snapshot.Hash)).ToList());
+        return Task.FromResult<IReadOnlyList<TorrentSnapshot>>(store.Torrents.Values
+                                                                    .Where(snapshot =>
+                                                                               !store.HiddenTorrents
+                                                                                  .Contains(snapshot.Hash) &&
+                                                                               (tag is null ||
+                                                                                   SnapshotFor(snapshot.Hash).Tags
+                                                                                      .Contains(tag, StringComparer
+                                                                                          .OrdinalIgnoreCase)))
+                                                                    .Select(snapshot => SnapshotFor(snapshot.Hash))
+                                                                    .ToList());
     }
 
     public Task AddTagAsync(string infoHash, string tag, CancellationToken cancellationToken = default)
@@ -409,10 +414,11 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     {
         if (store.FileIdentities.TryGetValue(infoHash, out var files))
             return Task.FromResult<IReadOnlyList<TorrentFileSnapshot>>(files.ToList());
-        return Task.FromResult<IReadOnlyList<TorrentFileSnapshot>>(
-            store.Files.TryGetValue(infoHash, out var names)
-                ? names.Select((name, index) => new TorrentFileSnapshot(index, name, 1024)).ToList()
-                : []);
+        return Task.FromResult<IReadOnlyList<TorrentFileSnapshot>>(store.Files.TryGetValue(infoHash, out var names)
+                                                                       ? names.Select((name, index) =>
+                                                                           new TorrentFileSnapshot(index, name,
+                                                                               1024)).ToList()
+                                                                       : []);
     }
 
     public Task<byte[]> ExportTorrentAsync(string infoHash, CancellationToken cancellationToken = default)
@@ -479,13 +485,15 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
 
         // qB 5.3 实测：recheck 请求后 pieces_have 同步清零（首读可见），之后恢复为校验结果。
         const long piecesNum = 256;
-        long piecesHave = store.PiecesHaveOverrides.TryGetValue(infoHash, out var overridden)
+        var piecesHave = store.PiecesHaveOverrides.TryGetValue(infoHash, out var overridden)
             ? overridden
             : (long)Math.Round(snapshot.Progress * piecesNum);
         if (store.PiecesDropped.Remove(infoHash)) piecesHave = 0;
-        return Task.FromResult<TorrentPropertiesSnapshot?>(new TorrentPropertiesSnapshot(
-            piecesHave, piecesNum, snapshot.TotalSize,
-            (long)Math.Round(snapshot.TotalSize * snapshot.Progress), snapshot.CompletionOn));
+        return Task.FromResult<TorrentPropertiesSnapshot?>(new TorrentPropertiesSnapshot(piecesHave, piecesNum,
+                                                               snapshot.TotalSize,
+                                                               (long)Math.Round(snapshot.TotalSize *
+                                                                                    snapshot.Progress),
+                                                               snapshot.CompletionOn));
     }
 
     public Task ReannounceAsync(string infoHash, CancellationToken cancellationToken = default)
@@ -626,8 +634,8 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         if (store.Rechecking.Contains(hash) || store.ResumeDataChecking.Contains(hash))
             return snapshot with
             {
-                Category   = QbittorrentTorrentCategory.Checking,
-                RawState   = RawStateFor(hash, store.Rechecking.Contains(hash) ? "checkingDL" : "checkingResumeData"),
+                Category = QbittorrentTorrentCategory.Checking,
+                RawState = RawStateFor(hash, store.Rechecking.Contains(hash) ? "checkingDL" : "checkingResumeData"),
                 AmountLeft = DerivedAmountLeft(snapshot)
             };
         // 做种被暂停对应 qB 的 stoppedUP：映射后同样是 Stopped（完成程度由进度独立判定）。
@@ -641,8 +649,8 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
             : RawStateFor(hash, snapshot.RawState);
         return snapshot with
         {
-            Category   = category,
-            RawState   = rawState,
+            Category = category,
+            RawState = rawState,
             AmountLeft = DerivedAmountLeft(snapshot)
         };
     }

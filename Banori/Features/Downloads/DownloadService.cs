@@ -3,15 +3,12 @@ using Banned.AniParser.Models;
 using Banned.AniParser.Models.Enums;
 using Banned.Qbittorrent.Exceptions;
 using Banori.Core.Rules;
-using Banori.Core.Rules.Selection;
 using Banori.Core.Subjects;
 using Banori.Core.Torrents;
 using Banori.Data;
 using Banori.Features.Anime;
 using Banori.Features.Notifications;
 using Banori.Features.Settings;
-using Banori.Features.Subscriptions;
-using Banori.Integrations;
 using Banori.Integrations.Qbittorrent;
 using Microsoft.EntityFrameworkCore;
 
@@ -54,6 +51,14 @@ public sealed class DownloadService(
     private static readonly string[] ContentFileExtensions =
         [".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".wmv", ".mov", ".flv", ".ass", ".ssa", ".srt", ".sup"];
 
+    /// <summary>
+    ///     本进程的观察者 Id：写入校验意图的 ObserverInstanceId。DownloadService 按对账轮次创建
+    ///     （Scoped，worker 每轮解析新实例），实例级 Id 会把每一轮都误判为重启；重启作废必须以
+    ///     进程生命周期为单位——应用重启后新进程发现意图来自其他实例，即作废本轮请求前基线、
+    ///     校验观察、完成见证与请求锚点（保留候选映射），下一轮重新捕获基线并重发。
+    /// </summary>
+    private static readonly Guid processInstanceId = Guid.NewGuid();
+
     private readonly DownloadEpisodeResolver episodeResolver =
         episodeResolver ?? new DownloadEpisodeResolver(aniParser, episodeCorrectionPolicy);
 
@@ -62,14 +67,6 @@ public sealed class DownloadService(
     ///     生产端在 Program.cs 注册 Default。
     /// </summary>
     private readonly DownloadTimingPolicy timing = timingPolicy ?? DownloadTimingPolicy.Immediate;
-
-    /// <summary>
-    ///     本进程的观察者 Id：写入校验意图的 ObserverInstanceId。DownloadService 按对账轮次创建
-    ///     （Scoped，worker 每轮解析新实例），实例级 Id 会把每一轮都误判为重启；重启作废必须以
-    ///     进程生命周期为单位——应用重启后新进程发现意图来自其他实例，即作废本轮请求前基线、
-    ///     校验观察、完成见证与请求锚点（保留候选映射），下一轮重新捕获基线并重发。
-    /// </summary>
-    private static readonly Guid processInstanceId = Guid.NewGuid();
 
 
     /// <summary>一轮对账：提交待提交任务、核对未确认与下载中任务。下载器未启用或未配置时静默跳过。</summary>
@@ -84,12 +81,12 @@ public sealed class DownloadService(
         {
             tasks = await db.DownloadTasks.AsNoTracking()
                             .Where(task => task.Status == DownloadTaskStatus.PendingSubmit ||
-                                           task.Status == DownloadTaskStatus.Submitting    ||
-                                           task.Status == DownloadTaskStatus.Downloading   ||
-                                           task.Status == DownloadTaskStatus.Paused        ||
+                                           task.Status == DownloadTaskStatus.Submitting ||
+                                           task.Status == DownloadTaskStatus.Downloading ||
+                                           task.Status == DownloadTaskStatus.Paused ||
                                            // 完成后仍在观察窗口内的做种恢复：完成与做种恢复分离推进。
-                                           task.Status == DownloadTaskStatus.Completed && task.RunRecovery != null &&
-                                           task.NextObservationAtUtc != null)
+                                           (task.Status == DownloadTaskStatus.Completed && task.RunRecovery != null &&
+                                            task.NextObservationAtUtc != null))
                             .ToListAsync(cancellationToken);
             // 存在被替换墓碑时清理环仍需执行：全部任务静默（完成/被替换）不能让冗余种子无限滞留。
             hasRetiredCleanup = await db.DownloadTasks.AsNoTracking()
@@ -221,9 +218,10 @@ public sealed class DownloadService(
             }
 
         var reconcileHashes = tasks
-                             .Where(task => task.Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused ||
-                                            // 做种恢复观察也需要快照；运行中的种子必须能被找到。
-                                            task is { Status: DownloadTaskStatus.Completed, RunRecovery: not null })
+                             .Where(task =>
+                                        task.Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused ||
+                                        // 做种恢复观察也需要快照；运行中的种子必须能被找到。
+                                        task is { Status: DownloadTaskStatus.Completed, RunRecovery: not null })
                              .Select(task => task.InfoHash)
                              .ToList();
         var foundByHash = (await session.FindTorrentsAsync(reconcileHashes, cancellationToken))
@@ -231,10 +229,13 @@ public sealed class DownloadService(
                          .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
         foreach (var task in tasks.Where(task => task.Status is DownloadTaskStatus.Downloading
-                                                             or DownloadTaskStatus.Paused             ||
-                                                 task is { Status: DownloadTaskStatus.Completed,
-                                                           RunRecovery: not null,
-                                                           NextObservationAtUtc: not null }))
+                                                             or DownloadTaskStatus.Paused ||
+                                                 task is
+                                                 {
+                                                     Status              : DownloadTaskStatus.Completed,
+                                                     RunRecovery         : not null,
+                                                     NextObservationAtUtc: not null
+                                                 }))
             try
             {
                 // 未到观察时间的任务本轮跳过：等待可见性/确认窗口或采样间隔，不产生查询推进与请求。
@@ -301,23 +302,22 @@ public sealed class DownloadService(
         await session.PauseAsync(task.InfoHash, cancellationToken);
         await UpdateTaskAsync(taskId, task.Status, update =>
         {
-            update.Status       = DownloadTaskStatus.Paused;
-            update.IsUserPaused = true;
+            update.Status                    = DownloadTaskStatus.Paused;
+            update.IsUserPaused              = true;
             // 页面发起的人工暂停来源明确，覆盖此前可能存在的外部停止观察记录。
             update.ExternalStopObservedAtUtc = null;
             // 活跃的启动恢复随人工暂停一并停止自动重试：记录保留为 UserPaused（不删除），
             // 供页面解释「为什么没启动」，人工恢复后由对账按既有预算继续有界启动。
             if (DownloadRunRecovery.FromJson(task.RunRecovery) is
-                { State: DownloadRunStates.AwaitingConfirm or DownloadRunStates.ResponseUnknown } activeRun)
+                not { State: DownloadRunStates.AwaitingConfirm or DownloadRunStates.ResponseUnknown } activeRun)
+                return;
+            var pausedRun = activeRun with
             {
-                var pausedRun = activeRun with
-                {
-                    State             = DownloadRunStates.UserPaused,
-                    Reason            = "用户暂停了任务；不自动恢复",
-                    LastObservedAtUtc = timeProvider.GetUtcNow()
-                };
-                update.RunRecovery = pausedRun.ToJson();
-            }
+                State = DownloadRunStates.UserPaused,
+                Reason = "用户暂停了任务；不自动恢复",
+                LastObservedAtUtc = timeProvider.GetUtcNow()
+            };
+            update.RunRecovery = pausedRun.ToJson();
         }, cancellationToken);
     }
 
@@ -359,8 +359,8 @@ public sealed class DownloadService(
         {
             await UpdateTaskAsync(taskId, task.Status, update =>
             {
-                update.Status       = DownloadTaskStatus.Downloading;
-                update.IsUserPaused = false;
+                update.Status                    = DownloadTaskStatus.Downloading;
+                update.IsUserPaused              = false;
                 update.ExternalStopObservedAtUtc = null;
             }, cancellationToken);
             return;
@@ -370,8 +370,8 @@ public sealed class DownloadService(
         await session.ResumeAsync(task.InfoHash, cancellationToken);
         await UpdateTaskAsync(taskId, task.Status, update =>
         {
-            update.Status       = DownloadTaskStatus.Downloading;
-            update.IsUserPaused = false;
+            update.Status                    = DownloadTaskStatus.Downloading;
+            update.IsUserPaused              = false;
             update.ExternalStopObservedAtUtc = null;
         }, cancellationToken);
     }
@@ -426,9 +426,9 @@ public sealed class DownloadService(
         using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
         var       task              = await LoadTaskAsync(taskId, cancellationToken);
         var       intent            = DownloadVerificationIntent.FromJson(task.VerificationIntent);
-        if (task.Status != DownloadTaskStatus.Paused               ||
-            task.IsolationState != DownloadIsolationState.None     ||
-            intent?.Step != DownloadVerificationStep.Unconfirmed)
+        if (task.Status         != DownloadTaskStatus.Paused   ||
+            task.IsolationState != DownloadIsolationState.None ||
+            intent?.Step        != DownloadVerificationStep.Unconfirmed)
             throw new InvalidOperationException("只有校验未确认的任务可以重新校验。");
 
         await SaveVerificationIntentAsync(taskId, task.Status, ResetUnconfirmedRound(intent), cancellationToken);
@@ -799,7 +799,7 @@ public sealed class DownloadService(
                       .ToListAsync(cancellationToken);
         var incumbentGuards =
             new Dictionary<Guid, (int Version, DownloadTaskStatus Status, Guid? ReplacedByTaskId,
-                                  string? Group, EnumLanguage? Language)>();
+                string? Group, EnumLanguage? Language)>();
         foreach (var row in rows.Where(row => row.IncumbentVideoFileId is not null))
         {
             var fileId = row.IncumbentVideoFileId!.Value;
@@ -899,7 +899,7 @@ public sealed class DownloadService(
             if (owner.SubjectId is not { } subjectId) continue;
 
             var sourceScope = SourceScopes.FromSiteSource(owner.SiteSource);
-            var rows = await db.EpisodeVersions.Where(row => row.SubjectId == subjectId).ToListAsync(ct);
+            var rows        = await db.EpisodeVersions.Where(row => row.SubjectId == subjectId).ToListAsync(ct);
             if (DownloadTaskLookups.HasResidualDuties(aniParser, owner, owner.Files.ToList(), rows,
                                                       episodeResolver.EpisodeOf, sourceScope))
                 continue;
@@ -962,8 +962,9 @@ public sealed class DownloadService(
 
         // 一个规划流程：已有候选先校验；需要替换旧版时暂存；其余任务直接在正式根下载。
         (string CandidateRoot, string IntentJson)? verificationAdd;
-        string                                     addRoot;
-        var                                        replacing = false;
+
+        string addRoot;
+        var    replacing = false;
         try
         {
             verificationAdd = await TryPlanVerificationAddAsync(session, task, cancellationToken);
@@ -1030,11 +1031,9 @@ public sealed class DownloadService(
             update.PreparationStage       =   DownloadPreparationStage.Planned;
             update.SavePath               =   addRoot;
             update.PathDecision           =   pathDecision.ToJson();
-            if (verificationAdd is not null)
-            {
-                update.SavePath           = verificationAdd.Value.CandidateRoot;
-                update.VerificationIntent = verificationAdd.Value.IntentJson;
-            }
+            if (verificationAdd is null) return;
+            update.SavePath           = verificationAdd.Value.CandidateRoot;
+            update.VerificationIntent = verificationAdd.Value.IntentJson;
         }, cancellationToken);
 
         string response;
@@ -1171,8 +1170,8 @@ public sealed class DownloadService(
 
         var intent = new DownloadVerificationIntent
         {
-            Round         = 1, Step = DownloadVerificationStep.Mapping, CreatedAtUtc = timeProvider.GetUtcNow(),
-            CandidateRoot = candidateRoot, Files = files,
+            Round              = 1, Step = DownloadVerificationStep.Mapping, CreatedAtUtc = timeProvider.GetUtcNow(),
+            CandidateRoot      = candidateRoot, Files = files,
             // 意图在本进程创建，写入当前进程实例 Id：重启作废守卫要求 owner 非空才会比较实例归属，
             // 若生产创建路径不落值，守卫恒不触发，旧基线与见证会被重启后的进程静默沿用。
             ObserverInstanceId = processInstanceId
@@ -1201,11 +1200,11 @@ public sealed class DownloadService(
                                  var relative = TorrentDownloadPolicy.GetRelativePath(torrent, file, isMultiFile);
                                  return new[]
                                  {
-                                     (Path: DownloadPathNamePolicy.JoinSavePath(candidateRoot, relative),
-                                      Size: file.Length),
-                                     (Path: DownloadPathNamePolicy.JoinSavePath(candidateRoot,
-                                                                                $".tasks-{task.Id:N}/{relative}"),
-                                      Size: file.Length)
+                                     (Path : DownloadPathNamePolicy.JoinSavePath(candidateRoot, relative),
+                                      Size : file.Length),
+                                     (Path : DownloadPathNamePolicy.JoinSavePath(candidateRoot,
+                                          $".tasks-{task.Id:N}/{relative}"),
+                                      Size : file.Length)
                                  };
                              }).ToList();
 
@@ -1221,7 +1220,7 @@ public sealed class DownloadService(
             var hasUnsettledLayout = other.PendingSavePath is not null ||
                                      other.Files.Any(file => file.PendingRenameFrom is not null ||
                                                              file.PendingRenameTo is not null) ||
-                                     other.VerificationIntent is not null ||
+                                     other.VerificationIntent is not null                      ||
                                      other.IsolationState != DownloadIsolationState.None;
             var occupiedPaths = new List<(string Path, long? Size)>();
             if (other.Files.Count == 0) occupiedPaths.Add((other.SavePath, null));
@@ -1249,10 +1248,10 @@ public sealed class DownloadService(
             foreach (var item in layout)
             {
                 if (!PathsOverlapAbsolute(item.Path, occupied.Path)) continue;
-                if (candidates is not null &&
-                    !hasUnsettledLayout &&
-                    EqualVerificationPath(item.Path, occupied.Path) &&
-                    item.Size == occupied.Size &&
+                if (candidates is not null                              &&
+                    !hasUnsettledLayout                                 &&
+                    EqualVerificationPath(item.Path, occupied.Path)     &&
+                    item.Size == occupied.Size                          &&
                     candidates.TryGetValue(occupied.Path, out var size) &&
                     size == occupied.Size) continue;
                 return true;
@@ -1271,10 +1270,13 @@ public sealed class DownloadService(
                     var occupied = root + "/" + (file.Path ?? string.Empty).Trim().TrimStart('/');
                     if (layout.Any(item => PathsOverlapAbsolute(item.Path, occupied) &&
                                            !(candidates is not null &&
-                                             !other.IsMoving &&
-                                             other.Category is not (QbittorrentTorrentCategory.Checking
-                                                                    or QbittorrentTorrentCategory.Error
-                                                                    or QbittorrentTorrentCategory.Unknown) &&
+                                             other is
+                                             {
+                                                 IsMoving: false,
+                                                 Category: not (QbittorrentTorrentCategory.Checking
+                                                             or QbittorrentTorrentCategory.Error
+                                                             or QbittorrentTorrentCategory.Unknown)
+                                             } &&
                                              (!managedHashes.Contains(other.Hash) ||
                                               file.Size <= 0 || file.Progress >= 1 || !file.IsSelectedForDownload) &&
                                              EqualVerificationPath(item.Path, occupied) &&
@@ -1316,8 +1318,8 @@ public sealed class DownloadService(
     ///     推迟本任务的下一次观察：等待确认窗口或采样间隔到期。到期时间持久化，重启后仍按此调度；
     ///     到期前的对账轮次跳过本任务，不影响其他任务。
     /// </summary>
-    private Task DeferObservationAsync(Guid taskId, DownloadTaskStatus expectedStatus, DateTimeOffset dueUtc,
-                                       CancellationToken ct) =>
+    private Task DeferObservationAsync(
+        Guid taskId, DownloadTaskStatus expectedStatus, DateTimeOffset dueUtc, CancellationToken ct) =>
         UpdateTaskAsync(taskId, expectedStatus, update => update.NextObservationAtUtc = dueUtc, ct);
 
     /// <summary>
@@ -1333,7 +1335,7 @@ public sealed class DownloadService(
 
     /// <summary>最近一次 Add 请求时间（首次提交或之后的重试/隔离重加）；null 表示从未发起。</summary>
     private static DateTimeOffset? LatestAddRequestAt(DownloadTask task) =>
-        task.SubmittedAtUtc is { } submitted && task.LastSubmitAttemptAtUtc is { } attempted
+        task is { SubmittedAtUtc: { } submitted, LastSubmitAttemptAtUtc: { } attempted }
             ? submitted > attempted ? submitted : attempted
             : task.LastSubmitAttemptAtUtc ?? task.SubmittedAtUtc;
 
@@ -1353,14 +1355,13 @@ public sealed class DownloadService(
         intent is { PauseAttempts: > 0, UnverifiedWriteRisk: null };
 
     /// <summary>作废已积累的结果稳定样本：再次校验或移动使退出校验前的观察结果不再有效。</summary>
-    private static DownloadVerificationIntent VoidStabilitySamples(
-        DownloadVerificationIntent intent) => intent with
+    private static DownloadVerificationIntent VoidStabilitySamples(DownloadVerificationIntent intent) => intent with
     {
-        StabilitySample        = null,
-        StabilityStartedAtUtc  = null,
+        StabilitySample = null,
+        StabilityStartedAtUtc = null,
         StabilityObservedAtUtc = null,
-        StabilitySampleAtUtc   = null,
-        StabilitySampleCount   = 0
+        StabilitySampleAtUtc = null,
+        StabilitySampleCount = 0
     };
 
     /// <summary>
@@ -1372,29 +1373,29 @@ public sealed class DownloadService(
     private static DownloadVerificationIntent ResetRoundEvidence(
         DownloadVerificationIntent intent, string step) => intent with
     {
-        Step                       = step,
-        ObservedChecking           = false,
-        RecheckRequestedAtUtc      = null,
-        RecheckAttemptedAtUtc      = null,
-        Baseline                   = null,
+        Step = step,
+        ObservedChecking = false,
+        RecheckRequestedAtUtc = null,
+        RecheckAttemptedAtUtc = null,
+        Baseline = null,
         PreRequestCheckingSinceUtc = null,
-        ResumeDataSeenAtUtc        = null,
-        CompletionEvidenceKind     = null,
-        CompletionEvidenceAtUtc    = null,
-        DeadlineUtc                = null,
-        MovingObservedAtUtc        = null,
-        CheckStartedAtUtc          = null,
-        LastCheckProgressAtUtc     = null,
-        LastCheckProgress          = null,
-        StabilitySample            = null,
-        StabilityStartedAtUtc      = null,
-        StabilityObservedAtUtc     = null,
-        StabilitySampleAtUtc       = null,
-        StabilitySampleCount       = 0,
-        TimeoutStopRequestedAtUtc  = null,
-        TimeoutStopAttempts        = 0,
-        ObservedRawState           = null,
-        RecheckAppliedAtUtc        = null
+        ResumeDataSeenAtUtc = null,
+        CompletionEvidenceKind = null,
+        CompletionEvidenceAtUtc = null,
+        DeadlineUtc = null,
+        MovingObservedAtUtc = null,
+        CheckStartedAtUtc = null,
+        LastCheckProgressAtUtc = null,
+        LastCheckProgress = null,
+        StabilitySample = null,
+        StabilityStartedAtUtc = null,
+        StabilityObservedAtUtc = null,
+        StabilitySampleAtUtc = null,
+        StabilitySampleCount = 0,
+        TimeoutStopRequestedAtUtc = null,
+        TimeoutStopAttempts = 0,
+        ObservedRawState = null,
+        RecheckAppliedAtUtc = null
     };
 
     /// <summary>
@@ -1404,8 +1405,8 @@ public sealed class DownloadService(
     private static DownloadVerificationIntent ResetUnconfirmedRound(DownloadVerificationIntent intent) =>
         ResetRoundEvidence(intent, DownloadVerificationStep.Requested) with
         {
-            Round            = intent.Round + 1,
-            RequestState     = DownloadVerificationRequestState.NotSent,
+            Round = intent.Round + 1,
+            RequestState = DownloadVerificationRequestState.NotSent,
             SendFailureCount = 0,
             LastRequestError = null
         };
@@ -1432,15 +1433,14 @@ public sealed class DownloadService(
             var waitingSince = intent.PreRequestCheckingSinceUtc ?? now;
             if (now - waitingSince >= timing.CheckingStartWindow)
             {
-                await EnterVerificationUnconfirmedAsync(
-                    task, intent,
-                    "请求前下载器已有校验尚未结束，无法开始本轮校验；未改动任何文件，可重新校验或核对下载器。", ct);
+                await EnterVerificationUnconfirmedAsync(task, intent, "请求前下载器已有校验尚未结束，无法开始本轮校验；未改动任何文件，可重新校验或核对下载器。",
+                                                        ct);
                 return;
             }
 
             var waiting = intent with
             {
-                Step                       = DownloadVerificationStep.Requested,
+                Step = DownloadVerificationStep.Requested,
                 PreRequestCheckingSinceUtc = waitingSince
             };
             await SaveVerificationIntentAsync(task.Id, task.Status, waiting, ct);
@@ -1467,10 +1467,10 @@ public sealed class DownloadService(
                                                baselineProperties?.PiecesHave, baselineProperties?.PiecesNum);
         var prepared = ResetRoundEvidence(intent, DownloadVerificationStep.Requested) with
         {
-            RequestState          = DownloadVerificationRequestState.Unknown,
+            RequestState = DownloadVerificationRequestState.Unknown,
             RecheckAttemptedAtUtc = now,
-            Baseline              = baseline,
-            LastRequestError      = null
+            Baseline = baseline,
+            LastRequestError = null
         };
         await SaveVerificationIntentAsync(task.Id, task.Status, prepared, ct);
 
@@ -1483,16 +1483,15 @@ public sealed class DownloadService(
             var failureCount = prepared.SendFailureCount + 1;
             var failed = prepared with
             {
-                RequestState     = DownloadVerificationRequestState.SendFailed,
+                RequestState = DownloadVerificationRequestState.SendFailed,
                 SendFailureCount = failureCount,
                 LastRequestError = exception.Message
             };
             if (failureCount >= timing.MaxRecheckSendFailures)
             {
-                await EnterVerificationUnconfirmedAsync(
-                    task, failed,
-                    "校验请求连续发送失败（网络或下载器异常，无法确认请求是否已被下载器接收），校验执行未确认；"
-                    + "未改动任何文件，可重新校验或核对下载器。", ct);
+                await EnterVerificationUnconfirmedAsync(task, failed,
+                                                        "校验请求连续发送失败（网络或下载器异常，无法确认请求是否已被下载器接收），校验执行未确认；"
+                                                      + "未改动任何文件，可重新校验或核对下载器。", ct);
                 return;
             }
 
@@ -1513,11 +1512,11 @@ public sealed class DownloadService(
         var issuedAt = timeProvider.GetUtcNow();
         var issued = prepared with
         {
-            RequestState           = DownloadVerificationRequestState.Sent,
-            SendFailureCount       = 0,
-            IssuedCount            = prepared.IssuedCount + 1,
-            RecheckRequestedAtUtc  = issuedAt,
-            DeadlineUtc            = issuedAt + timing.CheckingStartWindow
+            RequestState = DownloadVerificationRequestState.Sent,
+            SendFailureCount = 0,
+            IssuedCount = prepared.IssuedCount + 1,
+            RecheckRequestedAtUtc = issuedAt,
+            DeadlineUtc = issuedAt + timing.CheckingStartWindow
         };
 
         // 请求后立即读取 pieces：基线大于 0 而现在掉落（或明显下降）证明请求已被该 hash 接收并开始
@@ -1535,12 +1534,12 @@ public sealed class DownloadService(
             if (IsDataCheckingRawState(observed.RawState))
                 issued = issued with
                 {
-                    ObservedChecking       = true,
-                    Step                   = DownloadVerificationStep.Observing,
-                    CheckStartedAtUtc      = issuedAt,
+                    ObservedChecking = true,
+                    Step = DownloadVerificationStep.Observing,
+                    CheckStartedAtUtc = issuedAt,
                     LastCheckProgressAtUtc = issuedAt,
-                    LastCheckProgress      = observed.Progress,
-                    ObservedRawState       = observed.RawState
+                    LastCheckProgress = observed.Progress,
+                    ObservedRawState = observed.RawState
                 };
             else if (IsResumeDataRawState(observed.RawState))
                 issued = issued with { ResumeDataSeenAtUtc = issuedAt };
@@ -1599,8 +1598,8 @@ public sealed class DownloadService(
     ///     不能当作内容校验证据。RawState 缺失（旧意图或未提供原始状态的会话）保持原有归属语义。
     /// </summary>
     private static bool IsDataCheckingRawState(string? rawState) =>
-        string.IsNullOrWhiteSpace(rawState)                                                    ||
-        string.Equals(rawState, "checkingDL", StringComparison.OrdinalIgnoreCase)              ||
+        string.IsNullOrWhiteSpace(rawState)                                       ||
+        string.Equals(rawState, "checkingDL", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(rawState, "checkingUP", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>checkingResumeData 只校验恢复数据（添加/启动/重启产物），任何时刻都不作内容校验证据。</summary>
@@ -1616,8 +1615,8 @@ public sealed class DownloadService(
     ///     见证只给出方向；逐文件结论仍由结果读取、映射一致性与稳定窗口核对决定。
     /// </summary>
     private async Task<string?> TryEvaluateCompletionEvidenceAsync(
-        IQbittorrentSession session, DownloadTask task, TorrentSnapshot snapshot,
-        DownloadVerificationIntent intent, CancellationToken ct)
+        IQbittorrentSession        session, DownloadTask      task, TorrentSnapshot snapshot,
+        DownloadVerificationIntent intent,  CancellationToken ct)
     {
         if (intent.Baseline is not { } baseline || intent.RecheckAttemptedAtUtc is null) return null;
         if (intent.RequestState is null or DownloadVerificationRequestState.NotSent) return null;
@@ -1628,8 +1627,8 @@ public sealed class DownloadService(
         if (intent.UnverifiedWriteRisk == true || intent is { PauseAttempts: > 0, UnverifiedWriteRisk: null })
             return null;
 
-        var properties = await TryGetPropertiesAsync(session, task.InfoHash, ct);
-        var piecesIncomplete = properties is { } value && value.PiecesNum > 0 && value.PiecesHave < value.PiecesNum;
+        var properties       = await TryGetPropertiesAsync(session, task.InfoHash, ct);
+        var piecesIncomplete = properties is { PiecesNum: > 0 } value && value.PiecesHave < value.PiecesNum;
         if (IsStoppedComplete(snapshot))
         {
             // 基线完整 → 仍完整：无法把当前完成归因于本轮请求，保持未确认（原因文案另行区分）。
@@ -1640,8 +1639,8 @@ public sealed class DownloadService(
         // 完整性下降：基线已完成（progress<1 / amount_left 增大 / raw UP→DL），或 pieces 已证明
         // 本轮执行且当前 pieces 不完整（部分恢复的校验结果）。
         var directionDown =
-            (snapshot.Progress < 1.0 && IsBaselineComplete(baseline))                          ||
-            (snapshot.AmountLeft is > 0 && baseline.AmountLeft is not > 0)                     ||
+            (snapshot.Progress < 1.0    && IsBaselineComplete(baseline))   ||
+            (snapshot.AmountLeft is > 0 && baseline.AmountLeft is not > 0) ||
             (string.Equals(baseline.RawState, "stoppedUP", StringComparison.OrdinalIgnoreCase) &&
              string.Equals(snapshot.RawState, "stoppedDL", StringComparison.OrdinalIgnoreCase)) ||
             (intent.RecheckAppliedAtUtc is not null && piecesIncomplete);
@@ -1651,11 +1650,11 @@ public sealed class DownloadService(
     /// <summary>停止态完成：raw stoppedUP，或进度满且剩余量归零（completion_on 只作辅助，不作必要条件）。</summary>
     private static bool IsStoppedComplete(TorrentSnapshot snapshot) =>
         string.Equals(snapshot.RawState, "stoppedUP", StringComparison.OrdinalIgnoreCase) ||
-        (snapshot.Progress >= 1.0 && snapshot.AmountLeft is null or 0);
+        snapshot is { Progress: >= 1.0, AmountLeft: null or 0 };
 
     /// <summary>请求前基线是否已是完整状态；用于区分「无法归因的完成」与「从未观察到校验」的未确认原因。</summary>
     private static bool IsBaselineComplete(DownloadVerificationBaseline baseline) =>
-        baseline.Progress >= 1.0 && baseline.AmountLeft is null or 0;
+        baseline is { Progress: >= 1.0, AmountLeft: null or 0 };
 
     /// <summary>
     ///     进入校验未确认态：保持暂停、不隔离、不删种、不重下；保留候选映射与意图（Step=Unconfirmed），
@@ -1667,8 +1666,8 @@ public sealed class DownloadService(
     {
         var unconfirmed = VoidStabilitySamples(intent) with
         {
-            Step                = DownloadVerificationStep.Unconfirmed,
-            DeadlineUtc         = null,
+            Step = DownloadVerificationStep.Unconfirmed,
+            DeadlineUtc = null,
             MovingObservedAtUtc = null
         };
         logger.LogWarning("任务 {TaskId} 复用校验未确认：{Error}", task.Id, error);
@@ -1738,10 +1737,10 @@ public sealed class DownloadService(
     ///     并立即观察一次——快速生效时无需等下一轮。响应丢失不断言失败：转 ResponseUnknown 由观察确认。
     /// </summary>
     private async Task<DownloadRunRecovery?> IssueRunResumeAsync(
-        IQbittorrentSession session, DownloadTask task, string purpose,
+        IQbittorrentSession  session,  DownloadTask      task, string purpose,
         DownloadRunRecovery? previous, CancellationToken ct)
     {
-        var now      = timeProvider.GetUtcNow();
+        var now = timeProvider.GetUtcNow();
         var recovery = new DownloadRunRecovery
         {
             Purpose        = purpose,
@@ -1766,9 +1765,9 @@ public sealed class DownloadService(
             // 不再自动重试；文件与任务状态保持原样。
             recovery = recovery with
             {
-                State            = DownloadRunStates.DownloaderStopped,
-                RequestOutcome   = DownloadRunRequestOutcomes.Rejected,
-                Reason           = "下载器明确拒绝启动请求（种子可能已被删除）",
+                State = DownloadRunStates.DownloaderStopped,
+                RequestOutcome = DownloadRunRequestOutcomes.Rejected,
+                Reason = "下载器明确拒绝启动请求（种子可能已被删除）",
                 LastRequestError = exception.Message
             };
             logger.LogWarning(exception, "任务 {TaskId} 启动请求被下载器拒绝，转待人工核对。", task.Id);
@@ -1778,8 +1777,8 @@ public sealed class DownloadService(
         {
             recovery = recovery with
             {
-                State            = DownloadRunStates.ResponseUnknown,
-                RequestOutcome   = DownloadRunRequestOutcomes.Unknown,
+                State = DownloadRunStates.ResponseUnknown,
+                RequestOutcome = DownloadRunRequestOutcomes.Unknown,
                 LastRequestError = exception.Message
             };
             logger.LogWarning(exception, "任务 {TaskId} 启动请求响应丢失（第 {Attempt} 次），转入观察确认。",
@@ -1801,7 +1800,7 @@ public sealed class DownloadService(
     ///     ConfirmedRunning 并 best-effort 通告 tracker——通告失败只记录，绝不否定数据完整性、不重新校验。
     /// </summary>
     private async Task<DownloadRunRecovery?> ConfirmRunRunningAsync(
-        IQbittorrentSession session, DownloadTask task, string purpose, TorrentSnapshot snapshot,
+        IQbittorrentSession  session, DownloadTask      task, string purpose, TorrentSnapshot snapshot,
         DownloadRunRecovery? current, CancellationToken ct)
     {
         var now = timeProvider.GetUtcNow();
@@ -1814,10 +1813,10 @@ public sealed class DownloadService(
 
         var recovery = (current ?? new DownloadRunRecovery { Purpose = purpose }) with
         {
-            State                = DownloadRunStates.ConfirmedRunning,
+            State = DownloadRunStates.ConfirmedRunning,
             ObservedRunningAtUtc = current?.ObservedRunningAtUtc ?? now,
-            LastObservedAtUtc    = now,
-            ObservedCategory     = snapshot.Category.ToString()
+            LastObservedAtUtc = now,
+            ObservedCategory = snapshot.Category.ToString()
         };
         try
         {
@@ -1842,11 +1841,11 @@ public sealed class DownloadService(
     ///     用户暂停停自动。绝不调用 recheck，绝不写 FailedStep/Error/CompletedAtUtc。
     /// </summary>
     private async Task AdvanceRunRecoveryAsync(
-        IQbittorrentSession session, DownloadTask task, TorrentSnapshot? snapshot,
+        IQbittorrentSession session,  DownloadTask      task, TorrentSnapshot? snapshot,
         DownloadRunRecovery recovery, CancellationToken cancellationToken)
     {
         // 用户解除人工暂停后（人工「恢复」把任务交回系统），按既有预算继续有界启动。
-        if (recovery.State == DownloadRunStates.UserPaused                     &&
+        if (recovery.State == DownloadRunStates.UserPaused &&
             task is { Status: DownloadTaskStatus.Downloading, IsUserPaused: false })
         {
             await IssueRunResumeAsync(session, task, recovery.Purpose, recovery, cancellationToken);
@@ -1867,8 +1866,8 @@ public sealed class DownloadService(
         {
             await SaveRunRecoveryAsync(task.Id, task.Status, recovery with
             {
-                State             = DownloadRunStates.UserPaused,
-                Reason            = "用户暂停了任务；不自动恢复",
+                State = DownloadRunStates.UserPaused,
+                Reason = "用户暂停了任务；不自动恢复",
                 LastObservedAtUtc = now
             }, null, cancellationToken);
             return;
@@ -1880,10 +1879,10 @@ public sealed class DownloadService(
                 // 种子已消失：只记录，不改任务状态、不清理文件。
                 await SaveRunRecoveryAsync(task.Id, task.Status, recovery with
                 {
-                    State             = DownloadRunStates.DownloaderStopped,
-                    Reason            = "下载器中已无该种子",
+                    State = DownloadRunStates.DownloaderStopped,
+                    Reason = "下载器中已无该种子",
                     LastObservedAtUtc = now,
-                    ObservedCategory  = null
+                    ObservedCategory = null
                 }, null, cancellationToken);
                 return;
             case { IsMoving: true } or { Category: QbittorrentTorrentCategory.Checking } :
@@ -1895,10 +1894,10 @@ public sealed class DownloadService(
             case { Category: QbittorrentTorrentCategory.Error } :
                 await SaveRunRecoveryAsync(task.Id, task.Status, recovery with
                 {
-                    State             = DownloadRunStates.FailedRetryable,
-                    Reason            = "下载器报告任务出错；文件保持原样，可人工恢复",
+                    State = DownloadRunStates.FailedRetryable,
+                    Reason = "下载器报告任务出错；文件保持原样，可人工恢复",
                     LastObservedAtUtc = now,
-                    ObservedCategory  = snapshot.Category.ToString()
+                    ObservedCategory = snapshot.Category.ToString()
                 }, null, cancellationToken);
                 return;
             case { Category: QbittorrentTorrentCategory.Seeding or QbittorrentTorrentCategory.Downloading } :
@@ -1912,10 +1911,10 @@ public sealed class DownloadService(
         {
             await SaveRunRecoveryAsync(task.Id, task.Status, recovery with
             {
-                State             = DownloadRunStates.DownloaderStopped,
-                Reason            = "启动请求已被接受后停止（下载器策略或人工）；不自动再次拉起",
+                State = DownloadRunStates.DownloaderStopped,
+                Reason = "启动请求已被接受后停止（下载器策略或人工）；不自动再次拉起",
                 LastObservedAtUtc = now,
-                ObservedCategory  = snapshot.Category.ToString()
+                ObservedCategory = snapshot.Category.ToString()
             }, null, cancellationToken);
             return;
         }
@@ -1936,10 +1935,10 @@ public sealed class DownloadService(
         {
             await SaveRunRecoveryAsync(task.Id, task.Status, recovery with
             {
-                State             = DownloadRunStates.FailedRetryable,
-                Reason            = $"启动请求 {recovery.AttemptCount} 次仍未确认生效；已停止自动重试，可人工恢复",
+                State = DownloadRunStates.FailedRetryable,
+                Reason = $"启动请求 {recovery.AttemptCount} 次仍未确认生效；已停止自动重试，可人工恢复",
                 LastObservedAtUtc = now,
-                ObservedCategory  = snapshot.Category.ToString()
+                ObservedCategory = snapshot.Category.ToString()
             }, null, cancellationToken);
             return;
         }
@@ -1949,8 +1948,8 @@ public sealed class DownloadService(
 
     /// <summary>启动恢复记录落库：recovery 为 null 时原子清空（ContinueDownload 确认运行后回到普通跟踪）。</summary>
     private async Task SaveRunRecoveryAsync(
-        Guid taskId, DownloadTaskStatus expectedStatus, DownloadRunRecovery? recovery,
-        DateTimeOffset? nextObservationAtUtc, CancellationToken cancellationToken)
+        Guid            taskId,               DownloadTaskStatus expectedStatus, DownloadRunRecovery? recovery,
+        DateTimeOffset? nextObservationAtUtc, CancellationToken  cancellationToken)
     {
         await UpdateTaskAsync(taskId, expectedStatus, update =>
         {
@@ -1970,8 +1969,7 @@ public sealed class DownloadService(
         using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
         var       task              = await LoadTaskAsync(taskId, cancellationToken);
         var       recovery          = DownloadRunRecovery.FromJson(task.RunRecovery);
-        if (recovery is null ||
-            recovery.State is not (DownloadRunStates.FailedRetryable or DownloadRunStates.DownloaderStopped))
+        if (recovery?.State is not (DownloadRunStates.FailedRetryable or DownloadRunStates.DownloaderStopped))
             throw new InvalidOperationException("只有启动未恢复的任务可以人工恢复。");
 
         await using var session = await sessionFactory.CreateAsync(cancellationToken);
@@ -2020,15 +2018,15 @@ public sealed class DownloadService(
                 var invalidated = ResetRoundEvidence(intent, DownloadVerificationStep.Requested) with
                 {
                     ObserverInstanceId = processInstanceId,
-                    RequestState       = DownloadVerificationRequestState.NotSent,
-                    SendFailureCount   = 0,
-                    LastRequestError   = null
+                    RequestState = DownloadVerificationRequestState.NotSent,
+                    SendFailureCount = 0,
+                    LastRequestError = null
                 };
                 await SaveVerificationIntentAsync(task.Id, task.Status, invalidated, ct);
                 await DeferObservationAsync(task.Id, task.Status,
                                             timeProvider.GetUtcNow() + timing.PreparationSampleInterval, ct);
                 logger.LogInformation(
-                    "任务 {TaskId} 的校验意图来自其他应用实例，本轮证据已作废，下一轮重新捕获基线并重发。", task.Id);
+                                      "任务 {TaskId} 的校验意图来自其他应用实例，本轮证据已作废，下一轮重新捕获基线并重发。", task.Id);
                 return;
             }
         }
@@ -2139,18 +2137,22 @@ public sealed class DownloadService(
             if (intent is { ObservedChecking: true, CheckStartedAtUtc: null })
                 intent = intent with
                 {
-                    CheckStartedAtUtc      = now,
+                    CheckStartedAtUtc = now,
                     LastCheckProgressAtUtc = intent.LastCheckProgressAtUtc ?? now,
-                    LastCheckProgress      = intent.LastCheckProgress ?? snapshot.Progress
+                    LastCheckProgress = intent.LastCheckProgress           ?? snapshot.Progress
                 };
 
             // 已作废轮次的残留校验不可归属任何请求（作废未伴随停止请求记录时首遇即发出）：
             // 停止确认的期限与预算接管——窗口内等待、有界补发、耗尽受阻；停稳后由补发路径
             // 重新发起可信校验，不得无限等待一个已作废的校验自然结束。重新校验待发/发送结果未知
             // 时不能把 Checking 当成已作废残留，否则会误停可能正是本次请求的校验。
-            if (intent is { Step: DownloadVerificationStep.Requested, RecheckRequestedAtUtc: null } &&
-                intent.RequestState is null or DownloadVerificationRequestState.Sent           &&
-                intent.TimeoutStopRequestedAtUtc is null)
+            if (intent is
+                {
+                    Step                     : DownloadVerificationStep.Requested,
+                    RecheckRequestedAtUtc    : null,
+                    RequestState             : null or DownloadVerificationRequestState.Sent,
+                    TimeoutStopRequestedAtUtc: null
+                })
             {
                 await IssueTimeoutStopAsync();
                 return;
@@ -2158,17 +2160,17 @@ public sealed class DownloadService(
 
             // 请求前观察到的外部校验不能充当本轮请求的完成证据：只归属本轮请求的 Checking 记为证据。
             // checkingResumeData 不是内容校验证据；无原始状态的旧意图/会话保持原有语义。
-            if (intent.Step != DownloadVerificationStep.Mapping &&
+            if (intent.Step != DownloadVerificationStep.Mapping                                          &&
                 intent is { IssuedCount: > 0, RecheckRequestedAtUtc: not null, ObservedChecking: false } &&
                 IsDataCheckingRawState(snapshot.RawState))
                 intent = intent with
                 {
-                    ObservedChecking       = true,
-                    Step                   = DownloadVerificationStep.Observing,
-                    CheckStartedAtUtc      = intent.CheckStartedAtUtc ?? now,
+                    ObservedChecking = true,
+                    Step = DownloadVerificationStep.Observing,
+                    CheckStartedAtUtc = intent.CheckStartedAtUtc           ?? now,
                     LastCheckProgressAtUtc = intent.LastCheckProgressAtUtc ?? now,
-                    LastCheckProgress      = intent.LastCheckProgress ?? snapshot.Progress,
-                    ObservedRawState       = snapshot.RawState
+                    LastCheckProgress = intent.LastCheckProgress           ?? snapshot.Progress,
+                    ObservedRawState = snapshot.RawState
                 };
 
             // 校验进行中：退出校验前积累的稳定样本已作废（再次校验后的旧结果不再有效）。
@@ -2234,7 +2236,7 @@ public sealed class DownloadService(
                 async Task SyncStopConfirmObservationAsync(DateTimeOffset? deferUntil)
                 {
                     if (snapshot.Category is not (QbittorrentTorrentCategory.Downloading
-                                                  or QbittorrentTorrentCategory.Seeding))
+                                               or QbittorrentTorrentCategory.Seeding))
                     {
                         if (deferUntil is { } due) await DeferObservationAsync(task.Id, task.Status, due, ct);
                         return;
@@ -2277,9 +2279,10 @@ public sealed class DownloadService(
                 await SaveVerificationIntentAsync(task.Id, task.Status,
                                                   intent with
                                                   {
-                                                      PauseAttempts       = intent.PauseAttempts + 1,
+                                                      PauseAttempts = intent.PauseAttempts + 1,
                                                       PauseRequestedAtUtc = pausedAt,
-                                                      UnverifiedWriteRisk = NextUnverifiedWriteRisk(intent, snapshot.Category)
+                                                      UnverifiedWriteRisk =
+                                                      NextUnverifiedWriteRisk(intent, snapshot.Category)
                                                   }, ct);
                 await session.PauseAsync(task.InfoHash, ct);
                 await SyncStopConfirmObservationAsync(null);
@@ -2353,18 +2356,17 @@ public sealed class DownloadService(
             {
                 intent = intent with
                 {
-                    ObservedChecking        = true,
-                    Step                    = DownloadVerificationStep.Observing,
-                    CompletionEvidenceKind  = evidence,
+                    ObservedChecking = true,
+                    Step = DownloadVerificationStep.Observing,
+                    CompletionEvidenceKind = evidence,
                     CompletionEvidenceAtUtc = now,
-                    CheckStartedAtUtc       = intent.CheckStartedAtUtc ?? intent.RecheckRequestedAtUtc ?? now,
-                    LastCheckProgressAtUtc  = intent.LastCheckProgressAtUtc ?? now,
-                    LastCheckProgress       = intent.LastCheckProgress ?? snapshot.Progress
+                    CheckStartedAtUtc = intent.CheckStartedAtUtc           ?? intent.RecheckRequestedAtUtc ?? now,
+                    LastCheckProgressAtUtc = intent.LastCheckProgressAtUtc ?? now,
+                    LastCheckProgress = intent.LastCheckProgress           ?? snapshot.Progress
                 };
                 await SaveVerificationIntentAsync(task.Id, task.Status, intent, ct);
-                logger.LogInformation(
-                    "任务 {TaskId} 未观察到校验阶段，凭请求前基线与停止态完整性变化（{Evidence}）确认本轮校验已执行。",
-                    task.Id, evidence);
+                logger.LogInformation("任务 {TaskId} 未观察到校验阶段，凭请求前基线与停止态完整性变化（{Evidence}）确认本轮校验已执行。",
+                                      task.Id, evidence);
             }
 
             // 人工重新校验后尚未发出：下一轮立即重发，不再等待启动窗口。
@@ -2392,7 +2394,7 @@ public sealed class DownloadService(
                 // 原因文案区分：基线已完整时当前完成无法归因于本轮请求，与「从未观察到校验」分别提示。
                 var unconfirmedError = intent.Baseline is { } baseline && IsBaselineComplete(baseline)
                     ? "请求前数据已是完整状态，无法把当前完成归因于本轮校验请求，本轮校验执行未确认；"
-                      + "未改动任何文件，可重新校验或核对下载器。"
+                    + "未改动任何文件，可重新校验或核对下载器。"
                     : "多次请求校验后仍未观察到校验阶段，校验执行未确认；未改动任何文件，可重新校验或核对下载器。";
                 await EnterVerificationUnconfirmedAsync(task, intent, unconfirmedError, ct);
                 return;
@@ -2403,9 +2405,8 @@ public sealed class DownloadService(
         // 停止后读到的文件结果可能是中断时刻的部分结果或旧快照，既不能登记复用，也不能确认缺失。
         if (!readyToRun && intent is { ObservedChecking: true, TimeoutStopRequestedAtUtc: not null })
         {
-            await EnterVerificationUnconfirmedAsync(
-                task, intent,
-                "校验因到期被主动停止，本轮校验执行未确认；未改动任何文件，可重新校验或核对下载器。", ct);
+            await EnterVerificationUnconfirmedAsync(task, intent,
+                                                    "校验因到期被主动停止，本轮校验执行未确认；未改动任何文件，可重新校验或核对下载器。", ct);
             return;
         }
 
@@ -2430,9 +2431,9 @@ public sealed class DownloadService(
         {
             var file = task.Files.Single(item => item.FileIndex == mapping.FileIndex);
             if (!indexByPath.TryGetValue(file.OriginalRelativePath, out var qbIndex) ||
-                !remoteByIndex.TryGetValue(qbIndex, out var remote) ||
-                remote.Size != mapping.Size ||
-                remote.IsSelectedForDownload != mapping.Selected ||
+                !remoteByIndex.TryGetValue(qbIndex, out var remote)                  ||
+                remote.Size                  != mapping.Size                         ||
+                remote.IsSelectedForDownload != mapping.Selected                     ||
                 (readyToRun && mapping.IsCandidate &&
                  (file.VerificationOutcome != DownloadFileVerificationOutcomes.ReusedVerified ||
                   !EqualVerificationPath(file.VerificationPath ?? string.Empty, mapping.VerificationPath))) ||
@@ -2462,23 +2463,25 @@ public sealed class DownloadService(
                 : stable.Category != QbittorrentTorrentCategory.Stopped) ||
             !MatchesIsolationPath(stable.SavePath, intent.CandidateRoot))
         {
-            // 回读发现移动：与入口观察同样处理——本轮校验后的移动可能已改变目标，整轮证据作废、
-            // 回到等待重新校验；移动结束后由补发路径重新发起，不得沿用移动前的 Checking 与文件结果。
-            // 作废保留移动等待起点：这里首次看到的移动同样按首次观察时刻独立计时。
-            if (stable is { IsMoving: true })
+            switch (stable)
             {
-                await SaveVerificationIntentAsync(task.Id, task.Status,
-                                                  ResetRoundEvidence(intent, DownloadVerificationStep.Requested) with
-                                                  {
-                                                      MovingObservedAtUtc = intent.MovingObservedAtUtc ?? now
-                                                  }, ct);
-                return;
+                // 回读发现移动：与入口观察同样处理——本轮校验后的移动可能已改变目标，整轮证据作废、
+                // 回到等待重新校验；移动结束后由补发路径重新发起，不得沿用移动前的 Checking 与文件结果。
+                // 作废保留移动等待起点：这里首次看到的移动同样按首次观察时刻独立计时。
+                case { IsMoving: true } :
+                    await SaveVerificationIntentAsync(task.Id, task.Status,
+                                                      ResetRoundEvidence(intent, DownloadVerificationStep.Requested)
+                                                          with
+                                                          {
+                                                              MovingObservedAtUtc = intent.MovingObservedAtUtc ?? now
+                                                          }, ct);
+                    return;
+                // 只在这里看到的快速起止校验同样作废旧稳定序列：中断后的首个同内容样本
+                // 不得沿用中断前的样本数直接凑满下结论。
+                case { Category: QbittorrentTorrentCategory.Checking } when intent.StabilitySample is not null :
+                    await SaveVerificationIntentAsync(task.Id, task.Status, VoidStabilitySamples(intent), ct);
+                    break;
             }
-
-            // 只在这里看到的快速起止校验同样作废旧稳定序列：中断后的首个同内容样本
-            // 不得沿用中断前的样本数直接凑满下结论。
-            if (stable is { Category: QbittorrentTorrentCategory.Checking } && intent.StabilitySample is not null)
-                await SaveVerificationIntentAsync(task.Id, task.Status, VoidStabilitySamples(intent), ct);
 
             // 其余回读不一致（意外运行态或根变化）按采样间隔继续观察，下一轮由对应分支处理。
             await DeferObservationAsync(task.Id, task.Status, now + timing.VerificationSampleInterval, ct);
@@ -2509,9 +2512,8 @@ public sealed class DownloadService(
             {
                 if (now - (intent.StabilityObservedAtUtc ?? now) >= timing.ResultStabilityMaxWindow)
                 {
-                    await EnterVerificationUnconfirmedAsync(
-                        task, intent,
-                        "校验后的文件结果长时间无法稳定确认，未改动任何文件，可重新校验或核对下载器。", ct);
+                    await EnterVerificationUnconfirmedAsync(task, intent,
+                                                            "校验后的文件结果长时间无法稳定确认，未改动任何文件，可重新校验或核对下载器。", ct);
                     return;
                 }
 
@@ -2569,7 +2571,7 @@ public sealed class DownloadService(
                                              .ToHashSet();
                 var pendingRows = await db.EpisodeVersions
                                           .Where(row => row.SubjectId          == verificationSubjectId &&
-                                                        row.SourceScope        == sourceScope        &&
+                                                        row.SourceScope        == sourceScope           &&
                                                         row.PendingVideoFileId != null)
                                           .ToListAsync(ct);
                 var previousIncumbents = new List<Guid>();
@@ -2617,9 +2619,9 @@ public sealed class DownloadService(
             // 绝不落回用户暂停语义。
             await UpdateTaskAsync(task.Id, task.Status, update =>
             {
-                update.VerificationIntent   = null;
-                update.PreparationStage     = DownloadPreparationStage.ReadyToRun;
-                update.LastSyncedAtUtc      = timeProvider.GetUtcNow();
+                update.VerificationIntent = null;
+                update.PreparationStage   = DownloadPreparationStage.ReadyToRun;
+                update.LastSyncedAtUtc    = timeProvider.GetUtcNow();
             }, ct);
             logger.LogInformation("任务 {TaskId} 复用校验候选全部通过；下载启动待确认（{RunState}），保持系统暂停继续观察。",
                                   task.Id, recovery.State);
@@ -2628,20 +2630,20 @@ public sealed class DownloadService(
 
         await UpdateTaskAsync(task.Id, task.Status, update =>
         {
-            update.IsSystemPaused       = false;
-            update.VerificationIntent   = null;
-            update.PreparationStage     = DownloadPreparationStage.ReadyToRun;
-            update.LastSyncedAtUtc      = timeProvider.GetUtcNow();
+            update.IsSystemPaused     = false;
+            update.VerificationIntent = null;
+            update.PreparationStage   = DownloadPreparationStage.ReadyToRun;
+            update.LastSyncedAtUtc    = timeProvider.GetUtcNow();
             // 启动待确认的完整任务保留 StartRun 写入的观察时间：完成与做种恢复分离推进。
-            if (recovery is null ||
-                recovery.State is not (DownloadRunStates.AwaitingConfirm or DownloadRunStates.ResponseUnknown))
+            if (recovery?.State is not (DownloadRunStates.AwaitingConfirm or DownloadRunStates.ResponseUnknown))
                 update.NextObservationAtUtc = null;
         }, ct);
         if (allSelectedComplete)
             await ApplySnapshotAsync(task.Id, task.Status, stable with { Progress = 1.0 }, session, ct);
         // 完成收尾（归档/改名）可能清掉调度：启动待确认的完整任务重新落上观察时间，
         // 保证 Completed+RunRecovery 进入对账任务集继续观察做种是否恢复。
-        if (allSelectedComplete && recovery is { State: DownloadRunStates.AwaitingConfirm or DownloadRunStates.ResponseUnknown })
+        if (allSelectedComplete && recovery is
+                { State: DownloadRunStates.AwaitingConfirm or DownloadRunStates.ResponseUnknown })
             await UpdateTaskAsync(task.Id, DownloadTaskStatus.Completed,
                                   update => update.NextObservationAtUtc =
                                       timeProvider.GetUtcNow() + timing.ControlConfirmationWindow, ct);
@@ -2649,6 +2651,7 @@ public sealed class DownloadService(
                                   ? "任务 {TaskId} 复用校验全部通过，已确认内容完整并进入完成归档。"
                                   : "任务 {TaskId} 复用校验候选全部通过，其余文件继续下载。", task.Id);
     }
+
     private static IReadOnlyDictionary<int, string> CandidateRelativePaths(DownloadVerificationIntent intent)
     {
         var result = new Dictionary<int, string>();
@@ -2887,7 +2890,7 @@ public sealed class DownloadService(
             try
             {
                 staging = await downloadFileService.EnsureReplacementStagingUnderGateAsync(session, task.Id,
-                                                                                           cancellationToken);
+                    cancellationToken);
                 if (staging) task = await LoadTaskAsync(task.Id, cancellationToken);
             }
             catch (InvalidOperationException exception)
@@ -2903,9 +2906,10 @@ public sealed class DownloadService(
         {
             update.PathDecision = new DownloadPathDecision
             {
-                Kind         = staging ? DownloadPathDecisionKinds.ReplacementStaging
-                                       : DownloadPathDecisionKinds.SameHashAdoption,
-                Reason       = staging
+                Kind = staging
+                    ? DownloadPathDecisionKinds.ReplacementStaging
+                    : DownloadPathDecisionKinds.SameHashAdoption,
+                Reason = staging
                     ? "存量任务已提交在正式根且存在待替换旧版：接管后迁入任务专属根暂存，完成后再迁让旧文件并归档。"
                     : "下载器已存在同 Hash 种子，接管其真实保存位置。",
                 Root         = stagingRoot ?? DownloadPathNamePolicy.NormalizePath(snapshot.SavePath),
@@ -2965,8 +2969,8 @@ public sealed class DownloadService(
         // 这些任务不适用 ApplySnapshotAsync 的普通状态推进，也绝不写 FailedStep/Error。
         if (DownloadRunRecovery.FromJson(task.RunRecovery) is { } runRecovery &&
             (task is { Status: DownloadTaskStatus.Completed, NextObservationAtUtc: not null } ||
-             task is { Status: DownloadTaskStatus.Downloading, IsSystemPaused: true } &&
-                 runRecovery.Purpose == DownloadRunPurposes.ContinueDownload))
+             (task is { Status: DownloadTaskStatus.Downloading, IsSystemPaused: true } &&
+              runRecovery.Purpose == DownloadRunPurposes.ContinueDownload)))
         {
             await AdvanceRunRecoveryAsync(session, task, snapshot, runRecovery, cancellationToken);
             return;
@@ -3077,8 +3081,9 @@ public sealed class DownloadService(
             snapshot is
             {
                 IsMoving: false,
-                Category: QbittorrentTorrentCategory.Downloading or QbittorrentTorrentCategory.Stopped
-                                                                 or QbittorrentTorrentCategory.Seeding
+                Category: QbittorrentTorrentCategory.Downloading
+                       or QbittorrentTorrentCategory.Stopped
+                       or QbittorrentTorrentCategory.Seeding
             })
             try
             {
@@ -3137,8 +3142,9 @@ public sealed class DownloadService(
         // 选择加权的，远端取消选择会使未下载的计划文件不出现在分母里。
         if (snapshot is
             {
-                Category: QbittorrentTorrentCategory.Downloading or QbittorrentTorrentCategory.Stopped
-                                                                 or QbittorrentTorrentCategory.Seeding
+                Category: QbittorrentTorrentCategory.Downloading
+                       or QbittorrentTorrentCategory.Stopped
+                       or QbittorrentTorrentCategory.Seeding
             })
             snapshot = await WithSelectedContentProgressAsync(session, task, snapshot, cancellationToken);
 
@@ -3495,11 +3501,11 @@ public sealed class DownloadService(
 
                     // 下载已实际发生（可能是准备完成后恢复，也可能是用户在下载器内手动启动）：
                     // 系统准备暂停语义结束，用户手动启动优先。同样不清理未到期的观察时间。
-                    update.IsSystemPaused         = false;
-                    update.Progress               = snapshot.Progress;
-                    update.TotalSize              = snapshot.TotalSize;
-                    update.LastSyncedAtUtc        = timeProvider.GetUtcNow();
-                    update.LastObservedCategory   = snapshot.Category;
+                    update.IsSystemPaused            = false;
+                    update.Progress                  = snapshot.Progress;
+                    update.TotalSize                 = snapshot.TotalSize;
+                    update.LastSyncedAtUtc           = timeProvider.GetUtcNow();
+                    update.LastObservedCategory      = snapshot.Category;
                     // 恢复运行即推翻此前观察到的外部停止；再次外部停止会重新记录。
                     update.ExternalStopObservedAtUtc = null;
                 }, cancellationToken);

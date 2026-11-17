@@ -1,4 +1,3 @@
-using Banori.Data;
 using Banori.Features.Downloads;
 using Banori.Integrations.Qbittorrent;
 using Microsoft.EntityFrameworkCore;

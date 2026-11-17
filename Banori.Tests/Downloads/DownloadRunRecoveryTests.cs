@@ -1,10 +1,7 @@
-using Banori.Core.Torrents;
-using Banori.Data;
+using Banned.Qbittorrent.Exceptions;
 using Banori.Features.Downloads;
 using Banori.Integrations.Qbittorrent;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using Banned.Qbittorrent.Exceptions;
 
 namespace Banori.Tests.Downloads;
 
@@ -447,13 +444,13 @@ public sealed partial class DownloadVerificationTests
     {
         var baseView = new DownloadTaskView
         {
-            Id             = Guid.NewGuid(),
-            FeedItemId     = null,
-            Status         = DownloadTaskStatus.Completed,
-            CreatedAtUtc   = DateTimeOffset.Parse("2026-11-11T04:00:00Z"),
-            RunPurpose     = DownloadRunPurposes.Seeding,
-            RunState       = DownloadRunStates.FailedRetryable,
-            RunReason      = "启动请求 3 次仍未确认生效；已停止自动重试，可人工恢复"
+            Id           = Guid.NewGuid(),
+            FeedItemId   = null,
+            Status       = DownloadTaskStatus.Completed,
+            CreatedAtUtc = DateTimeOffset.Parse("2026-11-11T04:00:00Z"),
+            RunPurpose   = DownloadRunPurposes.Seeding,
+            RunState     = DownloadRunStates.FailedRetryable,
+            RunReason    = "启动请求 3 次仍未确认生效；已停止自动重试，可人工恢复"
         };
 
         Assert.Contains("内容已完成", baseView.WaitingForText);
@@ -471,11 +468,11 @@ public sealed partial class DownloadVerificationTests
 
         var partial = baseView with
         {
-            Status           = DownloadTaskStatus.Downloading,
-            IsSystemPaused   = true,
+            Status = DownloadTaskStatus.Downloading,
+            IsSystemPaused = true,
             PreparationStage = DownloadPreparationStage.ReadyToRun,
-            RunPurpose       = DownloadRunPurposes.ContinueDownload,
-            RunState         = DownloadRunStates.FailedRetryable
+            RunPurpose = DownloadRunPurposes.ContinueDownload,
+            RunState = DownloadRunStates.FailedRetryable
         };
         Assert.Equal(DownloadDisplayPhase.WaitingStartConfirm, partial.Phase);
         Assert.Contains("候选已校验", partial.WaitingForText);

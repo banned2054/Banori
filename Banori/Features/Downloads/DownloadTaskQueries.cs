@@ -1,18 +1,18 @@
-using System.Linq.Expressions;
-using System.Reflection;
-using System.Text;
 using Banori.Core.Torrents;
 using Banori.Data;
 using Banori.Features.Settings;
 using Banori.Integrations.Qbittorrent;
 using Microsoft.EntityFrameworkCore;
+using System.Linq.Expressions;
+using System.Reflection;
+using System.Text;
 
 namespace Banori.Features.Downloads;
 
 /// <summary>下载任务列表的只读投影查询：筛选与计数在 SQL 端完成后分页，展示不依赖登记编排与下载执行的客户端。</summary>
 public sealed class DownloadTaskQueries(
     IDbContextFactory<ApplicationDbContext> dbContextFactory,
-    ManageQbittorrentSettings?               qbittorrentSettings = null)
+    ManageQbittorrentSettings?              qbittorrentSettings = null)
 {
     /// <summary>LIKE 转义符：用户输入中的 %、_ 与反斜杠按字面匹配，不当作通配符。</summary>
     private const string LikeEscape = "\\";
@@ -44,7 +44,7 @@ public sealed class DownloadTaskQueries(
         if (totalCount == 0) return new DownloadTaskListPage([], page, pageSize, 0, languages);
 
         // 下载器就绪只读取一次：等待提交的解释需要同一快照，不能每个任务重复读设置。
-        var settings        = qbittorrentSettings is null ? null : await qbittorrentSettings.GetAsync(cancellationToken);
+        var settings = qbittorrentSettings is null ? null : await qbittorrentSettings.GetAsync(cancellationToken);
         var downloaderReady = settings is { Enabled: true, IsConfigured: true };
 
         // SQLite 不支持 DateTimeOffset 的 ORDER BY 与比较，无法纯 SQL 分页：取匹配行的轻量键集
@@ -67,7 +67,7 @@ public sealed class DownloadTaskQueries(
         var pageTasks = pageIds.Where(rowsById.ContainsKey).Select(id => rowsById[id]).ToList();
 
         var relatedNames = await RelatedNamesAsync(db, pageTasks, cancellationToken);
-        var items = pageTasks.Select(task => ToView(task, relatedNames, downloaderReady)).ToList();
+        var items        = pageTasks.Select(task => ToView(task, relatedNames, downloaderReady)).ToList();
         return new DownloadTaskListPage(items, page, pageSize, totalCount, languages);
     }
 
@@ -132,20 +132,20 @@ public sealed class DownloadTaskQueries(
                                 ((task.Status == DownloadTaskStatus.Downloading &&
                                   (task.IsSystemPaused ||
                                    task.LastObservedCategory == QbittorrentTorrentCategory.Checking)) ||
-                                 (task.Status               == DownloadTaskStatus.Paused           &&
+                                 (task.Status == DownloadTaskStatus.Paused &&
                                   ((task.LastObservedCategory == QbittorrentTorrentCategory.Checking &&
                                     string.IsNullOrEmpty(task.VerificationIntent)) ||
                                    (!task.IsUserPaused &&
-                                     EF.Functions.Like(task.VerificationIntent, UnconfirmedIntentPattern)))))) ||
+                                    EF.Functions.Like(task.VerificationIntent, UnconfirmedIntentPattern)))))) ||
                                (wantPaused && task.Status == DownloadTaskStatus.Paused &&
                                 !(task.LastObservedCategory == QbittorrentTorrentCategory.Checking &&
-                                  string.IsNullOrEmpty(task.VerificationIntent))                         &&
+                                  string.IsNullOrEmpty(task.VerificationIntent)) &&
                                 (task.VerificationIntent == null ||
-                                 task.IsUserPaused            ||
+                                 task.IsUserPaused               ||
                                  !EF.Functions.Like(task.VerificationIntent, UnconfirmedIntentPattern))) ||
-                               (wantCompleted && task.Status == DownloadTaskStatus.Completed) ||
-                               (wantFailed    && task.Status == DownloadTaskStatus.Failed)    ||
-                               (wantLost      && task.Status == DownloadTaskStatus.Lost)      ||
+                               (wantCompleted && task.Status == DownloadTaskStatus.Completed)            ||
+                               (wantFailed    && task.Status == DownloadTaskStatus.Failed)               ||
+                               (wantLost      && task.Status == DownloadTaskStatus.Lost)                 ||
                                (wantReplaced  && task.Status == DownloadTaskStatus.Replaced));
     }
 
@@ -311,8 +311,8 @@ public sealed class DownloadTaskQueries(
             VerificationRound        = intent?.Round            ?? 0,
             ObservedChecking         = intent?.ObservedChecking ?? false,
             CompletionEvidence       = intent?.CompletionEvidenceKind,
-            StopConfirmPending       = intent?.TimeoutStopRequestedAtUtc is not null ||
-                                       intent?.PauseRequestedAtUtc is not null,
+            StopConfirmPending = intent?.TimeoutStopRequestedAtUtc is not null ||
+                                 intent?.PauseRequestedAtUtc is not null,
             ResultStabilizing         = intent?.StabilityObservedAtUtc is not null,
             ExternalStopObservedAtUtc = task.ExternalStopObservedAtUtc,
             RunPurpose                = runRecovery?.Purpose,

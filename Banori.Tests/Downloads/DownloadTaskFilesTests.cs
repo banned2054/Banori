@@ -307,7 +307,7 @@ public sealed class DownloadTaskFilesTests
         var       id               = await harness.CreateUploadAsync(TestTorrentBytes.Create("Files Explain - 01"));
         var       namedSuccessor   = Guid.Parse("0123456789abcdef0123456789abcdef");
         var       unnamedSuccessor = Guid.Parse("fedcba9876543210fedcba9876543210");
-        var       service          = new FakeFileService(id, new DownloadTaskFilesView(id, "Root",
+        var service = new FakeFileService(id, new DownloadTaskFilesView(id, "Root",
         [
             new DownloadFileView(0, "Root/[Group] Anime - 01.mkv", "Root/E01.mkv", DownloadFileKind.Anime,
                                  "解析到集数", 1m, null, null, 3L * 1024 * 1024, true, null, null, null,
@@ -341,13 +341,10 @@ public sealed class DownloadTaskFilesTests
         Assert.Contains("大小：2 KB", html);
     }
 
-    private static DownloadTasksPageViewModel CreateViewModel(DownloadServiceTests.TestHarness harness,
-                                                              IDownloadFileService             service) =>
+    private static DownloadTasksPageViewModel CreateViewModel(
+        DownloadServiceTests.TestHarness harness, IDownloadFileService service) =>
         new(harness.Service, harness.Intake,
-            new DownloadTaskQueries(harness.Provider
-                                           .GetRequiredService<
-                                                IDbContextFactory<
-                                                    ApplicationDbContext>>()),
+            new DownloadTaskQueries(harness.Provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>()),
             NullLogger<DownloadTasksPageViewModel>.Instance, service);
 
     private static async Task<string> RenderAsync(DownloadTasksPageViewModel vm, Guid id)
@@ -382,16 +379,28 @@ public sealed class DownloadTaskFilesTests
                                                           "/downloads/NewRoot/renamed.mkv", "OldRoot", "NewRoot", true,
                                                           "预览警告");
 
-        public DownloadTaskFilesView Details { get; private set; } = details ?? new(taskId, "OldRoot",
-        [
-            new DownloadFileView(0, "OldRoot/[Group] Anime - 01.mkv", "OldRoot/renamed.mkv", DownloadFileKind.Anime,
-                                 "解析到集数", 1.5m, 2.5m, null, 1024, true, null, null, null, null),
-            new DownloadFileView(1, "OldRoot/[Group] Anime - 01.ja.zh-Hans.ass", "OldRoot/renamed.ja.zh-Hans.ass",
-                                 DownloadFileKind.Subtitle, "已识别字幕", 1m, null, null, 2048, true, null, null,
-                                 null, null),
-            new DownloadFileView(2, "OldRoot/NCOP.mkv", "OldRoot/Seed/NCOP.mkv", DownloadFileKind.Seed,
-                                 "特殊文件已过滤", null, null, null, 0, true, null, null, null, null)
-        ]);
+        public DownloadTaskFilesView Details { get; private set; } = details ??
+                                                                     new DownloadTaskFilesView(taskId, "OldRoot",
+                                                                     [
+                                                                         new DownloadFileView(0,
+                                                                                  "OldRoot/[Group] Anime - 01.mkv",
+                                                                                  "OldRoot/renamed.mkv",
+                                                                                  DownloadFileKind.Anime,
+                                                                                  "解析到集数", 1.5m, 2.5m, null, 1024, true,
+                                                                                  null, null, null, null),
+                                                                         new DownloadFileView(1,
+                                                                                  "OldRoot/[Group] Anime - 01.ja.zh-Hans.ass",
+                                                                                  "OldRoot/renamed.ja.zh-Hans.ass",
+                                                                                  DownloadFileKind.Subtitle, "已识别字幕",
+                                                                                  1m, null, null, 2048, true, null,
+                                                                                  null,
+                                                                                  null, null),
+                                                                         new DownloadFileView(2, "OldRoot/NCOP.mkv",
+                                                                                  "OldRoot/Seed/NCOP.mkv",
+                                                                                  DownloadFileKind.Seed,
+                                                                                  "特殊文件已过滤", null, null, null, 0, true,
+                                                                                  null, null, null, null)
+                                                                     ]);
 
         public Task<DownloadTaskFilesView> ListAsync(Guid id, CancellationToken cancellationToken = default)
         {

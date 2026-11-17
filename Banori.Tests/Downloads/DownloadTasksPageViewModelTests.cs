@@ -181,15 +181,16 @@ public sealed class DownloadTasksPageViewModelTests
     public async Task SelectAll_OperatesOnCurrentPageOnly_AndKeepsOtherPagesSelection()
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
-        await DownloadTaskListTestSeed.SeedAsync(harness, Enumerable.Range(0, 101)
-                                                                    .Select(index => DownloadTaskListTestSeed.NewTask(
-                                                                                 $"Sel - {index:0000}",
-                                                                                 DownloadTaskListTestSeed.At(index))));
+        await DownloadTaskListTestSeed.SeedAsync(harness,
+                                                 Enumerable.Range(0, 101)
+                                                           .Select(index =>
+                                                                       DownloadTaskListTestSeed
+                                                                          .NewTask($"Sel - {index:0000}",
+                                                                                    DownloadTaskListTestSeed
+                                                                                       .At(index))));
         var vm = CreateViewModel(harness);
         await vm.LoadAsync();
-        Assert.Multiple(
-                        () => Assert.Equal(101, vm.TotalCount),
-                        () => Assert.Equal(100, vm.Tasks.Count));
+        Assert.Multiple(() => Assert.Equal(101, vm.TotalCount), () => Assert.Equal(100, vm.Tasks.Count));
 
         vm.ToggleBatchMode();
         vm.ToggleSelectAll();
@@ -198,14 +199,10 @@ public sealed class DownloadTasksPageViewModelTests
         await vm.GoToPageAsync(2);
         Assert.Single(vm.Tasks);
         vm.ToggleSelectAll();
-        Assert.Multiple(
-                        () => Assert.True(vm.AllSelected),
-                        () => Assert.Equal(101, vm.SelectedCount));
+        Assert.Multiple(() => Assert.True(vm.AllSelected), () => Assert.Equal(101, vm.SelectedCount));
 
         vm.ToggleSelectAll();
-        Assert.Multiple(
-                        () => Assert.False(vm.AllSelected),
-                        () => Assert.Equal(100, vm.SelectedCount));
+        Assert.Multiple(() => Assert.False(vm.AllSelected), () => Assert.Equal(100, vm.SelectedCount));
 
         await vm.GoToPageAsync(1);
         Assert.True(vm.AllSelected);
@@ -239,15 +236,12 @@ public sealed class DownloadTasksPageViewModelTests
         Assert.Equal(100, vm.SelectedCount);
 
         await vm.ToggleStatusFilterAsync(DownloadStatusFilterGroup.Failed);
-        Assert.Multiple(
-                        () => Assert.Equal(2, vm.TotalCount),
-                        () => Assert.Equal(2, vm.Tasks.Count));
+        Assert.Multiple(() => Assert.Equal(2, vm.TotalCount), () => Assert.Equal(2, vm.Tasks.Count));
         vm.ToggleSelectAll();
         Assert.Equal(102, vm.SelectedCount);
 
         await vm.ClearFiltersAsync();
-        Assert.Multiple(
-                        () => Assert.Equal(102, vm.TotalCount),
+        Assert.Multiple(() => Assert.Equal(102, vm.TotalCount),
                         () => Assert.Equal(100, vm.Tasks.Count),
                         // 第一页的 100 个完成任务仍在选中集内，表头全选如实反映当前页。
                         () => Assert.True(vm.AllSelected));
@@ -263,9 +257,10 @@ public sealed class DownloadTasksPageViewModelTests
         // 目标任务是 501 条中最旧的一条：旧的 500 条截断实现会被本用例击穿。
         await DownloadTaskListTestSeed.SeedAsync(harness,
                                                  Enumerable.Range(1, 500)
-                                                           .Select(index => DownloadTaskListTestSeed.NewTask(
-                                                                        $"Hit - {index:0000}",
-                                                                        DownloadTaskListTestSeed.At(index)))
+                                                           .Select(index =>
+                                                                       DownloadTaskListTestSeed
+                                                                          .NewTask($"Hit - {index:0000}",
+                                                                                    DownloadTaskListTestSeed.At(index)))
                                                            .Prepend(DownloadTaskListTestSeed.NewTask("Old - 0001",
                                                                              DownloadTaskListTestSeed.At(0))));
         var vm = CreateViewModel(harness);
@@ -284,8 +279,7 @@ public sealed class DownloadTasksPageViewModelTests
 
         vm.SearchText = "Old - 0001";
         await WaitForFilterAsync(vm, () => vm.TotalCount == 1);
-        Assert.Multiple(
-                        () => Assert.Equal(1, vm.PageNumber),
+        Assert.Multiple(() => Assert.Equal(1, vm.PageNumber),
                         () => Assert.Equal(1, vm.TotalCount),
                         () => Assert.Equal("Old - 0001", Assert.Single(vm.Tasks).NamingSnapshot));
 
@@ -299,17 +293,14 @@ public sealed class DownloadTasksPageViewModelTests
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
         var tasks = Enumerable.Range(0, 101)
-                              .Select(index => DownloadTaskListTestSeed.NewTask(
-                                                                                $"Clamp - {index:0000}",
-                                                                                DownloadTaskListTestSeed.At(index)))
+                              .Select(index => DownloadTaskListTestSeed.NewTask($"Clamp - {index:0000}",
+                                                                                    DownloadTaskListTestSeed.At(index)))
                               .ToList();
         await DownloadTaskListTestSeed.SeedAsync(harness, tasks);
         var vm = CreateViewModel(harness);
         await vm.LoadAsync();
         await vm.GoToPageAsync(2);
-        Assert.Multiple(
-                        () => Assert.Equal(2, vm.PageNumber),
-                        () => Assert.Single(vm.Tasks));
+        Assert.Multiple(() => Assert.Equal(2, vm.PageNumber), () => Assert.Single(vm.Tasks));
 
         // 100 条后原第 2 页越界：刷新时查询层钳制回第 1 页。
         await using (var db = await harness.CreateDbContextAsync())
@@ -319,16 +310,14 @@ public sealed class DownloadTasksPageViewModelTests
         }
 
         await vm.LoadAsync();
-        Assert.Multiple(
-                        () => Assert.Equal(1, vm.PageNumber),
+        Assert.Multiple(() => Assert.Equal(1, vm.PageNumber),
                         () => Assert.Equal(100, vm.Tasks.Count),
                         () => Assert.Equal(100, vm.TotalCount));
 
         // 任务回到 101 条后刷新：内部页码已同步为 1，仍停在第 1 页，不自动跳回第 2 页。
         await DownloadTaskListTestSeed.SeedAsync(harness, [tasks[0]]);
         await vm.LoadAsync();
-        Assert.Multiple(
-                        () => Assert.Equal(1, vm.PageNumber),
+        Assert.Multiple(() => Assert.Equal(1, vm.PageNumber),
                         () => Assert.Equal(101, vm.TotalCount),
                         () => Assert.Equal(100, vm.Tasks.Count));
     }
@@ -337,12 +326,13 @@ public sealed class DownloadTasksPageViewModelTests
     public async Task ReverifyAsync_UnconfirmedTask_ReloadsResetIntentAndReportsSuccess()
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
-        var task = DownloadTaskListTestSeed.NewTask(
-            "Page Reverify OK", DownloadTaskListTestSeed.At(0), DownloadTaskStatus.Paused,
-            verificationIntent: new DownloadVerificationIntent
-            {
-                CreatedAtUtc = DownloadTaskListTestSeed.Base, Step = DownloadVerificationStep.Unconfirmed
-            }.ToJson());
+        var task = DownloadTaskListTestSeed.NewTask("Page Reverify OK", DownloadTaskListTestSeed.At(0),
+                                                    DownloadTaskStatus.Paused,
+                                                    verificationIntent : new DownloadVerificationIntent
+                                                    {
+                                                        CreatedAtUtc = DownloadTaskListTestSeed.Base,
+                                                        Step         = DownloadVerificationStep.Unconfirmed
+                                                    }.ToJson());
         await DownloadTaskListTestSeed.SeedAsync(harness, [task]);
         var vm = CreateViewModel(harness);
         await vm.LoadAsync();

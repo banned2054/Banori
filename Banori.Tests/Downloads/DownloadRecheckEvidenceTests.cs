@@ -1,5 +1,4 @@
 using Banned.Qbittorrent.Exceptions;
-using Banori.Data;
 using Banori.Features.Downloads;
 using Banori.Integrations.Qbittorrent;
 using Microsoft.EntityFrameworkCore;
@@ -40,11 +39,9 @@ public sealed class DownloadRecheckEvidenceTests
         Assert.Single(harness.Store.RecheckCalls); // 先见证、后补发：无需第二次请求。
         Assert.Empty(harness.Store.DeleteCalls);
         Assert.Single(harness.Store.ResumeCalls);
-        await using (var db = await harness.CreateDbContextAsync())
-        {
-            var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
-            Assert.Equal(DownloadFileVerificationOutcomes.ReusedVerified, file.VerificationOutcome);
-        }
+        await using var db = await harness.CreateDbContextAsync();
+        var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
+        Assert.Equal(DownloadFileVerificationOutcomes.ReusedVerified, file.VerificationOutcome);
     }
 
     /// <summary>基线完整且请求后仍完整：完成无法归因于本轮请求 → 未确认（原因文案区分），不隔离、不登记复用。</summary>
@@ -76,11 +73,9 @@ public sealed class DownloadRecheckEvidenceTests
         Assert.Equal(DownloadIsolationState.None, halted.IsolationState);
         Assert.Empty(harness.Store.DeleteCalls);
         Assert.Empty(harness.Store.ResumeCalls);
-        await using (var db = await harness.CreateDbContextAsync())
-        {
-            var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
-            Assert.Null(file.VerificationOutcome);
-        }
+        await using var db = await harness.CreateDbContextAsync();
+        var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
+        Assert.Null(file.VerificationOutcome);
     }
 
     /// <summary>
@@ -115,11 +110,9 @@ public sealed class DownloadRecheckEvidenceTests
         Assert.NotEqual(DownloadTaskStatus.Completed, isolated.Status);
         Assert.Empty(harness.Store.ResumeCalls);
         Assert.Contains(task.InfoHash, harness.Store.DeleteCalls.Select(call => call.Hash));
-        await using (var db = await harness.CreateDbContextAsync())
-        {
-            var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
-            Assert.Equal(DownloadFileVerificationOutcomes.ReuseUnverified, file.VerificationOutcome);
-        }
+        await using var db = await harness.CreateDbContextAsync();
+        var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
+        Assert.Equal(DownloadFileVerificationOutcomes.ReuseUnverified, file.VerificationOutcome);
     }
 
     /// <summary>部分缺失且可观察到本轮校验（checkingDL）：稳定后确认缺失 → 隔离，不登记复用。</summary>
@@ -142,11 +135,9 @@ public sealed class DownloadRecheckEvidenceTests
         Assert.NotEqual(DownloadIsolationState.None, isolated.IsolationState); // 隔离机可能在后续轮次推进。
         Assert.Contains(task.InfoHash, harness.Store.DeleteCalls.Select(call => call.Hash));
         Assert.Empty(harness.Store.ResumeCalls);
-        await using (var db = await harness.CreateDbContextAsync())
-        {
-            var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
-            Assert.Equal(DownloadFileVerificationOutcomes.ReuseUnverified, file.VerificationOutcome);
-        }
+        await using var db = await harness.CreateDbContextAsync();
+        var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
+        Assert.Equal(DownloadFileVerificationOutcomes.ReuseUnverified, file.VerificationOutcome);
     }
 
     /// <summary>无见证、无 checking（零数据快速校验 / 请求未生效）：保持未确认，不判缺失、不隔离。</summary>
@@ -226,12 +217,12 @@ public sealed class DownloadRecheckEvidenceTests
         // 回到「尚未发出」并让下载器进入外部内容校验（如用户/其他工具触发）。
         await RewriteIntentAsync(harness, taskId, intent => intent with
         {
-            Step                  = DownloadVerificationStep.Requested,
-            RequestState          = DownloadVerificationRequestState.NotSent,
-            ObservedChecking      = false,
+            Step = DownloadVerificationStep.Requested,
+            RequestState = DownloadVerificationRequestState.NotSent,
+            ObservedChecking = false,
             RecheckRequestedAtUtc = null,
-            DeadlineUtc           = null,
-            Baseline              = null
+            DeadlineUtc = null,
+            Baseline = null
         });
         harness.Store.Rechecking.Add(task.InfoHash);
         harness.Store.RawStates[task.InfoHash] = "checkingDL";
@@ -239,7 +230,7 @@ public sealed class DownloadRecheckEvidenceTests
         for (var i = 0; i < 3; i++) await SampleAsync(harness);
         var waiting = DownloadVerificationIntent.FromJson((await harness.GetTaskAsync(taskId)).VerificationIntent);
         Assert.NotNull(waiting);
-        Assert.False(waiting.ObservedChecking); // 外部校验不归属本轮。
+        Assert.False(waiting.ObservedChecking);    // 外部校验不归属本轮。
         Assert.Single(harness.Store.RecheckCalls); // 校验期间不叠加 recheck。
         Assert.DoesNotContain(task.InfoHash, harness.Store.PauseCalls);
 
@@ -354,8 +345,8 @@ public sealed class DownloadRecheckEvidenceTests
         var       task    = await harness.GetTaskAsync(taskId);
         harness.Factory.SessionConfigurator = session =>
         {
-            session.RecheckException    = new QbittorrentException("模拟 recheck 响应丢失");
-            session.BeforeRecheckAsync  = SeedCompleteDataAtRecheckAsync(harness, task.InfoHash);
+            session.RecheckException   = new QbittorrentException("模拟 recheck 响应丢失");
+            session.BeforeRecheckAsync = SeedCompleteDataAtRecheckAsync(harness, task.InfoHash);
         };
         harness.Store.RecheckBehavior = FakeRecheckBehavior.CompleteImmediately;
 
@@ -409,7 +400,7 @@ public sealed class DownloadRecheckEvidenceTests
         Assert.Equal(DownloadVerificationStep.Requested, invalidated.Step);
         Assert.Equal(DownloadVerificationRequestState.NotSent, invalidated.RequestState);
         var invalidatedTask = await harness.GetTaskAsync(taskId);
-        Assert.NotEqual(DownloadTaskStatus.Completed, invalidatedTask.Status); // 不凭旧基线判完成。
+        Assert.NotEqual(DownloadTaskStatus.Completed, invalidatedTask.Status);     // 不凭旧基线判完成。
         Assert.Equal(DownloadIsolationState.None, invalidatedTask.IsolationState); // 不凭重启后的状态判缺失。
 
         // 下一轮重发：新基线已是完整状态 → 完成仍无法归因 → 未确认（原因区分），不登记复用。
@@ -423,11 +414,9 @@ public sealed class DownloadRecheckEvidenceTests
         Assert.Contains("请求前数据已是完整状态", halted.Error);
         Assert.Empty(harness.Store.DeleteCalls);
         Assert.Empty(harness.Store.ResumeCalls);
-        await using (var db = await harness.CreateDbContextAsync())
-        {
-            var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
-            Assert.Null(file.VerificationOutcome);
-        }
+        await using var db = await harness.CreateDbContextAsync();
+        var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
+        Assert.Null(file.VerificationOutcome);
     }
 
     /// <summary>重启后重发并取得证据 → 完成：重启不影响证据规则本身，只作废旧轮次。</summary>
@@ -457,11 +446,9 @@ public sealed class DownloadRecheckEvidenceTests
         Assert.Null(completed.VerificationIntent);
         Assert.Empty(harness.Store.DeleteCalls);
         Assert.Single(harness.Store.ResumeCalls);
-        await using (var db = await harness.CreateDbContextAsync())
-        {
-            var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
-            Assert.Equal(DownloadFileVerificationOutcomes.ReusedVerified, file.VerificationOutcome);
-        }
+        await using var db = await harness.CreateDbContextAsync();
+        var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
+        Assert.Equal(DownloadFileVerificationOutcomes.ReusedVerified, file.VerificationOutcome);
     }
 
     /// <summary>重启后无证据 → 未确认：作废后按原有窗口与预算收敛，不隔离、不判缺失。</summary>
@@ -522,11 +509,11 @@ public sealed class DownloadRecheckEvidenceTests
         Assert.Null(invalidated.Baseline); // 旧基线已作废。
         Assert.Equal(DownloadVerificationRequestState.NotSent, invalidated.RequestState);
 
-        await harness.RoundAsync(); // 下一轮对账：重新捕获基线并重发。
+        await harness.RoundAsync();                        // 下一轮对账：重新捕获基线并重发。
         Assert.Equal(2, harness.Store.RecheckCalls.Count); // RecheckCalls 增加。
         var reissued = DownloadVerificationIntent.FromJson((await harness.GetTaskAsync(taskId)).VerificationIntent);
         Assert.NotNull(reissued);
-        Assert.NotNull(reissued.Baseline); // 基线被重建。
+        Assert.NotNull(reissued.Baseline);       // 基线被重建。
         Assert.Empty(harness.Store.DeleteCalls); // 作废与重发不隔离、不删种。
     }
 

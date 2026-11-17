@@ -1,6 +1,5 @@
 using Banori.Data;
 using Banori.Data.Migrations;
-using Banori.Features.Downloads;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
