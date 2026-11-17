@@ -21,6 +21,39 @@ public sealed class DownloadTaskQueriesFilterTests
     }
 
     [Fact]
+    public async Task StatusGroups_EmptySelectionShowsNothing_AndAllGroupsMatchUnfiltered()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        await DownloadTaskListTestSeed.SeedAsync(harness,
+        [
+            DownloadTaskListTestSeed.NewTask("Sel - 完成", DownloadTaskListTestSeed.At(0)),
+            DownloadTaskListTestSeed.NewTask("Sel - 下载中", DownloadTaskListTestSeed.At(1),
+                                             DownloadTaskStatus.Downloading),
+            DownloadTaskListTestSeed.NewTask("Sel - 失败", DownloadTaskListTestSeed.At(2), DownloadTaskStatus.Failed)
+        ]);
+
+        var unfiltered = await QueryAsync(harness, new DownloadTaskListFilter());
+        var allSelected = await QueryAsync(harness, new DownloadTaskListFilter
+        {
+            StatusGroups = Groups(DownloadStatusFilter.Choices.ToArray())
+        });
+        var none = await QueryAsync(harness, new DownloadTaskListFilter
+        {
+            StatusGroups = new HashSet<DownloadStatusFilterGroup>()
+        });
+
+        Assert.Multiple(
+                        () => Assert.Equal(3, unfiltered.TotalCount),
+                        // 默认筛选条件是全部勾选，与不限制状态等价。
+                        () => Assert.Equal(unfiltered.Items.Select(item => item.NamingSnapshot),
+                                           allSelected.Items.Select(item => item.NamingSnapshot)),
+                        // 空集合是“一个都不显示”，不是“不筛选”；语言选项仍覆盖全部历史任务。
+                        () => Assert.Equal(0, none.TotalCount),
+                        () => Assert.Empty(none.Items),
+                        () => Assert.Equal(unfiltered.Languages, none.Languages));
+    }
+
+    [Fact]
     public async Task Search_ReachesTasksBeyondLatestFiveHundred()
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
@@ -304,6 +337,7 @@ public sealed class DownloadTaskQueriesFilterTests
         // 期望以生产派生链为准：真实投影出视图后经 GroupOf 归组，SQL 谓词必须与之一致。
         var all = await QueryAsync(harness);
         Assert.Equal(rows.Length, all.TotalCount);
+        var covered = 0;
         foreach (var group in DownloadStatusFilter.Choices)
         {
             var expected = all.Items.Where(view => DownloadStatusFilter.GroupOf(view.Phase) == group)
@@ -311,11 +345,15 @@ public sealed class DownloadTaskQueriesFilterTests
                               .OrderBy(name => name, StringComparer.Ordinal)
                               .ToList();
             var result = await QueryAsync(harness, new DownloadTaskListFilter { StatusGroups = Groups(group) });
+            covered += expected.Count;
             Assert.Multiple(
                             () => Assert.Equal(expected, result.Items.Select(task => task.NamingSnapshot)
                                                                .OrderBy(name => name, StringComparer.Ordinal).ToList()),
                             () => Assert.Equal(expected.Count, result.TotalCount));
         }
+
+        // 分组是任务集合的划分：并集覆盖全部任务，页面取消勾选某个分组才等价于“只看其余分组”。
+        Assert.Equal(all.TotalCount, covered);
 
         // 同一 Unconfirmed 意图按是否保留人工暂停分属两个桶：不能因 JSON 条件同时被排除或重复计入。
         var pausedNames = (await QueryAsync(harness, new DownloadTaskListFilter

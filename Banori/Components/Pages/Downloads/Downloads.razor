@@ -7,6 +7,7 @@
 @inject DownloadService                     DownloadService
 @inject DownloadIntakeService               IntakeService
 @inject DownloadTaskQueries                 TaskQueries
+@inject DownloadTaskFilterStore             FilterStore
 @inject DownloadFileService                 FileService
 @inject ILogger<DownloadTasksPageViewModel> Logger
 
@@ -77,14 +78,18 @@ else
 		<input class="form-control" style="max-width: 260px;" type="search" placeholder="搜索标题、字幕组"
 		       aria-label="搜索下载任务" @bind="_vm.SearchText" @bind:event="oninput"/>
 		<div class="position-relative">
-			<button type="button" class="btn dropdown-toggle @(_vm.StatusFilter.Count > 0 ? "btn-primary" : "btn-outline-secondary")"
+			<button type="button" class="btn dropdown-toggle @(_vm.StatusFilterActive ? "btn-primary" : "btn-outline-secondary")"
 			        aria-expanded="@_statusPanelOpen" @onclick="ToggleStatusPanel">
-				状态@(_vm.StatusFilter.Count > 0 ? $"（{_vm.StatusFilter.Count}）" : string.Empty)
+				状态@(_vm.StatusFilterActive ? $"（{_vm.StatusFilter.Count}/{DownloadStatusFilter.Choices.Count}）" : string.Empty)
 			</button>
 			@if (_statusPanelOpen)
 			{
 				<div class="position-absolute bg-body border rounded shadow-sm p-2 mt-1 overflow-auto"
 				     style="z-index: 1055; min-width: 11rem; max-height: 20rem;">
+					<div class="d-flex justify-content-between align-items-center gap-3 border-bottom pb-1 mb-1">
+						<button type="button" class="btn btn-link btn-sm p-0" @onclick="_vm.SelectAllStatusesAsync">全选</button>
+						<button type="button" class="btn btn-link btn-sm p-0 text-body-secondary" @onclick="_vm.DeselectAllStatusesAsync">全不选</button>
+					</div>
 					@for (var i = 0; i < DownloadStatusFilter.Choices.Count; i++)
 					{
 						var group = DownloadStatusFilter.Choices[i];
@@ -424,7 +429,7 @@ else
 
 	protected override void OnInitialized()
 	{
-		_vm                =  new DownloadTasksPageViewModel(DownloadService, IntakeService, TaskQueries, Logger, FileService);
+		_vm                =  new DownloadTasksPageViewModel(DownloadService, IntakeService, TaskQueries, FilterStore, Logger, FileService);
 		_vm.ResultsChanged += OnResultsChanged;
 	}
 

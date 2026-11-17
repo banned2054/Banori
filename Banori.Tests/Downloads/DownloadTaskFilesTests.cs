@@ -1,6 +1,7 @@
 using Banori.Components.Pages.Downloads;
 using Banori.Data;
 using Banori.Features.Downloads;
+using Banori.Features.Settings;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.EntityFrameworkCore;
@@ -345,6 +346,7 @@ public sealed class DownloadTaskFilesTests
         DownloadServiceTests.TestHarness harness, IDownloadFileService service) =>
         new(harness.Service, harness.Intake,
             new DownloadTaskQueries(harness.Provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>()),
+            new DownloadTaskFilterStore(harness.Provider.GetRequiredService<IApplicationSettingStore>()),
             NullLogger<DownloadTasksPageViewModel>.Instance, service);
 
     private static async Task<string> RenderAsync(DownloadTasksPageViewModel vm, Guid id)

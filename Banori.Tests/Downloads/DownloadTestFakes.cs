@@ -18,15 +18,31 @@ public sealed class MemoryApplicationSettingStore : IApplicationSettingStore
     /// <summary>设置后每次读取抛出该异常，模拟设置存储故障。</summary>
     public Exception? ThrowOnGet { get; set; }
 
+    /// <summary>设置后每次写入抛出该异常，模拟设置存储写入失败。</summary>
+    public Exception? ThrowOnSet { get; set; }
+
+    /// <summary>设置后读取先返回已取到的旧值再等待该任务，模拟写入并发时仍在途的读取请求。</summary>
+    public Task? GetGate { get; set; }
+
+    /// <summary>按设置键记录成功写入的值（含写入完成顺序），用于断言同一键的写入次序。</summary>
+    public List<(string Key, string Value)> SetValues { get; } = [];
+
+    /// <summary>设置后该键的第 Call 次写入（1 起始）先等待 Gate，模拟写入在途与乱序完成。</summary>
+    public Dictionary<string, (int Call, Task Gate)> SetGates { get; } = new();
+
+    private readonly Dictionary<string, int> _setCounts = new();
+
     /// <summary>设置后读取以该前缀开头的键时抛出异常，模拟仅部分功能（如通知）的设置故障。</summary>
     public string? ThrowOnGetKeyPrefix { get; set; }
 
-    public Task<string?> GetAsync(string key, CancellationToken cancellationToken = default)
+    public async Task<string?> GetAsync(string key, CancellationToken cancellationToken = default)
     {
+        var value = Values.TryGetValue(key, out var stored) ? stored.Value : null;
+        if (GetGate is not null) await GetGate;
         if (ThrowOnGet is not null) throw ThrowOnGet;
         if (ThrowOnGetKeyPrefix is not null && key.StartsWith(ThrowOnGetKeyPrefix, StringComparison.Ordinal))
             throw new InvalidOperationException("模拟设置存储故障。");
-        return Task.FromResult(Values.TryGetValue(key, out var value) ? value.Value : null);
+        return value;
     }
 
     public Task SetAsync(string key, string value, CancellationToken cancellationToken = default) =>
@@ -41,10 +57,14 @@ public sealed class MemoryApplicationSettingStore : IApplicationSettingStore
         return Task.CompletedTask;
     }
 
-    private Task SetCore(string key, string value, bool isProtected)
+    private async Task SetCore(string key, string value, bool isProtected)
     {
+        if (ThrowOnSet is not null) throw ThrowOnSet;
+        var call = _setCounts.TryGetValue(key, out var count) ? count + 1 : 1;
+        _setCounts[key] = call;
+        if (SetGates.TryGetValue(key, out var gate) && gate.Call == call) await gate.Gate;
         Values[key] = (value, isProtected);
-        return Task.CompletedTask;
+        SetValues.Add((key, value));
     }
 }
 

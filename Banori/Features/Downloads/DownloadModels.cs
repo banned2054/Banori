@@ -1151,6 +1151,9 @@ public static class DownloadStatusFilter
         _ => DownloadStatusFilterGroup.Replaced
     };
 
+    /// <summary>全部状态分组：状态筛选默认全部勾选，全不勾选则是明确的“一个都不显示”。</summary>
+    public static HashSet<DownloadStatusFilterGroup> CreateAllGroups() => [.. Choices];
+
     public static string Text(DownloadStatusFilterGroup group) => group switch
     {
         DownloadStatusFilterGroup.WaitingSubmit     => "等待提交",
@@ -1174,9 +1177,12 @@ public sealed record DownloadTaskListFilter
     /// <summary>搜索关键词：匹配条目名、种子原始名、字幕组与命名快照；忽略首尾空白，LIKE 通配符按字面处理。</summary>
     public string SearchText { get; init; } = string.Empty;
 
-    /// <summary>状态分组多选；空集合表示全部状态。</summary>
+    /// <summary>
+    ///     状态分组多选：集合即需要显示的分组，空集合表示一个都不显示；全部选中与不限制状态等价。
+    ///     默认全部勾选，与页面状态筛选的初始值一致。
+    /// </summary>
     public IReadOnlySet<DownloadStatusFilterGroup> StatusGroups { get; init; } =
-        new HashSet<DownloadStatusFilterGroup>();
+        DownloadStatusFilter.CreateAllGroups();
 
     /// <summary>字幕语言多选（空字符串哨兵 = 无语言任务）；空集合表示全部语言。</summary>
     public IReadOnlySet<string> Languages { get; init; } = new HashSet<string>();

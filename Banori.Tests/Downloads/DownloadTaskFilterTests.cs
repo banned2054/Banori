@@ -12,6 +12,14 @@ public sealed class DownloadTaskFilterTests
                    group => Assert.False(string.IsNullOrWhiteSpace(DownloadStatusFilter.Text(group))));
     }
 
+    [Fact]
+    public void DefaultFilter_SelectsAllGroups_SoOnlyUncheckingCanHideStatuses()
+    {
+        var filter = new DownloadTaskListFilter();
+        Assert.True(filter.StatusGroups.SetEquals(DownloadStatusFilter.Choices));
+        Assert.True(DownloadStatusFilter.CreateAllGroups().SetEquals(DownloadStatusFilter.Choices));
+    }
+
     [Theory]
     [InlineData(DownloadDisplayPhase.WaitingSubmit, DownloadStatusFilterGroup.WaitingSubmit)]
     [InlineData(DownloadDisplayPhase.WaitingAddConfirm, DownloadStatusFilterGroup.WaitingAddConfirm)]

@@ -102,6 +102,8 @@ public sealed class DownloadTaskQueries(
 
     /// <summary>
     ///     状态分组过滤：与 DownloadStatusFilter.GroupOf 同一口径的 SQL 形状（等价性测试锁定两边一致）。
+    ///     集合就是要显示的分组：空集合（页面全不勾选）时所有分支都不启用，谓词恒不成立；
+    ///     全部勾选与不限制状态等价，直接省略谓词，默认列表不拼出九个分支的 OR。
     ///     显示阶段的细分（隔离/校验意图/准备阶段）都落在「准备与校验中」桶；校验意图存 JSON 无法直接查询，
     ///     仅「暂停/运行任务被下载器端 recheck 观察为校验中」这一处影响归属，用空意图近似该判断；
     ///     「校验未确认」同样是 Paused 但归准备与校验桶，按意图 JSON 的 Unconfirmed 片段精确归属；
@@ -110,7 +112,7 @@ public sealed class DownloadTaskQueries(
     private static IQueryable<DownloadTask> ApplyStatusGroups(
         IQueryable<DownloadTask> query, IReadOnlySet<DownloadStatusFilterGroup> groups)
     {
-        if (groups.Count == 0) return query;
+        if (DownloadStatusFilter.Choices.All(groups.Contains)) return query;
 
         var wantWaitingSubmit     = groups.Contains(DownloadStatusFilterGroup.WaitingSubmit);
         var wantWaitingAddConfirm = groups.Contains(DownloadStatusFilterGroup.WaitingAddConfirm);

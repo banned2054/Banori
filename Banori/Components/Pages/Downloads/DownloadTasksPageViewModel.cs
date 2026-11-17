@@ -7,6 +7,7 @@ public sealed class DownloadTasksPageViewModel(
     DownloadService                     downloadService,
     DownloadIntakeService               intakeService,
     DownloadTaskQueries                 taskQueries,
+    DownloadTaskFilterStore             filterStore,
     ILogger<DownloadTasksPageViewModel> logger,
     IDownloadFileService?               fileService = null) : IDisposable
 {
@@ -15,9 +16,20 @@ public sealed class DownloadTasksPageViewModel(
 
     private readonly HashSet<Guid> _selectedIds = [];
 
-    private readonly HashSet<DownloadStatusFilterGroup> _statusFilter        = [];
-    private          Guid[]                             _bulkConfirmationIds = [];
-    private          long                               _bulkRequestId;
+    // 状态筛选默认全部勾选：全不勾选表示一个状态都不显示，不再用空集合表达“不筛选”。
+    private readonly HashSet<DownloadStatusFilterGroup> _statusFilter = DownloadStatusFilter.CreateAllGroups();
+
+    // 已保存的筛选只在页面首次加载时读取，之后由勾选维护，定时刷新不回读；并发加载共用同一次读取。
+    private Task? _statusFilterLoadTask;
+
+    // 勾选串行写入同一设置项：保存链条的尾部保证较早的选择不会晚于较新的选择落库。
+    private Task _statusFilterSave = Task.CompletedTask;
+
+    // 用户在读取已保存筛选期间改过勾选：读取结果作废，不能把新选择覆盖成旧值。
+    private bool _statusFilterTouched;
+
+    private Guid[] _bulkConfirmationIds = [];
+    private long   _bulkRequestId;
 
     private bool _deleteFiles;
 
@@ -52,15 +64,18 @@ public sealed class DownloadTasksPageViewModel(
     /// <summary>测试注入：缩短防抖等待，避免用例真实挂起数百毫秒。</summary>
     internal TimeSpan SearchDebounceDelay { get; set; } = TimeSpan.FromMilliseconds(300);
 
-    /// <summary>状态筛选分组多选；空集合表示全部状态。</summary>
+    /// <summary>状态筛选分组多选：默认全部勾选（等于不限制），全不勾选表示一个状态都不显示。</summary>
     public IReadOnlySet<DownloadStatusFilterGroup> StatusFilter => _statusFilter;
+
+    /// <summary>状态筛选是否正在收窄：全选是默认的“不限制”，不计入生效中的筛选。</summary>
+    public bool StatusFilterActive => _statusFilter.Count != DownloadStatusFilter.Choices.Count;
 
     /// <summary>字幕语言筛选多选（空字符串哨兵 = 无语言任务）；空集合表示全部语言。</summary>
     public IReadOnlySet<string> LanguageFilter => _languageFilter;
 
     /// <summary>是否有生效中的筛选，用于展示清除入口与空态文案。</summary>
     public bool HasActiveFilters => _searchText.Trim().Length > 0 ||
-                                    _statusFilter.Count       > 0 ||
+                                    StatusFilterActive        ||
                                     _languageFilter.Count     > 0;
 
     /// <summary>分页状态：页码为查询层钳制后的实际值，TotalCount 是筛选后的完整总数而不只当前页。</summary>
@@ -145,7 +160,8 @@ public sealed class DownloadTasksPageViewModel(
         // 请求序号防止慢查询晚到覆盖较新的结果；防抖取消令牌同时中止过期的数据库查询。
         // 选择集只由用户操作维护，不与当前页求交集：翻页或筛选隐藏的任务保留已选状态。
         var requestId = ++_loadRequestId;
-        var page      = await taskQueries.ListAsync(BuildFilter(), cancellationToken);
+        await EnsureStatusFilterLoadedAsync(cancellationToken);
+        var page = await taskQueries.ListAsync(BuildFilter(), cancellationToken);
         if (requestId != _loadRequestId) return;
         // 查询层钳制越界页后把实际页码同步回内部状态；过期请求已在上方返回，不会覆盖新状态。
         Tasks              = page.Items;
@@ -169,10 +185,84 @@ public sealed class DownloadTasksPageViewModel(
         Page         = _pageNumber
     };
 
-    public async Task ToggleStatusFilterAsync(DownloadStatusFilterGroup group)
+    /// <summary>
+    ///     页面生命周期内只恢复一次已保存的状态筛选：之后由用户勾选维护，
+    ///     15 秒自动刷新不回读，避免中途覆盖当前页面的选择。读取失败按全部勾选继续。
+    /// </summary>
+    private async Task EnsureStatusFilterLoadedAsync(CancellationToken cancellationToken)
     {
-        if (!_statusFilter.Remove(group)) _statusFilter.Add(group);
+        // 并发加载共用同一次读取：后到的加载不能把“读取已开始”当成“已恢复”，
+        // 否则它会先用默认全选查一遍，恢复后的勾选要等下一次刷新才反映到列表。
+        _statusFilterLoadTask ??= LoadStatusFilterAsync();
+        // 用户已经改过勾选，这次读取的结果注定作废，不必等它结束再查询。
+        if (_statusFilterTouched) return;
+        await _statusFilterLoadTask.WaitAsync(cancellationToken);
+    }
+
+    /// <summary>读取已保存筛选并恢复勾选；读取本身不随某次页面加载取消，结果供所有等待者共用。</summary>
+    private async Task LoadStatusFilterAsync()
+    {
+        try
+        {
+            var stored = await filterStore.GetStatusGroupsAsync();
+            // 用户在读取期间改过勾选时以用户选择为准，读取结果作废但不影响其他加载等待这一轮读取。
+            if (_statusFilterTouched) return;
+            _statusFilter.Clear();
+            _statusFilter.UnionWith(stored);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "读取下载任务状态筛选失败，按全部分组显示。");
+        }
+    }
+
+    /// <summary>整体替换状态筛选勾选：与当前勾选一致时不重复查询。</summary>
+    public async Task SetStatusFilterAsync(IEnumerable<DownloadStatusFilterGroup> groups)
+    {
+        var target = groups.ToHashSet();
+        if (target.SetEquals(_statusFilter)) return;
+        _statusFilterTouched = true;
+        _statusFilter.Clear();
+        _statusFilter.UnionWith(target);
+        await SaveStatusFilterAsync();
         await ReloadFromFirstPageAsync();
+    }
+
+    public Task ToggleStatusFilterAsync(DownloadStatusFilterGroup group)
+    {
+        var target = new HashSet<DownloadStatusFilterGroup>(_statusFilter);
+        if (!target.Remove(group)) target.Add(group);
+        return SetStatusFilterAsync(target);
+    }
+
+    /// <summary>状态筛选全选：等于不限制状态，也是从全不勾选恢复的入口。</summary>
+    public Task SelectAllStatusesAsync() => SetStatusFilterAsync(DownloadStatusFilter.Choices);
+
+    /// <summary>状态筛选全不选：明确的“一个都不显示”，列表随即为空。</summary>
+    public Task DeselectAllStatusesAsync() => SetStatusFilterAsync([]);
+
+    /// <summary>保存勾选供刷新后恢复；按调用顺序串行写入，保存失败只记录日志，当前页面仍按已勾选过滤。</summary>
+    private async Task SaveStatusFilterAsync()
+    {
+        // 先快照当前勾选：串行化的是写入次数与顺序，后一次保存必须仍是调用时的选择。
+        var groups = _statusFilter.ToHashSet();
+        var save   = SaveStatusFilterCoreAsync(_statusFilterSave, groups);
+        _statusFilterSave = save;
+        await save;
+    }
+
+    private async Task SaveStatusFilterCoreAsync(Task previousSave, HashSet<DownloadStatusFilterGroup> groups)
+    {
+        // 连续勾选可能并发发出多次保存：前一次写完再写，避免较早的选择晚于较新的选择落库。
+        await previousSave;
+        try
+        {
+            await filterStore.SaveStatusGroupsAsync(groups);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "保存下载任务状态筛选失败，本次选择仅在当前页面生效。");
+        }
     }
 
     public async Task ToggleLanguageFilterAsync(string language)
@@ -181,12 +271,17 @@ public sealed class DownloadTasksPageViewModel(
         await ReloadFromFirstPageAsync();
     }
 
-    /// <summary>清空搜索与全部多选筛选，回到第一页全量展示。</summary>
+    /// <summary>清空搜索与全部多选筛选，状态回到全选（不限制），回到第一页全量展示。</summary>
     public async Task ClearFiltersAsync()
     {
+        var resetStatus = StatusFilterActive;
         _searchText = string.Empty;
+        _statusFilterTouched = true;
         _statusFilter.Clear();
+        _statusFilter.UnionWith(DownloadStatusFilter.Choices);
         _languageFilter.Clear();
+        // 状态筛选同样持久化：清除后写回全选，刷新不会恢复成旧的收窄选择。
+        if (resetStatus) await SaveStatusFilterAsync();
         await ReloadFromFirstPageAsync();
     }
 

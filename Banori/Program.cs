@@ -211,6 +211,7 @@ internal class Program
         builder.Services.AddScoped<DownloadFileService>();
         builder.Services.AddScoped<DownloadIntakeService>();
         builder.Services.AddScoped<DownloadTaskQueries>();
+        builder.Services.AddScoped<DownloadTaskFilterStore>();
         builder.Services.AddScoped<SourceScopeBackfill>();
         builder.Services.AddScoped<IQbittorrentSessionFactory, QbittorrentSessionFactory>();
         builder.Services.AddSingleton<ProxyService>();
