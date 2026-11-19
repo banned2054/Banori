@@ -50,12 +50,15 @@
 								<div>原始路径：<code class="text-break">@file.OriginalPath</code></div>
 								<div>当前路径：<code class="text-break">@file.CurrentPath</code></div>
 								<div class="mt-1">
-									<span class="badge text-bg-secondary me-2">@KindText(file.Kind)</span>
+									<span class="badge text-bg-secondary">@KindText(file.Kind)</span>
 									@if (!file.IsSelectedForDownload)
 									{
-										<span class="badge text-bg-secondary me-2">不下载</span>
+										<span class="badge text-bg-secondary ms-2">不下载</span>
 									}
-									分类原因：@file.ClassificationReason
+									@if (ClassificationReasonText(file) is { } classification)
+									{
+										<span class="ms-2">分类原因：@classification</span>
+									}
 									<span class="ms-2">集数：@EpisodeText(file)</span>
 									<span class="ms-2">大小：@SizeText(file.Size)</span>
 								</div>
@@ -216,11 +219,16 @@
 		return $"已被 {name} 承接";
 	}
 
-	/// <summary>复用结果只描述该次映射的确认状态，不据此断言字节内容不同。</summary>
+	/// <summary>已解析到集数是正片的常规结果，不值得单独显示；其余原因解释文件为何被判为 Seed 或人工覆盖。</summary>
+	private static string? ClassificationReasonText(DownloadFileView file) =>
+		string.Equals(file.ClassificationReason, "AniParser 已解析到集数", StringComparison.Ordinal)
+			? null
+			: file.ClassificationReason;
+
+	/// <summary>只提示复用未证实；已证实属正常状态不显示。</summary>
 	private static string? VerificationText(DownloadFileView file) =>
 		file.VerificationOutcome switch
 		{
-			DownloadFileVerificationOutcomes.ReusedVerified  => "复用已证实",
 			DownloadFileVerificationOutcomes.ReuseUnverified => "复用未证实（该次映射未通过/未确认）",
 			_                                                => null
 		};

@@ -180,10 +180,6 @@ else
 						</td>
 					}
 					<td>
-						<button type="button" class="btn btn-sm btn-outline-secondary mb-1" aria-expanded="@_vm.FileState(task.Id).Expanded"
-						        aria-controls="files-@task.Id" disabled="@_vm.Busy" @onclick="() => ToggleFilesAsync(task.Id)">
-							@(_vm.FileState(task.Id).Expanded ? "收起文件" : "展开文件")
-						</button>
 						<div class="fw-semibold">@DownloadStatusTitle(task)</div>
 						<code class="small">@task.NamingSnapshot</code>
 						@if (!string.IsNullOrEmpty(task.SiteSource))
@@ -192,6 +188,12 @@ else
 								<span class="badge text-bg-info">@task.SiteSource</span>
 							</div>
 						}
+						<div class="mt-1">
+							<button type="button" class="btn btn-sm btn-outline-secondary" aria-expanded="@_vm.FileState(task.Id).Expanded"
+							        aria-controls="files-@task.Id" disabled="@_vm.Busy" @onclick="() => ToggleFilesAsync(task.Id)">
+								@(_vm.FileState(task.Id).Expanded ? "收起文件" : "展开文件")
+							</button>
+						</div>
 					</td>
 					<td>
 						<span class="badge @StatusClass(task.Phase)">@task.StatusText</span>

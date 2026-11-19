@@ -302,6 +302,27 @@ public sealed class DownloadTaskFilesTests
     }
 
     [Fact]
+    public async Task Render_HidesRoutineParsedReasonButKeepsDiagnosticReasons()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        var       id      = await harness.CreateUploadAsync(TestTorrentBytes.Create("Files Reason - 01"));
+        var service = new FakeFileService(id, new DownloadTaskFilesView(id, "Root",
+        [
+            new DownloadFileView(0, "Root/[Group] Anime - 01.mkv", "Root/E01.mkv", DownloadFileKind.Anime,
+                                 "AniParser 已解析到集数", 1m, null, null, 3L * 1024 * 1024, true, null, null, null,
+                                 null),
+            new DownloadFileView(1, "Root/NCOP.mkv", "Root/Seed/NCOP.mkv", DownloadFileKind.Seed,
+                                 "命中过滤词", null, null, null, 0, false, null, null, null, null)
+        ]));
+        var vm = CreateViewModel(harness, service);
+        await vm.ToggleFilesAsync(id);
+        var html = await RenderAsync(vm, id);
+
+        Assert.DoesNotContain("分类原因：AniParser 已解析到集数", html);
+        Assert.Contains("分类原因：命中过滤词", html);
+    }
+
+    [Fact]
     public async Task Render_ExplainsUnselectedSupersededReuseAndReadableSize()
     {
         using var harness          = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
@@ -333,7 +354,7 @@ public sealed class DownloadTaskFilesTests
         Assert.Contains("不下载原因：同集包内择优落选", html);
         Assert.Contains("已被 Other Anime 承接", html);
         Assert.Contains("已被 fedcba98 承接", html);
-        Assert.Contains("复用校验：复用已证实", html);
+        Assert.DoesNotContain("复用校验：复用已证实", html);
         Assert.Contains("复用校验：复用未证实（该次映射未通过/未确认）", html);
         Assert.Contains("大小：3 MB", html);
         Assert.Contains("大小：2 GB", html);
