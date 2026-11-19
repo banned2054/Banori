@@ -10,8 +10,39 @@
 
 <PageTitle>动画 - Banori</PageTitle>
 
-<h1>动画</h1>
-<p class="text-body-secondary">按 Bangumi Subject 汇总下载任务；点击封面或标题展开单集列表，每集仅显示当前任务，被替换的旧版本不显示。</p>
+<div class="anime-header">
+	<div>
+		<h1>动画</h1>
+		<p class="text-body-secondary">按 Bangumi Subject 汇总下载任务；点击封面或标题展开单集列表，每集仅显示当前任务，被替换的旧版本不显示。</p>
+	</div>
+	<div class="anime-sort">
+		<button type="button" class="btn btn-sm btn-outline-secondary anime-sort-trigger"
+		        popovertarget="anime-sort-menu" @ref="_sortTrigger" title="排序"
+		        aria-label="@SortTriggerLabel">
+			<span class="bi bi-arrow-down-up" aria-hidden="true"></span>
+			<span>@SortText(_vm.SortField)</span>
+			<span aria-hidden="true">@(_vm.Descending ? "↓" : "↑")</span>
+		</button>
+		<div id="anime-sort-menu" popover="auto" class="anime-sort-menu" aria-label="排序方式">
+			@foreach (var field in SortFields)
+			{
+				var active = field == _vm.SortField;
+				<button type="button" class="anime-sort-option @(active ? "is-active" : null)"
+				        popovertarget="anime-sort-menu" popovertargetaction="hide"
+				        aria-current="@(active ? "true" : null)"
+				        autofocus="@(field == SortFields[0] ? "" : null)"
+				        @onclick="() => SelectSortAsync(field)">
+					<span>@SortText(field)</span>
+					@if (active)
+					{
+						<span class="visually-hidden">（@(_vm.Descending ? "降序" : "升序")）</span>
+						<span aria-hidden="true">@(_vm.Descending ? "↓" : "↑")</span>
+					}
+				</button>
+			}
+		</div>
+	</div>
+</div>
 
 @if (!_vm.Loaded)
 {
@@ -24,14 +55,16 @@ else if (_vm.Animes.Count == 0)
 else
 {
 	var expandedIndex = -1;
+	var sorted        = _vm.SortedAnimes;
 	<div class="anime-grid">
-		@for (var i = 0; i < _vm.Animes.Count; i++)
+		@for (var i = 0; i < sorted.Count; i++)
 		{
-			var anime                   = _vm.Animes[i];
+			var anime                   = sorted[i];
 			var expanded                = _vm.ExpandedSubjectId == anime.SubjectId;
 			if (expanded) expandedIndex = i;
 			<div class="card anime-card @(expanded ? "anime-card-active" : null)" style="order: @(i * 2)" role="button"
-			     tabindex="0" aria-expanded="@expanded" @onclick="() => Toggle(anime.SubjectId)">
+			     tabindex="0" aria-expanded="@expanded" @onclick="() => Toggle(anime.SubjectId)"
+			     @key="anime.SubjectId">
 				<div class="poster-frame">
 					@if (!string.IsNullOrEmpty(anime.ImageUrl))
 					{
@@ -50,7 +83,7 @@ else
 		}
 		@if (expandedIndex >= 0)
 		{
-			var expandedAnime = _vm.Animes[expandedIndex];
+			var expandedAnime = sorted[expandedIndex];
 			<div class="anime-panel" style="order: @(expandedIndex * 2 + 1); --i: @expandedIndex">
 				<div class="anime-panel-box">
 					<div class="anime-episodes">
@@ -84,6 +117,13 @@ else
 @code {
 	private readonly CancellationTokenSource _cts = new();
 	private          AnimePageViewModel      _vm  = null!;
+	private          ElementReference        _sortTrigger;
+
+	private static readonly AnimeSortField[] SortFields =
+	[
+		AnimeSortField.Name, AnimeSortField.AirDate,
+		AnimeSortField.FirstAdded, AnimeSortField.LastAdded
+	];
 
 	protected override void OnInitialized()
 	{
@@ -95,6 +135,24 @@ else
 	private void Toggle(int subjectId)
 	{
 		_vm.Toggle(subjectId);
+	}
+
+	private string SortTriggerLabel =>
+		$"排序，当前按{SortText(_vm.SortField)}{(_vm.Descending ? "降序" : "升序")}";
+
+	private static string SortText(AnimeSortField field) => field switch
+	{
+		AnimeSortField.Name       => "名称",
+		AnimeSortField.AirDate    => "播出日期",
+		AnimeSortField.FirstAdded => "首次添加",
+		AnimeSortField.LastAdded  => "最近添加",
+		_                         => string.Empty
+	};
+
+	private async Task SelectSortAsync(AnimeSortField field)
+	{
+		_vm.SetSort(field);
+		await _sortTrigger.FocusAsync();
 	}
 
 	private static string FormatEpisode(decimal episode) =>

@@ -112,6 +112,44 @@ public sealed class AnimeQueriesTests
         Assert.Equal(DownloadTaskStatus.Failed, final.Status);
     }
 
+    [Fact]
+    public async Task ListAsync_RegistrationRange_CountsEpisodeLessAndSelectionLoss()
+    {
+        using var harness   = await AnimeQueriesHarness.CreateAsync();
+        var       subjectId = await harness.AddSubjectAsync("星屑旅途", airDate : "2026-04-05");
+        var       t0        = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var       t1        = t0.AddDays(1);
+        var       t2        = t0.AddDays(2);
+        var       t3        = t0.AddDays(3);
+
+        // 阶段一：无集数任务作为最新登记；若查询误过滤 Episode，此断言会失败。
+        await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Replaced, 1, created : t0);
+        var winner = await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Completed, 2, created : t1);
+        await harness.AddTaskAsync(subjectId, null, DownloadTaskStatus.Failed, 3, created : t2);
+        await harness.AddFeedItemAsync(subjectId, 2m);
+
+        var card = Assert.Single(await harness.Queries.ListAsync());
+
+        Assert.Equal("2026-04-05", card.AirDate);
+        Assert.Equal(t0, card.FirstTorrentAtUtc);
+        Assert.Equal(t2, card.LastTorrentAtUtc);
+        var episode = Assert.Single(card.Episodes);
+        Assert.Equal(1m, episode.Episode);
+        Assert.Equal(winner, episode.Final.TaskId);
+
+        // 阶段二：更晚的择优落选记录再次刷新「最近添加」，但不改变卡片和单集列表。
+        await harness.AddTaskAsync(subjectId, 1m, DownloadTaskStatus.Replaced, 4, created : t3,
+                                   failedStep : "择优");
+
+        var after = Assert.Single(await harness.Queries.ListAsync());
+
+        Assert.Equal(t0, after.FirstTorrentAtUtc);
+        Assert.Equal(t3, after.LastTorrentAtUtc);
+        var episodeAfter = Assert.Single(after.Episodes);
+        Assert.Equal(1m, episodeAfter.Episode);
+        Assert.Equal(winner, episodeAfter.Final.TaskId);
+    }
+
     private sealed class AnimeQueriesHarness : IDisposable
     {
         private readonly DirectoryInfo   _directory;
@@ -159,7 +197,7 @@ public sealed class AnimeQueriesTests
             return new AnimeQueriesHarness(directory, provider, factory);
         }
 
-        public async Task<int> AddSubjectAsync(string nameCn, string? name = null)
+        public async Task<int> AddSubjectAsync(string nameCn, string? name = null, string? airDate = null)
         {
             await using var db = await Factory.CreateDbContextAsync();
             var subject = new MediaSubject
@@ -168,6 +206,7 @@ public sealed class AnimeQueriesTests
                 Name        = name ?? nameCn,
                 NameCn      = nameCn,
                 Platform    = "TV",
+                AirDate     = airDate,
                 CachedAtUtc = DateTimeOffset.UnixEpoch
             };
             db.MediaSubjects.Add(subject);

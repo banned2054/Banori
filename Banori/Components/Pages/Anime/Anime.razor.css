@@ -1,5 +1,62 @@
 /* 动画总览：海报墙网格、行下探出面板与单集行 */
 
+.anime-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    max-width: 80rem;
+    margin-inline: auto;
+}
+
+.anime-sort {
+    flex: none;
+}
+
+.anime-sort-trigger {
+    /* popover 进入顶层后祖先的定位基准无效，菜单改用锚点定位对齐到本按钮 */
+    anchor-name: --anime-sort-anchor;
+    white-space: nowrap;
+}
+
+.anime-sort-menu {
+    position: fixed;
+    position-anchor: --anime-sort-anchor;
+    position-area: block-end span-inline-start;
+    justify-self: end;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+    margin: 0;
+    padding: 0.35rem;
+    min-width: 9rem;
+    background: var(--bs-body-bg);
+    color: var(--bs-body-color);
+    border: 1px solid var(--bs-border-color);
+    border-radius: 0.5rem;
+}
+
+.anime-sort-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    width: 100%;
+    padding: 0.4rem 0.6rem;
+    border: none;
+    border-radius: 0.35rem;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.anime-sort-option:hover {
+    background: var(--bs-tertiary-bg);
+}
+
+.anime-sort-option.is-active {
+    color: var(--bs-primary);
+}
+
 .anime-grid {
     display: grid;
     /* 轨道数是每行海报数的 4 倍、每张海报占 4 轨（每行 2/3/4/6 张对应 8/12/16/24 轨），

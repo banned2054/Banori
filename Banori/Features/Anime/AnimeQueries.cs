@@ -10,7 +10,10 @@ public sealed record AnimeCard(
     int                         SubjectId,
     string                      DisplayName,
     string?                     ImageUrl,
-    IReadOnlyList<AnimeEpisode> Episodes);
+    IReadOnlyList<AnimeEpisode> Episodes,
+    string?                     AirDate,
+    DateTimeOffset?             FirstTorrentAtUtc,
+    DateTimeOffset?             LastTorrentAtUtc);
 
 /// <summary>一个同集（按任务上记录的集数分组）及其现任任务；被替换的旧版本不参与聚合。</summary>
 public sealed record AnimeEpisode(decimal Episode, AnimeEpisodeLine Final);
@@ -53,13 +56,37 @@ public sealed class AnimeQueries(IDbContextFactory<ApplicationDbContext> dbConte
         var subjectIds = rows.Select(row => row.SubjectId).Distinct().ToList();
         var subjects = await db.MediaSubjects.AsNoTracking()
                                .Where(subject => subjectIds.Contains(subject.Id))
-                               .Select(subject => new { subject.Id, subject.Name, subject.NameCn, subject.ImageUrl })
+                               .Select(subject => new
+                                {
+                                    subject.Id,
+                                    subject.Name,
+                                    subject.NameCn,
+                                    subject.ImageUrl,
+                                    subject.AirDate
+                                })
                                .ToDictionaryAsync(subject => subject.Id, cancellationToken);
+
+        // 登记历史取该 Subject 下仍保留的全部任务：不过滤状态与集数，落选与旧版本也计入。
+        // 只投影两列并在内存里取极值，避开 EF Core 对 DateTimeOffset 的 Min/Max 翻译差异。
+        var registrations = await db.DownloadTasks.AsNoTracking()
+                                     .Where(task => task.SubjectId != null &&
+                                                    subjectIds.Contains(task.SubjectId!.Value))
+                                     .Select(task => new
+                                      {
+                                          SubjectId = task.SubjectId!.Value,
+                                          task.CreatedAtUtc
+                                      })
+                                     .ToListAsync(cancellationToken);
+        var ranges = registrations.GroupBy(row => row.SubjectId)
+                                  .ToDictionary(group => group.Key,
+                                                group => (First: (DateTimeOffset?)group.Min(row => row.CreatedAtUtc),
+                                                          Last:  (DateTimeOffset?)group.Max(row => row.CreatedAtUtc)));
 
         return rows.GroupBy(row => row.SubjectId)
                    .Select(group =>
                     {
                         subjects.TryGetValue(group.Key, out var subject);
+                        ranges.TryGetValue(group.Key, out var range);
                         var displayName = subject is null             ? $"#{group.Key}" :
                             string.IsNullOrWhiteSpace(subject.NameCn) ? subject.Name : subject.NameCn;
                         return new AnimeCard(group.Key, displayName, subject?.ImageUrl,
@@ -85,7 +112,10 @@ public sealed class AnimeQueries(IDbContextFactory<ApplicationDbContext> dbConte
                                                                   .OrderByDescending(line => line.Version)
                                                                   .ThenByDescending(line => line.CreatedAtUtc)
                                                                   .First()))
-                                                  .ToList());
+                                                  .ToList(),
+                                             subject?.AirDate,
+                                             range.First,
+                                             range.Last);
                     })
                    .OrderBy(card => card.DisplayName, StringComparer.CurrentCulture)
                    .ToList();
