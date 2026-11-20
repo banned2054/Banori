@@ -65,8 +65,13 @@ public sealed class DownloadSubmissionPathValidator(IDbContextFactory<Applicatio
                                .Where(path => path is not null).Select(path => path!)
                                .Distinct(StringComparer.OrdinalIgnoreCase);
                     foreach (var path in paths)
-                    foreach (var candidate in roots)
-                        CheckFile(targets, Join(candidate, path), source);
+                    {
+                        // 坏记录隔离只适用于终态且没有挂起转移的任务，并且必须能证明其文件落在
+                        // 本次目标之外；解析失败或仍可能占用目标时一律 fail-closed。
+                        if (!IsSafeRelativePath(path) && UnsafePathIsDisjoint(other, path, targets)) continue;
+                        foreach (var candidate in roots)
+                            CheckFile(targets, Join(candidate, path), source);
+                    }
                 }
 
                 continue;
@@ -135,6 +140,65 @@ public sealed class DownloadSubmissionPathValidator(IDbContextFactory<Applicatio
             if (normalized == "/" || Conflicts(target, normalized))
                 throw new
                     InvalidOperationException($"提交路径无法确认安全：原始文件“{target}”可能与 {source} 的目录范围“{normalized}”冲突，请先核对文件清单。");
+    }
+
+    private static bool IsSafeRelativePath(string path)
+    {
+        try
+        {
+            RelativeDownloadPathPolicy.Normalize(path);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    ///     终态旧记录的错误路径只有在能沿保存根解析到目标之外时才可跳过；解析失败或仍与
+    ///     任一目标相交时无法排除占用，必须继续挡住提交。
+    /// </summary>
+    private static bool UnsafePathIsDisjoint(DownloadTask other, string path, IEnumerable<string> targets)
+    {
+        if (other.Status.IsActive() || other.PendingSavePath is not null ||
+            other.Files.Any(file => file.PendingRenameFrom is not null || file.PendingRenameTo is not null))
+            return false;
+
+        return TryResolveUnsafeAbsolute(other.SavePath, path, out var absolute) &&
+               !targets.Any(target => Conflicts(target, absolute));
+    }
+
+    /// <summary>尽力按字符串解析不可信相对路径；含无法判断的字符或越出根时返回 false，不访问下载器或磁盘。</summary>
+    private static bool TryResolveUnsafeAbsolute(string root, string relative, out string absolute)
+    {
+        absolute = string.Empty;
+        var raw = relative.Trim().Replace('\\', '/');
+        if (raw.Length is 0 or > RelativeDownloadPathPolicy.MaxLength ||
+            raw.Any(char.IsControl) || raw.IndexOfAny(['<', '>', '"', '|', '?', '*']) >= 0)
+            return false;
+
+        var combined = raw.StartsWith('/') ? raw : DownloadPathNamePolicy.NormalizePath(root) + "/" + raw;
+        // 网络共享根以 // 开头；解析结果必须保留同样的前缀，才能与按 Root 拼出的目标路径正确比较。
+        var prefix   = combined.StartsWith("//", StringComparison.Ordinal) ? "//" : "/";
+        var segments = new List<string>();
+        foreach (var segment in combined.Split('/'))
+            switch (segment)
+            {
+                case "" or "." : break;
+                case ".." :
+                    if (segments.Count == 0) return false;
+                    segments.RemoveAt(segments.Count - 1);
+                    break;
+                default :
+                    if (segment != segment.Trim() || segment.Contains(':')) return false;
+                    segments.Add(segment);
+                    break;
+            }
+
+        if (segments.Count == 0) return false;
+        absolute = prefix + string.Join('/', segments);
+        return true;
     }
 
     private static string Join(string root, string relative)

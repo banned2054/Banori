@@ -261,7 +261,7 @@ public sealed partial class DownloadServiceTests
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
                                                                 unconfigured
                                                                    .CreateUploadAsync(TestTorrentBytes
-                                                                       .Create("Uploaded Anime - 01")));
+                                                                                .Create("Uploaded Anime - 01")));
 
         using var configured = await CreateHarnessAsync();
         await Assert.ThrowsAsync<InvalidOperationException>(() => configured.CreateUploadAsync("bad"u8.ToArray()));
@@ -386,10 +386,10 @@ public sealed partial class DownloadServiceTests
     [Fact]
     public async Task CreateFromRssFeed_UnknownHostAndUploadOther_AreSeparateArbitrationDomains()
     {
-        using var harness = await CreateHarnessAsync();
+        using var harness  = await CreateHarnessAsync();
         // 上传未命中 PT tracker → other；未知 RSS 主机 → (unknown)。两者同 Subject/集数也不得互相裁决。
-        var uploadId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语")));
-        var upload   = await harness.GetTaskAsync(uploadId);
+        var       uploadId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语")));
+        var       upload   = await harness.GetTaskAsync(uploadId);
         Assert.Equal("other", upload.SiteSource);
         Assert.Equal(SourceScopes.Other, SourceScopes.FromSiteSource(upload.SiteSource));
         Assert.Equal(SourceScopes.Unknown, SourceScopes.FromFeedHost("self.example.org"));
@@ -682,8 +682,41 @@ public sealed partial class DownloadServiceTests
         Assert.Empty(harness.Store.AddCalls);
 
         await harness.ReconcileAsync();
-        Assert.Equal(task.SavePath, Assert.Single(harness.Store.AddCalls).SavePath);
+        // 纯正片目录快照直接作为下载根；含 Seed 的附件包仍在全局根下同时容纳两棵子树。
+        var mediaRoot = "/downloads/" + task.MediaDirectory;
+        Assert.Equal(contentOnly ? mediaRoot : "/downloads",
+                     Assert.Single(harness.Store.AddCalls).SavePath);
         Assert.Equal(DownloadTaskStatus.Downloading, (await harness.GetTaskAsync(taskId)).Status);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Submit_PureAnimeDownloadsIntoMediaRoot_MixedPackKeepsGlobalRoot(bool contentOnly)
+    {
+        using var harness     = await CreateHarnessAsync(enableFileArchive : true);
+        var       directories = harness.Provider.GetRequiredService<DownloadDirectorySettingsStore>();
+        await directories.SaveAsync("Library/Anime", "Seeding/Originals");
+        await harness.SaveNamingTemplateAsync("{title}");
+        await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
+        var bytes = contentOnly
+            ? TestTorrentBytes.Create(NekoTitle("简日双语"))
+            : CreateMultiFileTorrent("Original Pack", ("Video/" + NekoTitle("简日双语"), 1024),
+                                     ("Extras/notes.txt", 37));
+        var taskId = await harness.CreateUploadAsync(bytes);
+        var task   = await harness.GetTaskAsync(taskId);
+        Assert.Equal("/downloads", task.SavePath); // 登记时仍在全局根，提交时才按文件构成决定。
+
+        await harness.ReconcileAsync();
+
+        var submitted = await harness.GetTaskAsync(taskId);
+        Assert.Equal(contentOnly ? "/downloads/Library/Anime" : "/downloads", submitted.SavePath);
+        Assert.Equal(submitted.SavePath, Assert.Single(harness.Store.AddCalls).SavePath);
+        if (contentOnly)
+        {
+            Assert.Empty(harness.Store.SetLocationCalls);
+            Assert.All(harness.Store.RenameFileCalls, call => Assert.DoesNotContain("Library/Anime/", call.NewPath));
+        }
     }
 
     [Fact]
@@ -788,10 +821,11 @@ public sealed partial class DownloadServiceTests
 
         var completed = await harness.GetTaskAsync(taskId);
         Assert.Equal(DownloadTaskStatus.Completed, completed.Status); // 完成与归档可用分别展示。
+        Assert.Equal("/downloads/Library/Anime", completed.SavePath); // 纯正片包以媒体目录为根，原名落地后原地改名。
         await using var db2 = await harness.CreateDbContextAsync();
         var archived = await db2.DownloadTaskFiles.AsNoTracking().Where(file => file.DownloadTaskId == taskId)
                                 .OrderBy(file => file.FileIndex).ToListAsync();
-        Assert.Equal(["Library/Anime/测试作品 E12.mp4", "Library/Anime/测试作品 E13.mp4"],
+        Assert.Equal(["测试作品 E12.mp4", "测试作品 E13.mp4"],
                      archived.Select(file => file.CurrentRelativePath));
     }
 
@@ -1201,8 +1235,8 @@ public sealed partial class DownloadServiceTests
         await using (var db = await harness.CreateDbContextAsync())
         {
             var oldFile = await db.DownloadTaskFiles.SingleAsync(file => file.DownloadTaskId == oldTaskId);
-            // 任务专属根任务迁入后保存根为下载根，媒体目录在相对路径内。
-            Assert.Equal("Media/Anime/测试作品 E12.mp4", oldFile.CurrentRelativePath);
+            // 纯正片任务迁入后保存根即媒体目录，相对路径为去前缀的动画名。
+            Assert.Equal("测试作品 E12.mp4", oldFile.CurrentRelativePath);
         }
 
         // 同来源新版本（简体→简体 v2，不同压制故大小不同）目标同名：来源隔离后只有同源版本才登记
@@ -1211,8 +1245,8 @@ public sealed partial class DownloadServiceTests
         var replacementName = NekoTitle("简日双语").Replace("[12]", "[12v2]", StringComparison.Ordinal);
         var replacementBytes = Encoding.UTF8.GetBytes(Encoding.UTF8
                                                               .GetString(TestTorrentBytes.Create(
-                                                                  replacementName,
-                                                                  "https://tracker.byr.pt/announce.php?passkey=old"))
+                                                                              replacementName,
+                                                                              "https://tracker.byr.pt/announce.php?passkey=old"))
                                                               .Replace("6:lengthi1024e", "6:lengthi2048e",
                                                                        StringComparison.Ordinal));
         var newTaskId = await harness.CreateUploadAsync(replacementBytes);
@@ -1237,7 +1271,7 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
         Assert.Contains(harness.Store.RenameFileCalls,
                         call => call.Hash == oldTask.InfoHash && call.NewPath.Contains(".replaced/",
-                            StringComparison.Ordinal));
+                                 StringComparison.Ordinal));
     }
 
     /// <summary>整包进度 100% 也不能跳过所选文件核验：远端取消了计划要求下载的文件时不得判定完成。</summary>
@@ -1850,8 +1884,8 @@ public sealed partial class DownloadServiceTests
     {
         await using var db = await harness.CreateDbContextAsync();
         return await db.EpisodeVersions.AsNoTracking()
-                       .SingleOrDefaultAsync(row => row.SubjectId   == subjectId   &&
-                                                    row.Episode     == episode     &&
+                       .SingleOrDefaultAsync(row => row.SubjectId   == subjectId &&
+                                                    row.Episode     == episode   &&
                                                     row.SourceScope == sourceScope);
     }
 
@@ -2052,9 +2086,9 @@ public sealed partial class DownloadServiceTests
     {
         using var harness = await CreateHarnessAsync();
         var pendingId = await harness.CreateDownloadAsync(await SeedAcceptedItemAsync(harness, "stale-snapshot",
-                                                              "Snapshot Pending - 01"));
+                                                                   "Snapshot Pending - 01"));
         var sentinelId = await harness.CreateDownloadAsync(await SeedAcceptedItemAsync(harness, "stale-sentinel",
-                                                               "Snapshot Sentinel - 01"));
+                                                                    "Snapshot Sentinel - 01"));
         await using (var db = await harness.CreateDbContextAsync())
         {
             var sentinel = await db.DownloadTasks.SingleAsync(task => task.Id == sentinelId);
@@ -2624,8 +2658,8 @@ public sealed partial class DownloadServiceTests
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                                                                                 harness
                                                                                    .CreateUploadAsync(TestTorrentBytes
-                                                                                           .Create(title),
-                                                                                        subjectId : null));
+                                                                                                .Create(title),
+                                                                                             subjectId : null));
 
         Assert.Contains("Bangumi ID", exception.Message);
         Assert.Equal(0, await CountTasksAsync(harness));
@@ -2863,8 +2897,8 @@ public sealed partial class DownloadServiceTests
         await harness.ReconcileAsync(); // 提交（停止状态添加）。
         await harness.ReconcileAsync(); // 准备流程：应用命名计划并恢复下载。
 
-        // 文件名模板书写的 / 直接建立子目录；任务内命名使用同一相对路径（含媒体目录前缀）。
-        Assert.Equal(["Media/Anime/测试作品 E12/测试作品.mp4"], harness.Store.Files[hash]);
+        // 文件名模板书写的 / 直接建立子目录；纯正片以媒体目录为根，命名相对该根表达。
+        Assert.Equal(["测试作品 E12/测试作品.mp4"], harness.Store.Files[hash]);
         Assert.Equal(DownloadTaskStatus.Downloading, (await harness.GetTaskAsync(taskId)).Status);
 
         CompleteTorrent(harness, hash);
@@ -2900,7 +2934,7 @@ public sealed partial class DownloadServiceTests
         Assert.Null(blocked.CompletedAtUtc);
         Assert.DoesNotContain(second.InfoHash, harness.Store.ResumeCalls);
         Assert.DoesNotContain(harness.Store.RenameFileCalls, call => call.Hash == second.InfoHash);
-        Assert.Equal("Media/Anime/测试作品 E12.mp4", Assert.Single(harness.Store.FileIdentities[first.InfoHash]).Path);
+        Assert.Equal("测试作品 E12.mp4", Assert.Single(harness.Store.FileIdentities[first.InfoHash]).Path);
     }
 
     [Fact]
@@ -2949,7 +2983,7 @@ public sealed partial class DownloadServiceTests
         var held = await harness.GetTaskAsync(taskId);
         Assert.Equal(DownloadTaskStatus.Completed, held.Status);
         Assert.NotNull(held.CompletedAtUtc);
-        Assert.Equal("/downloads", held.SavePath);
+        Assert.Equal("/downloads/Media/Anime", held.SavePath);
         var review = DownloadArchiveReview.FromJson(held.ArchiveReview);
         Assert.NotNull(review);
         Assert.NotEmpty(review.Reason);
@@ -3596,7 +3630,7 @@ public sealed partial class DownloadServiceTests
 
         await Assert.ThrowsAsync<QbittorrentException>(() =>
                                                            harness.Service.DeleteAsync(taskId,
-                                                               true, false));
+                                                                    true, false));
 
         Assert.NotNull(await harness.GetTaskAsync(taskId));
     }
@@ -3824,7 +3858,7 @@ public sealed partial class DownloadServiceTests
             FeedUrlProtected = protector.Protect("https://mikanani.me/RSS/bangumi"),
             IsEnabled        = false, RefreshIntervalMinutes = 30
         });
-        var itemId = Guid.NewGuid();
+        var itemId    = Guid.NewGuid();
         // P4 批量择优：条目必须是其所在同集组的当前优胜候选才能创建下载任务。
         // 组键 (SubjectId, MediaType, Episode) 有唯一索引；同一测试内同组再播种条目时以 stableId
         // 区分 MediaType，条目与选择记录必须使用同一个组键，创建前置核验才能按完整组键命中。
@@ -3836,9 +3870,9 @@ public sealed partial class DownloadServiceTests
             TorrentUrl        = $"https://mikanani.me/Download/{stableId}.torrent",
             FirstSeenAtUtc    = harness.Timestamp.AddHours(-1), Status      = FeedItemStatus.Accepted,
             DecisionStatus    = ReleaseDecisionStatus.Accepted, ParsedTitle = parsedTitle ?? torrentName,
-            MediaType         = mediaType, Episode = episode, Version = version, Group = "S1",
-            Language          = language ?? "Sc", Resolution = "R1080P", SubjectId = subjectId,
-            Preference        = preference, Reason = "测试决策。",
+            MediaType         = mediaType, Episode                          = episode, Version = version, Group = "S1",
+            Language          = language ?? "Sc", Resolution                = "R1080P", SubjectId = subjectId,
+            Preference        = preference, Reason                          = "测试决策。",
             NamingPreview     = naming,
             NamingIngredients = BuildNamingIngredients(episode, version),
             EvaluatedAtUtc    = harness.Timestamp
@@ -3846,8 +3880,8 @@ public sealed partial class DownloadServiceTests
         db.CandidateSelections.Add(new CandidateSelection
         {
             Id               = Guid.NewGuid(), SubjectId = subjectId ?? 42, MediaType = mediaType, Episode = episode,
-            WinnerFeedItemId = itemId, RuleVersion       = 1, RankingBasis     = "测试优胜",
-            NamingSnapshot   = naming, IntentTaskId      = null, SelectedAtUtc = harness.Timestamp
+            WinnerFeedItemId = itemId, RuleVersion       = 1, RankingBasis            = "测试优胜",
+            NamingSnapshot   = naming, IntentTaskId      = null, SelectedAtUtc        = harness.Timestamp
         });
         await db.SaveChangesAsync();
         return itemId;

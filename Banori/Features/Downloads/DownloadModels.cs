@@ -524,6 +524,15 @@ public static class DownloadPathDecisionKinds
 
     /// <summary>下载器已存在同 Hash 种子：接管其真实保存位置。</summary>
     public const string SameHashAdoption = "SameHashAdoption";
+
+    /// <summary>旧版纯正片布局的一次性迁移：换到媒体根并去掉相对路径中的媒体目录前缀。</summary>
+    public const string LegacyLayoutMigration = "LegacyLayoutMigration";
+
+    /// <summary>
+    ///     升级前归档日志已确认：最终布局固定为旧版全局根加媒体目录前缀，完成收尾时沿用已发布的
+    ///     根与相对路径，不按新版规则重新切到媒体根。
+    /// </summary>
+    public const string LegacyArchiveFinal = "LegacyArchiveFinal";
 }
 
 /// <summary>路径决策记录：保存根为什么这样选。每次新决策覆盖旧记录，保留最近一次以供解释。</summary>

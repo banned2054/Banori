@@ -29,6 +29,7 @@ namespace Banori.Tests.Downloads;
 public sealed partial class DownloadVerificationTests
 {
     private const string DownloadRoot = "/downloads";
+    private const string MediaRoot    = DownloadRoot + "/Media/Anime";
 
     private static string TaskRootOf(VerificationHarness harness, Guid taskId) =>
         DownloadTaskPlacement.TaskRoot(DownloadRoot, taskId);
@@ -41,12 +42,13 @@ public sealed partial class DownloadVerificationTests
         using var harness = await VerificationHarness.CreateAsync();
         var       taskId  = await harness.CreateUploadAsync(SingleFileTorrent());
         var       task    = await harness.GetTaskAsync(taskId);
-        Assert.Equal(DownloadRoot, task.SavePath);
+        Assert.Equal(DownloadRoot, task.SavePath); // 登记仍在全局根；提交时才决定落到媒体目录。
         for (var i = 0; i < 3; i++) await harness.ReconcileAsync();
-        Assert.Equal(DownloadRoot, Assert.Single(harness.Store.AddCalls).SavePath);
-        Assert.Equal(DownloadRoot, harness.Store.Torrents[task.InfoHash].SavePath);
+        Assert.Equal(MediaRoot, Assert.Single(harness.Store.AddCalls).SavePath);
+        Assert.Equal(MediaRoot, harness.Store.Torrents[task.InfoHash].SavePath);
         Assert.Contains(task.InfoHash, harness.Store.ResumeCalls);
-        Assert.All(harness.Store.RenameFileCalls, call => Assert.StartsWith("Media/Anime/", call.NewPath));
+        Assert.All(harness.Store.RenameFileCalls,
+                   call => Assert.DoesNotContain("Media/Anime/", call.NewPath, StringComparison.Ordinal));
         Assert.Empty(harness.Store.RecheckCalls);
         Assert.Empty(harness.Store.SetLocationCalls);
     }
@@ -78,7 +80,7 @@ public sealed partial class DownloadVerificationTests
         await harness.ReconcileAsync();
         var completed = await harness.GetTaskAsync(taskId);
         Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
-        Assert.Equal(DownloadRoot, completed.SavePath);
+        Assert.Equal(MediaRoot, completed.SavePath);
         Assert.Null(completed.ArchiveReview);
         Assert.Empty(harness.Store.SetLocationCalls);
         Assert.Equal(await FirstAnimeFileIdAsync(harness, taskId), await IncumbentVideoFileIdAsync(harness, taskId));
@@ -103,7 +105,7 @@ public sealed partial class DownloadVerificationTests
                                                                call.NewPath.StartsWith(".replaced/",
                                                                    StringComparison.Ordinal));
         var archived = await harness.GetTaskAsync(challengerId);
-        Assert.Equal(DownloadRoot, archived.SavePath);
+        Assert.Equal(MediaRoot, archived.SavePath);
         Assert.Null(archived.ArchiveReview);
         Assert.Equal(await FirstAnimeFileIdAsync(harness, challengerId),
                      await IncumbentVideoFileIdAsync(harness, challengerId));
@@ -249,7 +251,7 @@ public sealed partial class DownloadVerificationTests
         Assert.Null(reused.VerificationIntent);
         Assert.False(reused.IsSystemPaused);
         // 数据完整性确认后继续做种：完整且停止时恢复一次并重新通告 tracker（旧实现完成后不启动）。
-        Assert.Equal(1, harness.Store.ResumeCalls.Count(hash => hash == task.InfoHash));
+        Assert.Equal(1, harness.Store.ResumeCalls.Count(hash => hash     == task.InfoHash));
         Assert.Equal(1, harness.Store.ReannounceCalls.Count(hash => hash == task.InfoHash));
         await using (var db = await harness.CreateDbContextAsync())
         {
@@ -448,7 +450,7 @@ public sealed partial class DownloadVerificationTests
 
         Assert.DoesNotContain(task.InfoHash, harness.Store.PauseCalls);
         // 数据已确认完整：停止态下恢复一次做种并通告 tracker，而不是把完成等同于停止。
-        Assert.Equal(1, harness.Store.ResumeCalls.Count(hash => hash == task.InfoHash));
+        Assert.Equal(1, harness.Store.ResumeCalls.Count(hash => hash     == task.InfoHash));
         Assert.Equal(1, harness.Store.ReannounceCalls.Count(hash => hash == task.InfoHash));
         var reused = await harness.GetTaskAsync(taskId);
         Assert.Equal(DownloadTaskStatus.Completed, reused.Status);
@@ -493,7 +495,7 @@ public sealed partial class DownloadVerificationTests
         Assert.Equal(DownloadTaskStatus.Completed, reused.Status);
         Assert.Null(reused.VerificationIntent);
         // 校验通过后继续做种：停止态下恢复一次并重新通告 tracker。
-        Assert.Equal(1, harness.Store.ResumeCalls.Count(hash => hash == task.InfoHash));
+        Assert.Equal(1, harness.Store.ResumeCalls.Count(hash => hash     == task.InfoHash));
         Assert.Equal(1, harness.Store.ReannounceCalls.Count(hash => hash == task.InfoHash));
         await using (var db = await harness.CreateDbContextAsync())
         {
@@ -575,12 +577,12 @@ public sealed partial class DownloadVerificationTests
     {
         await using var db = await harness.CreateDbContextAsync();
         var task = await db.DownloadTasks.Where(value => value.Id == taskId)
-                             .Select(value => new { value.SubjectId, value.SiteSource }).FirstAsync();
+                           .Select(value => new { value.SubjectId, value.SiteSource }).FirstAsync();
         if (task.SubjectId is not { } subjectId) return null;
         var sourceScope = SourceScopes.FromSiteSource(task.SiteSource);
         var row = await db.EpisodeVersions.AsNoTracking()
-                          .Where(value => value.SubjectId   == subjectId   &&
-                                          value.SourceScope == sourceScope &&
+                          .Where(value => value.SubjectId            == subjectId   &&
+                                          value.SourceScope          == sourceScope &&
                                           value.IncumbentVideoFileId != null)
                           .ToListAsync();
         return row.SingleOrDefault()?.IncumbentVideoFileId;
@@ -644,7 +646,7 @@ public sealed partial class DownloadVerificationTests
         await harness.ReconcileAsync();
         var completed = await harness.GetTaskAsync(newId);
         Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
-        Assert.Equal(DownloadRoot, completed.SavePath);
+        Assert.Equal(MediaRoot, completed.SavePath);
         Assert.Null(completed.ArchiveReview);
         Assert.StartsWith(".replaced/", Assert.Single(harness.Store.FileIdentities[old.InfoHash]).Path);
         Assert.Equal(await FirstAnimeFileIdAsync(harness, newId), await IncumbentVideoFileIdAsync(harness, newId));

@@ -479,9 +479,10 @@ public sealed class DownloadFileServiceTests
         await using var h = await Harness.CreateWithFiles(("one.txt", 1024), ("two.txt", 1024));
         await h.Service.InitializeAsync(h.Task.Id);
         var persisted = (await h.Load()).Files.OrderBy(file => file.FileIndex)
-                          .Select(file => (file.FileIndex, file.OriginalRelativePath, file.CurrentRelativePath,
-                                           file.Size))
-                          .ToList();
+                                        .Select(file => (file.FileIndex, file.OriginalRelativePath,
+                                                         file.CurrentRelativePath,
+                                                         file.Size))
+                                        .ToList();
         var bytes = h.Task.TorrentFile;
         await h.Update(task => task.TorrentFile = []);
         h.Store.ExportedTorrents[h.Task.InfoHash] = bytes;
@@ -513,9 +514,9 @@ public sealed class DownloadFileServiceTests
         Assert.Empty(restored.TorrentFile);
         Assert.Equal(persisted,
                      restored.Files.OrderBy(file => file.FileIndex)
-                           .Select(file => (file.FileIndex, file.OriginalRelativePath, file.CurrentRelativePath,
-                                            file.Size))
-                           .ToList());
+                             .Select(file => (file.FileIndex, file.OriginalRelativePath, file.CurrentRelativePath,
+                                              file.Size))
+                             .ToList());
         h.AssertNoRemoteWrites();
     }
 
@@ -992,14 +993,220 @@ public sealed class DownloadFileServiceTests
     }
 
     [Fact]
-    public async Task LastSeedChangedToAnime_DoesNotMoveMixedRootBackToClean()
+    public async Task LastSeedChangedToAnime_MovesMixedRootBackToClean()
     {
         await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
         await h.Service.ApplyAsync(h.Task.Id, 0, new DownloadFileEditRequest(DownloadFileKind.Seed));
         await h.Service.ApplyAsync(h.Task.Id, 0, new DownloadFileEditRequest(DownloadFileKind.Anime));
+        Assert.Equal("/downloads/Media/Anime", (await h.Load()).SavePath);
+        Assert.Equal("E01.mkv", (await h.Load()).Files.Single().CurrentRelativePath);
+        Assert.Equal(2, h.Store.SetLocationCalls.Count);
+    }
+
+    [Fact]
+    public async Task Apply_AddSeedToCompletedCleanTask_MovesWholeTorrentToGlobalRoot()
+    {
+        await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv",
+                                                 "【喵萌奶茶屋】[Test Anime][02][1080p][简日双语].mkv");
+        await h.CompleteTestContentAsync();
+        Assert.True(await h.Service.ArchiveCompletedAsync(h.Task.Id));
+        // 文件服务只负责布局；数据库完成状态由对账服务推进，这里显式补齐以覆盖人工切根的前置条件。
+        await h.Update(task => task.Status = DownloadTaskStatus.Completed);
+        Assert.Equal(DownloadTaskStatus.Completed, (await h.Load()).Status);
+        string retainedAbsolute;
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var retained = await db.DownloadTaskFiles.AsNoTracking()
+                                   .SingleAsync(file => file.DownloadTaskId == h.Task.Id && file.FileIndex == 1);
+            retainedAbsolute = "/downloads/Media/Anime/" + retained.CurrentRelativePath;
+        }
+
+        await h.Service.ApplyAsync(h.Task.Id, 0, new DownloadFileEditRequest(DownloadFileKind.Seed));
+
+        var task = await h.Load();
+        Assert.Equal("/downloads", task.SavePath);
+        Assert.Equal("/downloads", h.Store.Torrents[h.Task.InfoHash].SavePath);
+        Assert.Equal("Seed/Original/【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv",
+                     task.Files.Single(file => file.FileIndex == 0).CurrentRelativePath);
+        var retainedFile = task.Files.Single(file => file.FileIndex == 1);
+        Assert.Equal("Media/Anime/E02.mkv", retainedFile.CurrentRelativePath);
+        Assert.Equal(retainedAbsolute, "/downloads/" + retainedFile.CurrentRelativePath);
+        Assert.Equal(retainedAbsolute,
+                     "/downloads/" + h.Store.FileIdentities[h.Task.InfoHash].Single(file => file.Index == 1).Path);
+    }
+
+    [Fact]
+    public async Task Apply_RemoveLastSeedFromCompletedMixedTask_MovesBackToMediaRoot()
+    {
+        await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv",
+                                                 "Extras/notes.txt");
+        await h.CompleteTestContentAsync();
+        Assert.True(await h.Service.ArchiveCompletedAsync(h.Task.Id));
+        // 文件服务只负责布局；数据库完成状态由对账服务推进，这里显式补齐以覆盖人工切根的前置条件。
+        await h.Update(task => task.Status = DownloadTaskStatus.Completed);
+        Assert.Equal(DownloadTaskStatus.Completed, (await h.Load()).Status);
+        string retainedAbsolute;
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var retained = await db.DownloadTaskFiles.AsNoTracking()
+                                   .SingleAsync(file => file.DownloadTaskId == h.Task.Id && file.FileIndex == 0);
+            Assert.Equal("Media/Anime/E01.mkv", retained.CurrentRelativePath);
+            retainedAbsolute = "/downloads/" + retained.CurrentRelativePath;
+        }
+
+        await h.Service.ApplyAsync(h.Task.Id, 1,
+                                   new DownloadFileEditRequest(DownloadFileKind.Anime, AnimeRelativePath : "E02.mkv"));
+
+        var task = await h.Load();
+        Assert.Equal("/downloads/Media/Anime", task.SavePath);
+        Assert.Equal("/downloads/Media/Anime", h.Store.Torrents[h.Task.InfoHash].SavePath);
+        var retainedFile = task.Files.Single(file => file.FileIndex == 0);
+        Assert.Equal("E01.mkv", retainedFile.CurrentRelativePath);
+        Assert.Equal(retainedAbsolute, "/downloads/Media/Anime/" + retainedFile.CurrentRelativePath);
+        Assert.Equal(retainedAbsolute,
+                     "/downloads/Media/Anime/" +
+                     h.Store.FileIdentities[h.Task.InfoHash].Single(file => file.Index == 0).Path);
+        Assert.Equal("E02.mkv", task.Files.Single(file => file.FileIndex == 1).CurrentRelativePath);
+        Assert.Equal("E02.mkv", h.Store.FileIdentities[h.Task.InfoHash].Single(file => file.Index == 1).Path);
+    }
+
+    [Fact]
+    public async Task Apply_ChangeOneSeedWhileAnotherRemains_KeepsGlobalRoot()
+    {
+        await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv",
+                                                 "Extras/notes.txt", "Extras/readme.txt");
+        await h.CompleteTestContentAsync();
+        Assert.True(await h.Service.ArchiveCompletedAsync(h.Task.Id));
+        // 文件服务只负责布局；数据库完成状态由对账服务推进，这里显式补齐以覆盖人工切根的前置条件。
+        await h.Update(task => task.Status = DownloadTaskStatus.Completed);
+        Assert.Equal(DownloadTaskStatus.Completed, (await h.Load()).Status);
         Assert.Equal("/downloads", (await h.Load()).SavePath);
-        Assert.Equal("Media/Anime/E01.mkv", (await h.Load()).Files.Single().CurrentRelativePath);
-        Assert.Single(h.Store.SetLocationCalls);
+
+        await h.Service.ApplyAsync(h.Task.Id, 1,
+                                   new DownloadFileEditRequest(DownloadFileKind.Anime, AnimeRelativePath : "E02.mkv"));
+
+        var task = await h.Load();
+        Assert.Equal("/downloads", task.SavePath);
+        Assert.Equal("Media/Anime/E02.mkv", task.Files.Single(file => file.FileIndex == 1).CurrentRelativePath);
+        var remainingSeed = task.Files.Single(file => file.FileIndex                 == 2);
+        Assert.Equal(DownloadFileKind.Seed, remainingSeed.Kind);
+        Assert.Equal("Seed/Original/Extras/readme.txt", remainingSeed.CurrentRelativePath);
+    }
+
+    [Fact]
+    public async Task PreviewAndApply_UnselectedAnimeToSeedInMixedPackage_KeepRoot()
+    {
+        await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv",
+                                                 "【喵萌奶茶屋】[Test Anime][02][1080p][简日双语].mkv",
+                                                 "Extras/notes.txt");
+        await h.CompleteTestContentAsync();
+        Assert.True(await h.Service.ArchiveCompletedAsync(h.Task.Id));
+        await h.Update(task => task.Status = DownloadTaskStatus.Completed);
+        // 被编辑的正片本身未选中：明确编辑的文件不受“未选中文件保留绝对路径”限制。
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var file = await db.DownloadTaskFiles.SingleAsync(value => value.DownloadTaskId == h.Task.Id &&
+                                                                       value.FileIndex      == 1);
+            file.IsSelectedForDownload = false;
+            await db.SaveChangesAsync();
+        }
+
+        var request        = new DownloadFileEditRequest(DownloadFileKind.Seed);
+        var renameBefore   = h.Store.RenameFileCalls.Count;
+        var locationBefore = h.Store.SetLocationCalls.Count;
+        var preview        = await h.Service.PreviewAsync(h.Task.Id, 1, request);
+        Assert.Equal("/downloads", preview.CurrentRootPath);
+        Assert.Equal("/downloads", preview.TargetRootPath);
+        Assert.False(preview.RequiresRootRename);
+        Assert.Equal("/downloads/Seed/Original/【喵萌奶茶屋】[Test Anime][02][1080p][简日双语].mkv",
+                     preview.TargetPath);
+        Assert.Equal(renameBefore, h.Store.RenameFileCalls.Count);
+        Assert.Equal(locationBefore, h.Store.SetLocationCalls.Count);
+
+        var view = await h.Service.ApplyAsync(h.Task.Id, 1, request);
+        Assert.Equal("/downloads", (await h.Load()).SavePath);
+        Assert.Equal(DownloadFileKind.Seed, view.Files.Single(file => file.Index == 1).Kind);
+        Assert.Equal("Seed/Original/【喵萌奶茶屋】[Test Anime][02][1080p][简日双语].mkv",
+                     view.Files.Single(file => file.Index == 1).CurrentPath);
+        Assert.Equal("Media/Anime/E01.mkv", view.Files.Single(file => file.Index            == 0).CurrentPath);
+        Assert.Equal("Seed/Original/Extras/notes.txt", view.Files.Single(file => file.Index == 2).CurrentPath);
+        Assert.Equal("/downloads", h.Store.Torrents[h.Task.InfoHash].SavePath);
+    }
+
+    [Fact]
+    public async Task PreviewAndApply_RootChangeWouldMoveRetainedFile_BothRejectWithoutRemoteWrites()
+    {
+        await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv",
+                                                 "Extras/notes.txt");
+        await h.CompleteTestContentAsync();
+        Assert.Equal("/downloads/Media/Anime", (await h.Load()).SavePath);
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var notes = await db.DownloadTaskFiles.SingleAsync(value => value.DownloadTaskId == h.Task.Id &&
+                                                                        value.FileIndex      == 1);
+            notes.IsSelectedForDownload = false;
+            // 未选中做种文件停在媒体根下的自定义目录；把正片改成种子会让整包从媒体根切回 /downloads，
+            // 同时按标准种子目录重算这份保留文件，预览与保存都必须拒绝。
+            notes.CurrentRelativePath   = "Parked/notes.txt";
+            await db.SaveChangesAsync();
+        }
+
+        h.Store.FileIdentities[h.Task.InfoHash] =
+            h.Store.FileIdentities[h.Task.InfoHash]
+             .Select(file => file.Index == 1 ? file with { Path = "Parked/notes.txt" } : file).ToList();
+
+        var renameBefore   = h.Store.RenameFileCalls.Count;
+        var locationBefore = h.Store.SetLocationCalls.Count;
+        var request        = new DownloadFileEditRequest(DownloadFileKind.Seed);
+        await Assert.ThrowsAsync<TargetPathOccupiedException>(() =>
+                                                                  h.Service.PreviewAsync(h.Task.Id, 0, request));
+        await Assert.ThrowsAsync<TargetPathOccupiedException>(() =>
+                                                                  h.Service.ApplyAsync(h.Task.Id, 0, request));
+
+        Assert.Equal(renameBefore, h.Store.RenameFileCalls.Count);
+        Assert.Equal(locationBefore, h.Store.SetLocationCalls.Count);
+        var task = await h.Load();
+        Assert.Equal("/downloads/Media/Anime", task.SavePath);
+        Assert.Null(task.PendingSavePath);
+        Assert.All(task.Files, file => Assert.Null(file.PendingRenameTo));
+    }
+
+    [Fact]
+    public async Task PreviewAndApply_SameRootEdit_KeepsLegacyRelayoutRulesForRetainedFile()
+    {
+        await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv",
+                                                 "Extras/notes.txt");
+        await h.CompleteTestContentAsync();
+        Assert.True(await h.Service.ArchiveCompletedAsync(h.Task.Id));
+        Assert.Equal("/downloads", (await h.Load()).SavePath);
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var notes = await db.DownloadTaskFiles.SingleAsync(value => value.DownloadTaskId == h.Task.Id &&
+                                                                        value.FileIndex      == 1);
+            notes.IsSelectedForDownload = false;
+            notes.CurrentRelativePath   = "Parked/notes.txt";
+            await db.SaveChangesAsync();
+        }
+
+        h.Store.FileIdentities[h.Task.InfoHash] =
+            h.Store.FileIdentities[h.Task.InfoHash]
+             .Select(file => file.Index == 1 ? file with { Path = "Parked/notes.txt" } : file).ToList();
+
+        var locationBefore = h.Store.SetLocationCalls.Count;
+        var request        = new DownloadFileEditRequest(DownloadFileKind.Seed);
+        var preview        = await h.Service.PreviewAsync(h.Task.Id, 0, request);
+        Assert.Equal("/downloads", preview.CurrentRootPath);
+        Assert.Equal("/downloads", preview.TargetRootPath);
+        Assert.False(preview.RequiresRootRename);
+        Assert.Equal("/downloads/Seed/Original/【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv",
+                     preview.TargetPath);
+
+        var view = await h.Service.ApplyAsync(h.Task.Id, 0, request);
+        Assert.Equal("/downloads", (await h.Load()).SavePath);
+        Assert.Equal(locationBefore, h.Store.SetLocationCalls.Count);
+        Assert.Equal("Seed/Original/Extras/notes.txt", view.Files.Single(file => file.Index == 1).CurrentPath);
+        Assert.Equal("Seed/Original/【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv",
+                     view.Files.Single(file => file.Index == 0).CurrentPath);
     }
 
     [Theory]
@@ -1187,8 +1394,8 @@ public sealed class DownloadFileServiceTests
         await using (var db = await h.Factory.CreateDbContextAsync())
         {
             var files = await db.DownloadTaskFiles.OrderBy(file => file.FileIndex).ToListAsync();
-            files[0].VerificationOutcome = DownloadFileVerificationOutcomes.ReusedVerified;
-            files[1].VerificationOutcome = DownloadFileVerificationOutcomes.ReuseUnverified;
+            files[0].VerificationOutcome   = DownloadFileVerificationOutcomes.ReusedVerified;
+            files[1].VerificationOutcome   = DownloadFileVerificationOutcomes.ReuseUnverified;
             files[2].IsSelectedForDownload = false;
             files[2].SelectionReason       = "同集包内择优落选";
             files[2].SupersededByTaskId    = firstSuccessor;
@@ -1294,8 +1501,8 @@ public sealed class DownloadFileServiceTests
         using var http    = new HttpClient(handler);
         var client = await QBittorrentClient.Create("http://protocol.test", "admin", "password",
                                                     new QBittorrentClientOptions { HttpClient = http, MaxRetries = 1 });
-        await using var session = new QbittorrentSession(client);
-        var exported = await session.ExportTorrentAsync(new string('A', 40));
+        await using var session  = new QbittorrentSession(client);
+        var             exported = await session.ExportTorrentAsync(new string('A', 40));
         Assert.Equal("d4:infod4:name4:testee", Encoding.UTF8.GetString(exported));
         Assert.Contains(new string('a', 40), handler.ExportBody);
         Assert.DoesNotContain(new string('A', 40), handler.ExportBody);
@@ -1309,8 +1516,8 @@ public sealed class DownloadFileServiceTests
         var client = await QBittorrentClient.Create("http://protocol.test", "admin", "password",
                                                     new QBittorrentClientOptions { HttpClient = http, MaxRetries = 1 });
         await using var session = new QbittorrentSession(client);
-        var exception = await Assert.ThrowsAsync<NotSupportedException>(
-                            () => session.ExportTorrentAsync(new string('A', 40)));
+        var exception =
+            await Assert.ThrowsAsync<NotSupportedException>(() => session.ExportTorrentAsync(new string('A', 40)));
         var notSupported = Assert.IsType<QbittorrentNotSupportedException>(exception.InnerException);
         Assert.Equal(new ApiVersion(2, 8, 14), notSupported.RequiredVersion);
         Assert.Equal(new ApiVersion(2, 8, 2), notSupported.CurrentVersion);
@@ -1331,7 +1538,7 @@ public sealed class DownloadFileServiceTests
         {
             var path = request.RequestUri!.AbsolutePath;
             var text = path.EndsWith("auth/login") ? "Ok."
-                     : path.EndsWith("webapiVersion") ? WebApiVersion : "v5.0.0";
+                : path.EndsWith("webapiVersion")   ? WebApiVersion : "v5.0.0";
             if (path.EndsWith("torrents/add"))
             {
                 AddBody = await request.Content!.ReadAsStringAsync(cancellationToken);
@@ -1351,8 +1558,8 @@ public sealed class DownloadFileServiceTests
             {
                 ExportBody = request.RequestUri.Query +
                              (request.Content is null
-                                  ? ""
-                                  : await request.Content.ReadAsStringAsync(cancellationToken));
+                                 ? ""
+                                 : await request.Content.ReadAsStringAsync(cancellationToken));
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new ByteArrayContent(Encoding.UTF8.GetBytes("d4:infod4:name4:testee"))

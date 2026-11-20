@@ -520,7 +520,7 @@ public sealed partial class DownloadVerificationTests
         Assert.Empty(harness.Store.AddCalls);
         var adopted = await harness.GetTaskAsync(taskId);
         Assert.Equal(complete ? DownloadTaskStatus.Completed : DownloadTaskStatus.Downloading, adopted.Status);
-        Assert.Equal(complete ? DownloadRoot : "/external", adopted.SavePath);
+        Assert.Equal(complete ? MediaRoot : "/external", adopted.SavePath);
         Assert.Null(adopted.ArchiveReview);
         Assert.Empty(harness.Store.ResumeCalls);
         if (!complete) Assert.Empty(harness.Store.RenameFileCalls);
@@ -552,7 +552,7 @@ public sealed partial class DownloadVerificationTests
         var archived = await harness.GetTaskAsync(taskId);
         Assert.Null(archived.ArchiveReview);
         Assert.Null(archived.PendingSavePath);
-        Assert.Equal(DownloadRoot, archived.SavePath);
+        Assert.Equal(MediaRoot, archived.SavePath);
     }
 
     [Fact]

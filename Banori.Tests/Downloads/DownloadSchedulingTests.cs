@@ -18,6 +18,7 @@ namespace Banori.Tests.Downloads;
 public sealed class DownloadSchedulingTests
 {
     private const string DownloadRoot = "/downloads";
+    private const string MediaRoot    = DownloadRoot + "/Media/Anime";
 
     // ───────────────────────── 暂停确认窗口 ─────────────────────────
 
@@ -162,7 +163,7 @@ public sealed class DownloadSchedulingTests
         Assert.Equal(2, harness.Store.SetLocationCalls.Count);
         var completed = await harness.GetTaskAsync(challengerId);
         Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
-        Assert.Equal(DownloadRoot, completed.SavePath);
+        Assert.Equal(MediaRoot, completed.SavePath);
         Assert.Null(completed.ArchiveReview);
         // 旧版已被迁让，不再占据正式根。
         Assert.StartsWith(".replaced/", Assert.Single(harness.Store.FileIdentities[incumbent.InfoHash]).Path);
@@ -385,14 +386,15 @@ public sealed class DownloadSchedulingTests
         var       taskId  = await harness.CreateUploadAsync(SingleFileTorrent());
         await harness.ReconcileNowAsync();
 
-        var task = await harness.GetTaskAsync(taskId);
-        // 回归：无候选、无待替换版本的缺集直接在正式路径下载，不进 .tasks。
-        Assert.Equal(DownloadRoot, task.SavePath);
+        var          task      = await harness.GetTaskAsync(taskId);
+        // 回归：无候选、无待替换版本的纯正片直接在动画目录下载，不进 .tasks。
+        const string mediaRoot = DownloadRoot + "/" + DownloadDirectorySettings.DefaultMediaDirectory;
+        Assert.Equal(mediaRoot, task.SavePath);
         Assert.DoesNotContain(".tasks", task.SavePath, StringComparison.Ordinal);
-        Assert.Equal(DownloadRoot, Assert.Single(harness.Store.AddCalls).SavePath);
+        Assert.Equal(mediaRoot, Assert.Single(harness.Store.AddCalls).SavePath);
         var decision = DecisionOf(task);
         Assert.Equal(DownloadPathDecisionKinds.FinalRoot, decision.Kind);
-        Assert.Equal(DownloadRoot, decision.Root);
+        Assert.Equal(mediaRoot, decision.Root);
     }
 
     [Fact]
@@ -469,6 +471,76 @@ public sealed class DownloadSchedulingTests
         Assert.Equal(DownloadPathDecisionKinds.SameHashAdoption, decision.Kind);
         Assert.Equal(realPath, decision.Root);
         Assert.Empty(harness.Store.AddCalls); // 未重复添加，直接接管。
+    }
+
+    [Fact]
+    public async Task LegacyLayout_SameHashAdoptionWithoutSubmitEvidence_IsSkippedByScan()
+    {
+        using var harness = await SchedulingHarness.CreateAsync(DownloadTimingPolicy.Immediate);
+        var       name    = "【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv";
+        var       taskId  = await harness.CreateUploadAsync(TestTorrentBytes.Create(name));
+        var       task    = await harness.GetTaskAsync(taskId);
+        // 本应用先尝试提交，响应丢失：Add 已发出、SubmittedAtUtc 已落库、任务留在 Submitting，
+        // 仍没有成功提交证据。随后种子消失，用户自己在 qB 重新添加同 hash，恰好停在旧版全局根加媒体前缀下。
+        harness.Factory.SessionConfigurator = session => session.RegisterThenThrowTransport = true;
+        await harness.RoundAsync();
+        harness.Factory.SessionConfigurator = null;
+        Assert.Single(harness.Store.AddCalls);
+        Assert.NotNull((await harness.GetTaskAsync(taskId)).SubmittedAtUtc);
+        Assert.Equal(DownloadTaskStatus.Submitting, (await harness.GetTaskAsync(taskId)).Status);
+        harness.Store.Torrents.Remove(task.InfoHash);
+        harness.Store.Files.Remove(task.InfoHash);
+        harness.Store.FileIdentities.Remove(task.InfoHash);
+        harness.Store.StoppedAdds.Remove(task.InfoHash);
+
+        var legacyPath = "Media/Anime/" + name;
+        harness.Store.AddTorrent(task.InfoHash, task.NamingSnapshot, QbittorrentTorrentCategory.Downloading, 0.5,
+                                 "/downloads", [legacyPath]);
+        harness.Store.FileIdentities[task.InfoHash] = [new TorrentFileSnapshot(0, legacyPath, 1024, 0.5)];
+
+        await harness.ReconcileNowAsync();
+
+        var adopted = await harness.GetTaskAsync(taskId);
+        Assert.Single(harness.Store.AddCalls); // 接管不重复添加。
+        Assert.Contains(harness.Store.AddTagCalls, call => call.Hash == task.InfoHash);
+        Assert.Equal(DownloadPathDecisionKinds.SameHashAdoption,
+                     (DownloadPathDecision.FromJson(adopted.PathDecision) ??
+                      throw new InvalidOperationException("路径决策缺失。")).Kind);
+        Assert.Equal("/downloads/Media/Anime", adopted.SavePath); // 已有提交证据，接管后按当前规则整理到媒体根。
+
+        // 再把这条已接管的任务调整为升级前遗留的旧布局：完成状态先落库并清掉迁移标记，
+        // 下一轮的一次性扫描即使路径/标签/身份全部匹配，也不得再按新版规则切根。
+        await using (var db = await harness.CreateDbContextAsync())
+        {
+            var tracked = await db.DownloadTasks.Include(value => value.Files)
+                                  .SingleAsync(value => value.Id == taskId);
+            tracked.Status   = DownloadTaskStatus.Completed;
+            tracked.SavePath = "/downloads";
+            foreach (var file in tracked.Files) file.CurrentRelativePath = legacyPath;
+            await db.SaveChangesAsync();
+            var marker =
+                await db.ApplicationSettings.SingleOrDefaultAsync(value => value.Key ==
+                                                                           "Downloads.LegacyLayoutMigration.Completed");
+            if (marker is not null) db.ApplicationSettings.Remove(marker);
+            await db.SaveChangesAsync();
+        }
+
+        harness.Store.Torrents[task.InfoHash] = harness.Store.Torrents[task.InfoHash] with
+        {
+            SavePath = "/downloads"
+        };
+        harness.Store.FileIdentities[task.InfoHash] = [new TorrentFileSnapshot(0, legacyPath, 1024, 0.5)];
+
+        var renameBefore   = harness.Store.RenameFileCalls.Count;
+        var locationBefore = harness.Store.SetLocationCalls.Count;
+        await harness.ReconcileNowAsync();
+
+        Assert.Equal(renameBefore, harness.Store.RenameFileCalls.Count);
+        Assert.Equal(locationBefore, harness.Store.SetLocationCalls.Count);
+        Assert.Equal("/downloads", (await harness.GetTaskAsync(taskId)).SavePath);
+        Assert.Equal(DownloadPathDecisionKinds.SameHashAdoption,
+                     (DownloadPathDecision.FromJson((await harness.GetTaskAsync(taskId)).PathDecision) ??
+                      throw new InvalidOperationException("路径决策缺失。")).Kind);
     }
 
     // ───────────────────────── 复审回归（2026-10-20 第二阶段审查修复） ─────────────────────────

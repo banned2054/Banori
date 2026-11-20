@@ -12,8 +12,8 @@ public sealed partial class DownloadVerificationTests
     private static readonly string ManagedOwnerHash = new('d', 40);
 
     private static async Task<Guid> SeedManagedOccupantAsync(
-        VerificationHarness harness, string absolutePath, long size, string? relativeOverride = null,
-        long? qbSize = null, string? qbRelative = null, string? qbRoot = null)
+        VerificationHarness harness,       string  absolutePath,      long    size, string? relativeOverride = null,
+        long?               qbSize = null, string? qbRelative = null, string? qbRoot = null)
     {
         var ownerId  = Guid.NewGuid();
         var fileId   = Guid.NewGuid();
@@ -22,15 +22,15 @@ public sealed partial class DownloadVerificationTests
         {
             var owner = new DownloadTask
             {
-                Id             = ownerId, InfoHash = ManagedOwnerHash, SavePath = DownloadRoot,
+                Id             = ownerId, InfoHash                         = ManagedOwnerHash, SavePath = DownloadRoot,
                 Status         = DownloadTaskStatus.Completed, TorrentFile = SingleFileTorrent("繁日双语"),
                 NamingSnapshot = "Unrelated Managed Owner",
                 CompletedAtUtc = DateTimeOffset.Parse("2026-09-01T00:00:00Z")
             };
             owner.Files.Add(new DownloadTaskFile
             {
-                Id                   = fileId, DownloadTaskId = ownerId, FileIndex = 0,
-                OriginalRelativePath = "old.mkv", CurrentRelativePath = relative, Size = size,
+                Id                   = fileId, DownloadTaskId                        = ownerId, FileIndex = 0,
+                OriginalRelativePath = "old.mkv", CurrentRelativePath                = relative, Size     = size,
                 Kind                 = DownloadFileKind.Anime, IsSelectedForDownload = true
             });
             db.DownloadTasks.Add(owner);
@@ -58,7 +58,8 @@ public sealed partial class DownloadVerificationTests
         Assert.Contains(task.InfoHash, harness.Store.StoppedAdds);
         var staged = await harness.GetTaskAsync(taskId);
         Assert.NotNull(DownloadVerificationIntent.FromJson(staged.VerificationIntent));
-        Assert.Equal(DownloadPathDecisionKinds.ReuseVerification, DownloadPathDecision.FromJson(staged.PathDecision)!.Kind);
+        Assert.Equal(DownloadPathDecisionKinds.ReuseVerification,
+                     DownloadPathDecision.FromJson(staged.PathDecision)!.Kind);
 
         await harness.ReconcileAsync(); // 映射 + recheck。
         await harness.ReconcileAsync(); // 观察 Checking。
@@ -72,7 +73,7 @@ public sealed partial class DownloadVerificationTests
         Assert.Null(completed.VerificationIntent);
         Assert.Null(completed.ArchiveReview);
         // 复用通过后继续做种：停止态下恢复一次并重新通告 tracker（共享候选仍保持只读，无需移动/删除）。
-        Assert.Equal(1, harness.Store.ResumeCalls.Count(hash => hash == task.InfoHash));
+        Assert.Equal(1, harness.Store.ResumeCalls.Count(hash => hash     == task.InfoHash));
         Assert.Equal(1, harness.Store.ReannounceCalls.Count(hash => hash == task.InfoHash));
         Assert.Empty(harness.Store.SetLocationCalls);
         Assert.Empty(harness.Store.DeleteCalls);
@@ -89,7 +90,8 @@ public sealed partial class DownloadVerificationTests
             Assert.Null(owner.ReplacedByTaskId);
             Assert.Null(owner.ReplacesTaskId);
             Assert.All(owner.Files, value => Assert.Null(value.SupersededByTaskId));
-            Assert.Null((await db.DownloadTasks.AsNoTracking().SingleAsync(value => value.Id == taskId)).ReplacesTaskId);
+            Assert.Null((await db.DownloadTasks.AsNoTracking().SingleAsync(value => value.Id == taskId))
+                       .ReplacesTaskId);
             Assert.Empty(await db.EpisodeVersions.AsNoTracking()
                                  .Where(value => value.IncumbentVideoFileId == ownerFileId).ToListAsync());
         }
@@ -216,7 +218,8 @@ public sealed partial class DownloadVerificationTests
         Assert.Null(blocked.VerificationIntent);
         Assert.Empty(harness.Store.RecheckCalls);
         Assert.Equal(DownloadTaskStatus.Failed, blocked.Status);
-        Assert.Equal("文件整理", blocked.FailedStep);
+        // parent-overlap 占用的是媒体目录本身：纯正片任务直接落地媒体目录时，提交根占用检查即阻断。
+        Assert.Equal(mode == "parent-overlap" ? "提交路径" : "文件整理", blocked.FailedStep);
         await AssertOwnerUntouchedAsync(harness, ownerFileId, mode == "parent-overlap" ? "Media" : relative);
     }
 
@@ -245,7 +248,8 @@ public sealed partial class DownloadVerificationTests
 
         // 保持移动中，避免对账恢复链在映射检查前消费待确认日志。
         if (instability == "pending-save")
-            harness.Store.Torrents[ManagedOwnerHash] = harness.Store.Torrents[ManagedOwnerHash] with { IsMoving = true };
+            harness.Store.Torrents[ManagedOwnerHash] =
+                harness.Store.Torrents[ManagedOwnerHash] with { IsMoving = true };
         else
             await ApplyOwnerInstabilityAsync(harness, target[(DownloadRoot.Length + 1)..], instability);
         await harness.ReconcileAsync();
@@ -266,7 +270,7 @@ public sealed partial class DownloadVerificationTests
         using var harness = await VerificationHarness.CreateAsync();
         var       taskId  = await harness.CreateUploadAsync(MixedTorrent());
         var targets = await harness.Provider.GetRequiredService<DownloadFileService>()
-                           .ComputeArchivalTargetsAsync(taskId);
+                                   .ComputeArchivalTargetsAsync(taskId);
         // 合法候选（Index 0）驱动提交走校验规划，冲突检查因此带着候选例外执行。
         await SeedManagedOccupantAsync(harness, targets.Single(target => target.FileIndex == 0).TargetPath, 1024);
         var pendingOwnerId = Guid.NewGuid();
@@ -282,9 +286,9 @@ public sealed partial class DownloadVerificationTests
             };
             pendingOwner.Files.Add(new DownloadTaskFile
             {
-                Id                   = Guid.NewGuid(), DownloadTaskId = pendingOwnerId, FileIndex = 0,
-                OriginalRelativePath = "b-old.mkv", CurrentRelativePath = "b-old.mkv", Size = 17,
-                PendingRenameFrom    = "b-old.mkv", PendingRenameTo   = "Test Anime/readme.txt"
+                Id                   = Guid.NewGuid(), DownloadTaskId   = pendingOwnerId, FileIndex = 0,
+                OriginalRelativePath = "b-old.mkv", CurrentRelativePath = "b-old.mkv", Size         = 17,
+                PendingRenameFrom    = "b-old.mkv", PendingRenameTo     = "Test Anime/readme.txt"
             });
             db.DownloadTasks.Add(pendingOwner);
             await db.SaveChangesAsync();
@@ -303,7 +307,7 @@ public sealed partial class DownloadVerificationTests
         {
             // 日志原样保留：拒绝发生在提交规划，而不是靠消费或恢复占用方日志达成。
             var pendingOwner = await db.DownloadTasks.Include(value => value.Files).AsNoTracking()
-                                .SingleAsync(value => value.Id == pendingOwnerId);
+                                       .SingleAsync(value => value.Id == pendingOwnerId);
             Assert.Equal(DownloadTaskStatus.Completed, pendingOwner.Status);
             Assert.Equal(DownloadRoot, pendingOwner.PendingSavePath);
             var journal = pendingOwner.Files.Single(value => value.FileIndex == 0);
@@ -317,9 +321,9 @@ public sealed partial class DownloadVerificationTests
         mode switch
         {
             // DB 与 qB 呈现不一致时不得仅凭一侧授予候选。
-            "db-qb-size-mismatch" => await SeedManagedOccupantAsync(harness, target, 2048, qbSize: 1024),
-            "db-qb-root-mismatch" => await SeedManagedOccupantAsync(harness, target, 1024, qbRoot: "/elsewhere"),
-            "db-qb-path-mismatch" => await SeedManagedOccupantAsync(harness, target, 1024, qbRelative: "moved.mkv"),
+            "db-qb-size-mismatch" => await SeedManagedOccupantAsync(harness, target, 2048, qbSize : 1024),
+            "db-qb-root-mismatch" => await SeedManagedOccupantAsync(harness, target, 1024, qbRoot : "/elsewhere"),
+            "db-qb-path-mismatch" => await SeedManagedOccupantAsync(harness, target, 1024, qbRelative : "moved.mkv"),
             "different-size"      => await SeedManagedOccupantAsync(harness, target, 2048),
             "parent-overlap"      => await SeedManagedOccupantAsync(harness, target, 1024, "Media"),
             _                     => await SeedManagedOccupantAsync(harness, target, 1024)
@@ -329,28 +333,28 @@ public sealed partial class DownloadVerificationTests
     {
         switch (mode)
         {
-            case "pending-save" or "pending-rename" or "verifying" or "isolating":
+            case "pending-save" or "pending-rename" or "verifying" or "isolating" :
             {
-                await using var db    = await harness.CreateDbContextAsync();
-                var             owner = await db.DownloadTasks.Include(value => value.Files)
-                                                .SingleAsync(value => value.InfoHash == ManagedOwnerHash);
+                await using var db = await harness.CreateDbContextAsync();
+                var owner = await db.DownloadTasks.Include(value => value.Files)
+                                    .SingleAsync(value => value.InfoHash == ManagedOwnerHash);
                 switch (mode)
                 {
-                    case "pending-save":
+                    case "pending-save" :
                         owner.PendingSavePath = "/downloads/.moving";
                         break;
-                    case "pending-rename":
+                    case "pending-rename" :
                         var file = owner.Files.Single(value => value.FileIndex == 0);
                         file.PendingRenameFrom = relative;
                         file.PendingRenameTo   = "pending.mkv";
                         break;
-                    case "verifying":
+                    case "verifying" :
                         owner.VerificationIntent = new DownloadVerificationIntent
                         {
                             Round = 1, CreatedAtUtc = DateTimeOffset.Parse("2026-09-25T04:00:00Z")
                         }.ToJson();
                         break;
-                    default:
+                    default :
                         owner.IsolationState = DownloadIsolationState.Deleting;
                         break;
                 }
@@ -358,7 +362,7 @@ public sealed partial class DownloadVerificationTests
                 await db.SaveChangesAsync();
                 break;
             }
-            case "qb-incomplete" or "qb-stopped-incomplete":
+            case "qb-incomplete" or "qb-stopped-incomplete" :
                 harness.Store.Torrents[ManagedOwnerHash] = harness.Store.Torrents[ManagedOwnerHash] with
                 {
                     Category = mode == "qb-incomplete"
@@ -367,16 +371,16 @@ public sealed partial class DownloadVerificationTests
                     Progress = 0.5
                 };
                 harness.Store.FileIdentities[ManagedOwnerHash] = harness.Store.FileIdentities[ManagedOwnerHash]
-                                                                     .Select(file => file with { Progress = 0.5 })
-                                                                     .ToList();
+                                                                        .Select(file => file with { Progress = 0.5 })
+                                                                        .ToList();
                 break;
-            case "qb-moving":
+            case "qb-moving" :
                 harness.Store.Torrents[ManagedOwnerHash] = harness.Store.Torrents[ManagedOwnerHash] with
                 {
                     IsMoving = true
                 };
                 break;
-            case "qb-checking":
+            case "qb-checking" :
                 harness.Store.Torrents[ManagedOwnerHash] = harness.Store.Torrents[ManagedOwnerHash] with
                 {
                     Category = QbittorrentTorrentCategory.Checking
@@ -387,14 +391,14 @@ public sealed partial class DownloadVerificationTests
 
     private static async Task AssertOwnerUntouchedAsync(VerificationHarness harness, Guid ownerFileId, string relative)
     {
-        Assert.DoesNotContain(harness.Store.RenameFileCalls, call => call.Hash == ManagedOwnerHash);
+        Assert.DoesNotContain(harness.Store.RenameFileCalls, call => call.Hash   == ManagedOwnerHash);
         Assert.DoesNotContain(harness.Store.SetLocationCalls, call => call.Item1 == ManagedOwnerHash);
-        Assert.DoesNotContain(harness.Store.DeleteCalls, call => call.Hash == ManagedOwnerHash);
+        Assert.DoesNotContain(harness.Store.DeleteCalls, call => call.Hash       == ManagedOwnerHash);
         Assert.Contains(ManagedOwnerHash, harness.Store.Torrents.Keys);
         Assert.Equal(relative, Assert.Single(harness.Store.FileIdentities[ManagedOwnerHash]).Path);
-        await using var db    = await harness.CreateDbContextAsync();
-        var             owner = await db.DownloadTasks.Include(value => value.Files).AsNoTracking()
-                                .SingleAsync(value => value.InfoHash == ManagedOwnerHash);
+        await using var db = await harness.CreateDbContextAsync();
+        var owner = await db.DownloadTasks.Include(value => value.Files).AsNoTracking()
+                            .SingleAsync(value => value.InfoHash == ManagedOwnerHash);
         Assert.Equal(DownloadTaskStatus.Completed, owner.Status);
         Assert.Null(owner.ReplacedByTaskId);
         Assert.Null(owner.ReplacesTaskId);

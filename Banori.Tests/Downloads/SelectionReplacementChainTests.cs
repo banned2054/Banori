@@ -67,8 +67,8 @@ public sealed partial class DownloadServiceTests
         await using (var db = await harness.CreateDbContextAsync())
         {
             var incumbentFile = await db.DownloadTaskFiles.AsNoTracking()
-                                         .SingleAsync(file => file.Id == oldFileId);
-            Assert.Equal("Media/Anime/测试作品 E12.mp4", incumbentFile.CurrentRelativePath);
+                                        .SingleAsync(file => file.Id == oldFileId);
+            Assert.Equal("测试作品 E12.mp4", incumbentFile.CurrentRelativePath);
         }
 
         var fileService = harness.Provider.GetRequiredService<DownloadFileService>();
@@ -93,11 +93,11 @@ public sealed partial class DownloadServiceTests
         await using (var db = await harness.CreateDbContextAsync())
         {
             var incumbentFile = await db.DownloadTaskFiles.AsNoTracking()
-                                         .SingleAsync(file => file.Id == oldFileId);
+                                        .SingleAsync(file => file.Id == oldFileId);
             Assert.StartsWith(".replaced/", incumbentFile.CurrentRelativePath);
             var replacement = await db.DownloadTaskFiles.AsNoTracking()
-                                       .SingleAsync(file => file.Id == newFileId);
-            Assert.Equal("Media/Anime/测试作品 E12.mp4", replacement.CurrentRelativePath);
+                                      .SingleAsync(file => file.Id == newFileId);
+            Assert.Equal("测试作品 E12.mp4", replacement.CurrentRelativePath);
         }
     }
 
@@ -202,7 +202,7 @@ public sealed partial class DownloadServiceTests
         // 新条目属于 anibt 来源：真实 SourceScope 不同，不参与 mikan 的规则对决，也不写 mikan 登记表。
         var newItemId = await SeedSelectionItemAsync(harness, "source-new",
                                                      NekoTitle("简日双语").Replace(".mp4", ".mkv",
-                                                                                   StringComparison.Ordinal),
+                                                                               StringComparison.Ordinal),
                                                      "喵萌奶茶屋", "JpSc", sourceScope : "anibt",
                                                      feedUrl : AnibtFeed);
         await SetSelectionWinnerAsync(harness, newItemId, 12, "anibt");
@@ -271,9 +271,9 @@ public sealed partial class DownloadServiceTests
         using var reverse = await CreateHarnessAsync();
         await reverse.SaveSelectionRulesAsync(NekoRules());
         var v2IncumbentId = await CompleteManualWinnerAsync(reverse, "reverse-v2", NekoTitleV2("简日双语"), "喵萌奶茶屋",
-                                                            "JpSc", version : 2);
+                                                            "JpSc", 2);
         var v2IncumbentFileId = (await FindAnimeFileIdAsync(reverse, v2IncumbentId))!.Value;
-        var v1ItemId = await SeedSelectionItemAsync(reverse, "reverse-v1", NekoTitle("简日双语"), "喵萌奶茶屋", "JpSc");
+        var v1ItemId          = await SeedSelectionItemAsync(reverse, "reverse-v1", NekoTitle("简日双语"), "喵萌奶茶屋", "JpSc");
         await SetSelectionWinnerAsync(reverse, v1ItemId);
         await reverse.CreateDownloadAsync(v1ItemId);
 
@@ -295,9 +295,9 @@ public sealed partial class DownloadServiceTests
         // 模拟修复前创建的存量任务：登记时没有待完成优胜关系，归档阶段被旧成片占用而失败。
         await using (var db = await harness.CreateDbContextAsync())
         {
-            var row = await db.EpisodeVersions.SingleAsync(value => value.SubjectId   == 42   &&
-                                                                     value.Episode     == 12    &&
-                                                                     value.SourceScope == "mikan");
+            var row = await db.EpisodeVersions.SingleAsync(value => value.SubjectId   == 42 &&
+                                                                    value.Episode     == 12 &&
+                                                                    value.SourceScope == "mikan");
             row.PendingVideoFileId = null;
             var failed = await db.DownloadTasks.SingleAsync(value => value.Id == newTaskId);
             failed.Status     = DownloadTaskStatus.Failed;
@@ -338,16 +338,16 @@ public sealed partial class DownloadServiceTests
 
         await using (var db = await harness.CreateDbContextAsync())
         {
-            var row = await db.EpisodeVersions.SingleAsync(value => value.SubjectId   == 42   &&
-                                                                     value.Episode     == 12    &&
-                                                                     value.SourceScope == "mikan");
+            var row = await db.EpisodeVersions.SingleAsync(value => value.SubjectId   == 42 &&
+                                                                    value.Episode     == 12 &&
+                                                                    value.SourceScope == "mikan");
             row.PendingVideoFileId = null;
             // 选择记录已改回旧条目：重试的条目不再是当前优胜，不得凭“失败过”补建替换关系。
-            var selection = await db.CandidateSelections.SingleAsync(value => value.SubjectId   == 42   &&
-                                                                              value.Episode     == 12    &&
+            var selection = await db.CandidateSelections.SingleAsync(value => value.SubjectId   == 42 &&
+                                                                              value.Episode     == 12 &&
                                                                               value.SourceScope == "mikan");
             var oldItemId = (await db.DownloadTasks.AsNoTracking()
-                                      .SingleAsync(value => value.Id == oldTaskId)).FeedItemId!.Value;
+                                     .SingleAsync(value => value.Id == oldTaskId)).FeedItemId!.Value;
             selection.WinnerFeedItemId = oldItemId;
             var failed = await db.DownloadTasks.SingleAsync(value => value.Id == newTaskId);
             failed.Status     = DownloadTaskStatus.Failed;
@@ -375,9 +375,9 @@ public sealed partial class DownloadServiceTests
 
         await using (var db = await harness.CreateDbContextAsync())
         {
-            var row = await db.EpisodeVersions.SingleAsync(value => value.SubjectId   == 42   &&
-                                                                     value.Episode     == 12    &&
-                                                                     value.SourceScope == "mikan");
+            var row = await db.EpisodeVersions.SingleAsync(value => value.SubjectId   == 42 &&
+                                                                    value.Episode     == 12 &&
+                                                                    value.SourceScope == "mikan");
             row.PendingVideoFileId = null;
             var failed = await db.DownloadTasks.SingleAsync(value => value.Id == newTaskId);
             failed.Status     = DownloadTaskStatus.Failed;
@@ -409,7 +409,7 @@ public sealed partial class DownloadServiceTests
         {
             var oldFile = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(file => file.Id == oldFileId);
             // 共享引用保护：旧成片仍留在正式位置，未被迁让或覆盖。
-            Assert.Equal("Media/Anime/测试作品 E12.mp4", oldFile.CurrentRelativePath);
+            Assert.Equal("测试作品 E12.mp4", oldFile.CurrentRelativePath);
         }
 
         Assert.DoesNotContain(harness.Store.RenameFileCalls,
@@ -432,8 +432,8 @@ public sealed partial class DownloadServiceTests
         // 模拟修复前创建的存量任务：登记时没有替换关系，种子已提交到正式根。
         await using (var db = await harness.CreateDbContextAsync())
         {
-            var row = await db.EpisodeVersions.SingleAsync(value => value.SubjectId   == 42   &&
-                                                                    value.Episode     == 12    &&
+            var row = await db.EpisodeVersions.SingleAsync(value => value.SubjectId   == 42 &&
+                                                                    value.Episode     == 12 &&
                                                                     value.SourceScope == "mikan");
             row.PendingVideoFileId = null;
             await db.SaveChangesAsync();
@@ -442,9 +442,9 @@ public sealed partial class DownloadServiceTests
         await harness.ReconcileAsync(); // 提交：没有替换关系，种子直接添加到正式根。
         var submitted = await harness.GetTaskAsync(newTaskId);
         var hash      = submitted.InfoHash;
-        Assert.Equal("/downloads", submitted.SavePath);
+        Assert.Equal("/downloads/Media/Anime", submitted.SavePath);
         Assert.Contains(hash, harness.Store.StoppedAdds);
-        Assert.Equal("/downloads", harness.Store.Torrents[hash].SavePath);
+        Assert.Equal("/downloads/Media/Anime", harness.Store.Torrents[hash].SavePath);
 
         await harness.ReconcileAsync(); // 准备：整理最终命名撞旧成片，任务失败但种子保留。
         var failed = await harness.GetTaskAsync(newTaskId);
@@ -538,8 +538,8 @@ public sealed partial class DownloadServiceTests
 
     /// <summary>经真实订阅择优登记并完成一个第 12 集任务，返回任务 Id。</summary>
     private static async Task<Guid> CompleteSelectionWinnerAsync(
-        TestHarness harness, CandidateSelectionService selectionService, SelectionGroupKey key, string stableId,
-        string torrentName, string group, string language)
+        TestHarness harness,     CandidateSelectionService selectionService, SelectionGroupKey key, string stableId,
+        string      torrentName, string                    group,            string            language)
     {
         await SeedSelectionItemAsync(harness, stableId, torrentName, group, language);
         await selectionService.SelectAndRegisterAsync([key]);
@@ -554,10 +554,10 @@ public sealed partial class DownloadServiceTests
     /// <summary>经手动创建前置核验登记并完成一个第 12 集任务：先强制该条目为同集组优胜。</summary>
     private static async Task<Guid> CompleteManualWinnerAsync(
         TestHarness harness, string stableId, string torrentName, string group, string language, int version = 1,
-        string sourceScope = "mikan", string feedUrl = MikanFeed)
+        string      sourceScope = "mikan", string feedUrl = MikanFeed)
     {
         var itemId = await SeedSelectionItemAsync(harness, stableId, torrentName, group, language, version,
-                                                  episode : 12, sourceScope : sourceScope, feedUrl : feedUrl);
+                                                  12, sourceScope, feedUrl);
         await SetSelectionWinnerAsync(harness, itemId, 12, sourceScope);
         var taskId = await harness.CreateDownloadAsync(itemId);
         await harness.ReconcileAsync();
@@ -569,8 +569,8 @@ public sealed partial class DownloadServiceTests
 
     /// <summary>播种一条真实的订阅条目：字段、命名要素与种子名同源，可由选择服务真实择优并登记任务。</summary>
     private static async Task<Guid> SeedSelectionItemAsync(
-        TestHarness harness, string stableId, string torrentName, string group, string language, int version = 1,
-        decimal episode = 12, string sourceScope = "mikan", string feedUrl = MikanFeed, int length = 1024)
+        TestHarness harness,      string stableId, string torrentName, string group, string language, int version = 1,
+        decimal     episode = 12, string sourceScope = "mikan", string feedUrl = MikanFeed, int length = 1024)
     {
         harness.TorrentNames[stableId] = torrentName;
         if (length != 1024)
@@ -580,20 +580,21 @@ public sealed partial class DownloadServiceTests
                                                .Replace("6:lengthi1024e", $"6:lengthi{length}e",
                                                         StringComparison.Ordinal));
         var parsed = new AniParser().Parse(torrentName)
-                     ?? throw new InvalidOperationException($"测试发布名无法解析：{torrentName}");
+                  ?? throw new InvalidOperationException($"测试发布名无法解析：{torrentName}");
         var ingredients = new TorrentNamingIngredients(
-            Template : "{title} E{episode}", Title : "测试作品",
-            EpisodeText : ReleaseNamePreviewPolicy.FormatEpisodeText(episode), Version : version,
-            Group : group, Source : TorrentSiteSource.FromFeedUrl(feedUrl), Language : language,
-            Resolution : "R1080P", FileTemplate : "{title} E{episode}", BangumiId : 42,
-            BangumiName : "Test Subject", BangumiNameCn : "测试作品", BangumiPlatform : "TV");
+                                                       "{title} E{episode}", "测试作品",
+                                                       ReleaseNamePreviewPolicy.FormatEpisodeText(episode), version,
+                                                       group, TorrentSiteSource.FromFeedUrl(feedUrl), language,
+                                                       "R1080P", "{title} E{episode}", BangumiId : 42,
+                                                       BangumiName : "Test Subject", BangumiNameCn : "测试作品",
+                                                       BangumiPlatform : "TV");
         var protector = harness.Provider.GetRequiredService<IDataProtectionProvider>()
                                .CreateProtector("Banori.MediaSubscriptions.FeedUrl.v1");
         await using var db             = await harness.CreateDbContextAsync();
         var             subscriptionId = Guid.NewGuid();
         db.MediaSubscriptions.Add(new MediaSubscription
         {
-            Id               = subscriptionId, Name = $"订阅-{stableId}",
+            Id               = subscriptionId, Name                  = $"订阅-{stableId}",
             FeedUrlProtected = protector.Protect(feedUrl), IsEnabled = false, RefreshIntervalMinutes = 30
         });
         var itemId = Guid.NewGuid();
@@ -601,13 +602,13 @@ public sealed partial class DownloadServiceTests
         {
             Id                = itemId, SubscriptionId = subscriptionId, StableId = stableId, Title = torrentName,
             TorrentUrl        = $"https://mikanani.me/Download/{stableId}.torrent",
-            FirstSeenAtUtc    = harness.Timestamp.AddHours(-1), Status      = FeedItemStatus.Accepted,
+            FirstSeenAtUtc    = harness.Timestamp.AddHours(-1), Status = FeedItemStatus.Accepted,
             DecisionStatus    = ReleaseDecisionStatus.Accepted, ParsedTitle = parsed.Title,
-            MediaType         = "SingleEpisode", Episode                    = episode, Version = version,
-            Group             = group, Language = language, Resolution      = "R1080P", SubjectId = 42,
+            MediaType         = "SingleEpisode", Episode = episode, Version = version,
+            Group             = group, Language = language, Resolution = "R1080P", SubjectId = 42,
             Preference        = group, SourceScope = sourceScope,
             Reason            = "测试决策。", NamingPreview = new ReleaseNamePreviewPolicy().Create(ingredients),
-            NamingIngredients = ingredients.ToJson(), EvaluatedAtUtc      = harness.Timestamp
+            NamingIngredients = ingredients.ToJson(), EvaluatedAtUtc = harness.Timestamp
         });
         await db.SaveChangesAsync();
         return itemId;
@@ -615,21 +616,21 @@ public sealed partial class DownloadServiceTests
 
     /// <summary>把指定条目写成其同集组的当前优胜（用于构造“非优胜不得替换”的负向守卫场景）。</summary>
     private static async Task SetSelectionWinnerAsync(TestHarness harness, Guid itemId, decimal episode = 12,
-                                                      string sourceScope = "mikan")
+                                                      string      sourceScope = "mikan")
     {
-        await using var db        = await harness.CreateDbContextAsync();
-        var             selection = await db.CandidateSelections.SingleOrDefaultAsync(value => value.SubjectId == 42 &&
-                                                                                              value.MediaType ==
-                                                                                              "SingleEpisode" &&
-                                                                                              value.Episode     == episode &&
-                                                                                              value.SourceScope ==
-                                                                                              sourceScope);
+        await using var db = await harness.CreateDbContextAsync();
+        var selection = await db.CandidateSelections.SingleOrDefaultAsync(value => value.SubjectId == 42 &&
+                                                                              value.MediaType ==
+                                                                              "SingleEpisode"          &&
+                                                                              value.Episode == episode &&
+                                                                              value.SourceScope ==
+                                                                              sourceScope);
         if (selection is null)
             db.CandidateSelections.Add(new CandidateSelection
             {
-                Id               = Guid.NewGuid(), SubjectId = 42, MediaType = "SingleEpisode", Episode = episode,
-                SourceScope      = sourceScope, WinnerFeedItemId = itemId, RuleVersion = 1,
-                RankingBasis     = "测试优胜", NamingSnapshot = "测试作品 E12", SelectedAtUtc = harness.Timestamp
+                Id           = Guid.NewGuid(), SubjectId     = 42, MediaType = "SingleEpisode", Episode = episode,
+                SourceScope  = sourceScope, WinnerFeedItemId = itemId, RuleVersion = 1,
+                RankingBasis = "测试优胜", NamingSnapshot        = "测试作品 E12", SelectedAtUtc = harness.Timestamp
             });
         else
             selection.WinnerFeedItemId = itemId;
@@ -637,13 +638,13 @@ public sealed partial class DownloadServiceTests
     }
 
     private static async Task<CandidateSelection> GetSelectionAsync(TestHarness harness, decimal episode = 12,
-                                                                    string sourceScope = "mikan")
+                                                                    string      sourceScope = "mikan")
     {
         await using var db = await harness.CreateDbContextAsync();
         return await db.CandidateSelections.AsNoTracking()
                        .SingleAsync(value => value.SubjectId   == 42              &&
                                              value.MediaType   == "SingleEpisode" &&
-                                             value.Episode     == episode          &&
+                                             value.Episode     == episode         &&
                                              value.SourceScope == sourceScope);
     }
 
@@ -652,17 +653,17 @@ public sealed partial class DownloadServiceTests
     {
         var provider = harness.Provider;
         return new CandidateSelectionService(
-            provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>(),
-            provider.GetRequiredService<ISelectionRuleProvider>(),
-            new SelectionGroupGate(),
-            provider.GetRequiredService<DownloadCoordinationGate>(),
-            provider.GetRequiredService<CandidateEligibilityPolicy>(),
-            provider.GetRequiredService<CandidateRankingPolicy>(),
-            provider.GetRequiredService<ManageQbittorrentSettings>(),
-            new TestHostApplicationLifetime(),
-            provider.GetRequiredService<DownloadIntakeService>(),
-            provider.GetRequiredService<TimeProvider>(),
-            NullLogger<CandidateSelectionService>.Instance);
+                                             provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>(),
+                                             provider.GetRequiredService<ISelectionRuleProvider>(),
+                                             new SelectionGroupGate(),
+                                             provider.GetRequiredService<DownloadCoordinationGate>(),
+                                             provider.GetRequiredService<CandidateEligibilityPolicy>(),
+                                             provider.GetRequiredService<CandidateRankingPolicy>(),
+                                             provider.GetRequiredService<ManageQbittorrentSettings>(),
+                                             new TestHostApplicationLifetime(),
+                                             provider.GetRequiredService<DownloadIntakeService>(),
+                                             provider.GetRequiredService<TimeProvider>(),
+                                             NullLogger<CandidateSelectionService>.Instance);
     }
 
     /// <summary>在下载器中播种一个引用旧成片路径的外部种子，构造“共享文件受保护”的占用证据。</summary>

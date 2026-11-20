@@ -17,6 +17,22 @@ public static class DownloadTaskPlacement
         DownloadPathNamePolicy.JoinSavePath(downloadRootPath.Trim().TrimEnd('/', '\\'),
                                             $"{TaskScopeDirectoryName}/{taskId:N}");
 
+    /// <summary>
+    ///     任务是否位于本应用提交的正式根：普通全局根，或纯正片任务直接落地的媒体目录根。
+    ///     两者都可能被后续替换关系要求迁入任务专属根；接管到任意其他目录的种子不算。
+    /// </summary>
+    public static bool IsFormalRoot(DownloadTask task)
+    {
+        if (string.IsNullOrWhiteSpace(task.DownloadRootPath)) return false;
+        var baseRoot = DownloadPathNamePolicy.NormalizePath(task.DownloadRootPath);
+        var savePath = DownloadPathNamePolicy.NormalizePath(task.SavePath);
+        return string.Equals(savePath, baseRoot, StringComparison.Ordinal) ||
+               (!string.IsNullOrWhiteSpace(task.MediaDirectory) &&
+                string.Equals(savePath,
+                              DownloadPathNamePolicy.JoinSavePath(baseRoot, task.MediaDirectory),
+                              StringComparison.Ordinal));
+    }
+
     /// <summary>任务当前是否仍处于任务专属根（未归档迁出）；DownloadRootPath 缺失的存量任务恒为 false。</summary>
     public static bool IsTaskScoped(DownloadTask task)
     {

@@ -2,6 +2,7 @@ using Banned.AniParser;
 using Banned.AniParser.Models;
 using Banned.AniParser.Models.Enums;
 using Banned.Qbittorrent.Exceptions;
+using Banori.Core.Downloads;
 using Banori.Core.Rules;
 using Banori.Core.Subjects;
 using Banori.Core.Torrents;
@@ -47,6 +48,9 @@ public sealed class DownloadService(
     /// <summary>同集择优落选墓碑的终止步骤标记（与登记入口同口径）；该类记录从未提交或接管过下载器资源。</summary>
     private const string SelectionLossStep = "择优";
 
+    /// <summary>旧版布局一次性扫描标记：扫描结束后落库，之后的启动与对账不再重复全表扫描。</summary>
+    private const string LegacyLayoutMigrationMarkerKey = "Downloads.LegacyLayoutMigration.Completed";
+
     /// <summary>能解析出集数的内容文件扩展名：视频与字幕；其余一律视为附属文件。</summary>
     private static readonly string[] ContentFileExtensions =
         [".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".wmv", ".mov", ".flv", ".ass", ".ssa", ".srt", ".sup"];
@@ -75,6 +79,9 @@ public sealed class DownloadService(
         using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
         var       settings          = await qbittorrentSettings.GetAsync(cancellationToken);
         if (!settings.Enabled || !settings.IsConfigured) return;
+        // 旧版纯正片布局只扫一次；扫描结果无论是迁移还是安全跳过都留下标记，未确认的远端移动由
+        // 同一份 pending 日志在后续轮次恢复，扫描本身不重复规划。
+        if (downloadFileService is not null) await MigrateLegacyLayoutsAsync(cancellationToken);
         List<DownloadTask> tasks;
         bool               hasRetiredCleanup;
         await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
@@ -274,6 +281,331 @@ public sealed class DownloadService(
             {
                 logger.LogError(exception, "提交下载任务 {TaskId} 失败，下一轮重试。", task.Id);
             }
+    }
+
+    /// <summary>
+    ///     一次性把旧版“全局根 + 媒体目录前缀”的纯正片任务迁到媒体根。只有本应用提交过、目录快照
+    ///     齐全、种子原始元数据/qB 文件身份/路径/大小全部吻合且没有未收敛状态的任务才参与；其余
+    ///     一律安全跳过并记录原因，绝不猜测迁移。
+    /// </summary>
+    private async Task MigrateLegacyLayoutsAsync(CancellationToken cancellationToken)
+    {
+        bool markerExists;
+        try
+        {
+            await using var markerDb = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+            markerExists =
+                await markerDb.ApplicationSettings.AnyAsync(setting => setting.Key == LegacyLayoutMigrationMarkerKey,
+                                                            cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "读取旧版下载布局迁移标记失败，本轮跳过扫描。");
+            return;
+        }
+
+        if (markerExists) return;
+
+        List<DownloadTask> candidates;
+        try
+        {
+            await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+            candidates = await db.DownloadTasks.Include(task => task.Files).AsNoTracking()
+                                 .Where(task => (task.Status == DownloadTaskStatus.Downloading ||
+                                                 task.Status == DownloadTaskStatus.Paused      ||
+                                                 task.Status == DownloadTaskStatus.Completed)              &&
+                                                task.SubmittedAtUtc     != null                            &&
+                                                task.ReplacesTaskId     == null                            &&
+                                                task.ReplacedByTaskId   == null                            &&
+                                                task.VerificationIntent == null                            &&
+                                                task.IsolationState     == DownloadIsolationState.None     &&
+                                                task.PendingSavePath    == null                            &&
+                                                task.ArchiveReview      == null                            &&
+                                                task.RunRecovery        == null                            &&
+                                                task.Files.All(file => file.Kind != DownloadFileKind.Seed) &&
+                                                !task.Files.Any(file => file.PendingRenameFrom != null ||
+                                                                        file.PendingRenameTo   != null))
+                                 .ToListAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "读取旧版下载布局迁移候选失败，本轮跳过扫描。");
+            return;
+        }
+
+        if (candidates.Count == 0)
+        {
+            await TryMarkLegacyLayoutMigrationAsync(cancellationToken);
+            return;
+        }
+
+        void Skip(DownloadTask task, string reason) =>
+            logger.LogInformation("跳过旧版下载布局迁移，任务 {TaskId}：{Reason}", task.Id, reason);
+
+        var scanInterrupted = false;
+        try
+        {
+            await using var                 session  = await sessionFactory.CreateAsync(cancellationToken);
+            IReadOnlyList<TorrentSnapshot>? torrents = null;
+            foreach (var candidate in candidates)
+                try
+                {
+                    if (!TryPlanLegacyMigration(candidate, out var plan, out var reason))
+                    {
+                        Skip(candidate, reason);
+                        continue;
+                    }
+
+                    torrents ??= await session.ListTorrentsAsync(null, cancellationToken);
+                    var snapshot = torrents.FirstOrDefault(value =>
+                                                               string.Equals(value.Hash, candidate.InfoHash,
+                                                                             StringComparison.OrdinalIgnoreCase));
+                    if (snapshot is null)
+                    {
+                        Skip(candidate, "下载器中不存在对应种子。");
+                        continue;
+                    }
+
+                    if (snapshot.IsMoving ||
+                        snapshot.Category is QbittorrentTorrentCategory.Checking
+                                          or QbittorrentTorrentCategory.Error
+                                          or QbittorrentTorrentCategory.Unknown)
+                    {
+                        Skip(candidate, "下载器仍在移动或检查种子。");
+                        continue;
+                    }
+
+                    if (!string.Equals(DownloadPathNamePolicy.NormalizePath(snapshot.SavePath),
+                                       DownloadPathNamePolicy.NormalizePath(candidate.SavePath),
+                                       StringComparison.Ordinal))
+                    {
+                        Skip(candidate, "下载器保存根与任务记录不符，可能已被外部接管。");
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(candidate.SiteSource) &&
+                        !snapshot.Tags.Contains(candidate.SiteSource, StringComparer.OrdinalIgnoreCase))
+                    {
+                        Skip(candidate, "下载器来源标签与任务记录不符，归属不明。");
+                        continue;
+                    }
+
+                    var remote = await session.ListFilesAsync(candidate.InfoHash, cancellationToken);
+                    if (!MatchesLegacyRemoteFiles(candidate, snapshot.SavePath, remote))
+                    {
+                        Skip(candidate, "下载器文件身份、路径或大小与任务记录不符。");
+                        continue;
+                    }
+
+                    if (!MatchesLegacyOriginalFiles(candidate))
+                    {
+                        Skip(candidate, "原始种子文件身份或大小与任务记录不符。");
+                        continue;
+                    }
+
+                    if (!await downloadFileService!.ApplyLegacyMigrationUnderGateAsync(session, candidate.Id,
+                            plan.Root, plan.Paths, cancellationToken))
+                        logger.LogInformation("旧版下载布局迁移已登记待执行日志，任务 {TaskId} 由后续对账恢复。",
+                                              candidate.Id);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (TargetPathOccupiedException exception)
+                {
+                    Skip(candidate, exception.Message);
+                }
+                catch (DownloadFileIdentityException exception)
+                {
+                    Skip(candidate, exception.Message);
+                }
+                catch (ArgumentException exception)
+                {
+                    Skip(candidate, exception.Message);
+                }
+                catch (InvalidOperationException exception)
+                {
+                    Skip(candidate, exception.Message);
+                }
+                catch (Exception exception)
+                {
+                    scanInterrupted = true;
+                    logger.LogWarning(exception, "旧版下载布局迁移单条失败，任务 {TaskId} 留待下一轮重试。",
+                                      candidate.Id);
+                }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            scanInterrupted = true;
+            logger.LogWarning(exception, "旧版下载布局迁移扫描中断，本轮不写一次性标记。");
+        }
+
+        // 只有全部候选处理完毕才写标记；已落库的操作继续由 pending 日志恢复。
+        if (!scanInterrupted) await TryMarkLegacyLayoutMigrationAsync(cancellationToken);
+    }
+
+    private async Task TryMarkLegacyLayoutMigrationAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+            if (await db.ApplicationSettings.AnyAsync(setting => setting.Key == LegacyLayoutMigrationMarkerKey,
+                                                      cancellationToken))
+                return;
+            var now = timeProvider.GetUtcNow();
+            db.ApplicationSettings.Add(new ApplicationSetting
+            {
+                Key          = LegacyLayoutMigrationMarkerKey,
+                Value        = now.ToString("O"),
+                UpdatedAtUtc = now
+            });
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "写入旧版下载布局迁移标记失败，下一轮重新扫描。");
+        }
+    }
+
+    /// <summary>计算并逐文件核对旧布局迁移计划：相对路径只去掉媒体目录前缀，绝对路径必须逐字节相等。</summary>
+    private static bool TryPlanLegacyMigration(
+        DownloadTask task, out (string Root, IReadOnlyDictionary<int, string> Paths) plan, out string reason)
+    {
+        plan   = default!;
+        reason = string.Empty;
+        // 同 hash 接管只说明下载器里早有种子，不代表本应用成功提交过。SubmittedAtUtc 在 Add 请求前
+        // 就落库，接管还会补来源标签，二者都不能充当成功提交证据；归属不明的任务绝不自动迁移。
+        // 旧归档日志已确认的任务更不能被一次性扫描按新版规则重新切根——它可能还没写成 Completed，
+        // 重启后必须沿用已落库的旧布局继续收尾。
+        if (DownloadPathDecision.FromJson(task.PathDecision) is
+            {
+                Kind: { } kind and (DownloadPathDecisionKinds.SameHashAdoption
+                                 or DownloadPathDecisionKinds.LegacyArchiveFinal)
+            })
+        {
+            reason = kind == DownloadPathDecisionKinds.SameHashAdoption
+                ? "同 hash 接管缺少成功提交证据，归属不明。"
+                : "旧归档日志已确认，完成收尾沿用旧布局。";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(task.DownloadRootPath) || task.MediaDirectory is null ||
+            task.SeedDirectory is null)
+        {
+            reason = "缺少下载根或目录快照。";
+            return false;
+        }
+
+        var baseRoot = DownloadPathNamePolicy.NormalizePath(task.DownloadRootPath);
+        var media    = RelativeDownloadPathPolicy.Normalize(task.MediaDirectory);
+        RelativeDownloadPathPolicy.Normalize(task.SeedDirectory);
+        var mediaRoot = DownloadPathNamePolicy.JoinSavePath(baseRoot, media);
+        if (!string.Equals(DownloadPathNamePolicy.NormalizePath(task.SavePath), baseRoot,
+                           StringComparison.Ordinal))
+        {
+            reason = "保存根不是旧版全局下载根。";
+            return false;
+        }
+
+        if (task.Files.Count == 0)
+        {
+            reason = "没有已登记的文件。";
+            return false;
+        }
+
+        if (task.Files.Any(file => file.VerificationOutcome == DownloadFileVerificationOutcomes.ReusedVerified))
+        {
+            reason = "存在共享复用证据。";
+            return false;
+        }
+
+        var prefix = media + "/";
+        var paths  = new Dictionary<int, string>();
+        foreach (var file in task.Files)
+        {
+            var current = RelativeDownloadPathPolicy.Normalize(file.CurrentRelativePath);
+            if (!current.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                reason = "文件路径不以媒体目录快照为前缀，无法证明属于旧布局。";
+                return false;
+            }
+
+            var relative = RelativeDownloadPathPolicy.Normalize(current[prefix.Length..]);
+            if (!string.Equals(DownloadPathNamePolicy.JoinSavePath(mediaRoot, relative),
+                               DownloadPathNamePolicy.JoinSavePath(baseRoot, current),
+                               StringComparison.Ordinal))
+            {
+                reason = "迁移后无法保持文件绝对路径不变。";
+                return false;
+            }
+
+            paths.Add(file.FileIndex, relative);
+        }
+
+        if (paths.Values.Distinct(StringComparer.Ordinal).Count() != paths.Count ||
+            paths.Values.Any(left => paths.Values.Any(right => right.StartsWith(left + "/", StringComparison.Ordinal))))
+        {
+            reason = "迁移后的相对路径互相冲突。";
+            return false;
+        }
+
+        plan = (mediaRoot, paths);
+        return true;
+    }
+
+    /// <summary>qB 清单按绝对路径与大小一一对应，且路径唯一：任何多余或歧义文件都使迁移不安全。</summary>
+    private static bool MatchesLegacyRemoteFiles(
+        DownloadTask task, string savePath, IReadOnlyList<TorrentFileSnapshot> remote)
+    {
+        if (remote.Count != task.Files.Count) return false;
+        var absolutePaths = remote
+                           .Select(file =>
+                                       DownloadPathNamePolicy.NormalizePath(DownloadPathNamePolicy
+                                                                               .JoinSavePath(savePath, file.Path)))
+                           .ToHashSet(StringComparer.Ordinal);
+        if (absolutePaths.Count != remote.Count) return false;
+        return task.Files.All(file =>
+        {
+            var absolute = DownloadPathNamePolicy.JoinSavePath(savePath, file.CurrentRelativePath);
+            var observed = remote.Where(value =>
+                                            string.Equals(DownloadPathNamePolicy.JoinSavePath(savePath, value.Path),
+                                                          absolute, StringComparison.Ordinal))
+                                 .ToList();
+            return observed.Count == 1 && observed[0].Size == file.Size && absolutePaths.Contains(absolute);
+        });
+    }
+
+    /// <summary>原始 .torrent 元数据与持久化原始路径/大小必须一一对应，防止迁移到别家的同路径种子。</summary>
+    private static bool MatchesLegacyOriginalFiles(DownloadTask task)
+    {
+        if (!TorrentDownloadPolicy.TryLoad(task.TorrentFile, out var torrent, out var isMultiFile)) return false;
+        var remaining = torrent.Files.ToDictionary(file =>
+                                                       TorrentDownloadPolicy
+                                                          .GetRelativePath(torrent, file, isMultiFile),
+                                                   StringComparer.Ordinal);
+        if (remaining.Count != task.Files.Count) return false;
+        foreach (var file in task.Files)
+            if (!remaining.Remove(file.OriginalRelativePath.Replace('\\', '/'), out var entry) ||
+                file.Size != entry.Length)
+                return false;
+        return true;
     }
 
     public async Task PauseAsync(Guid taskId, CancellationToken cancellationToken = default)
@@ -476,8 +808,8 @@ public sealed class DownloadService(
     ///     被本任务替换的旧任务回退为已完成（其文件仍在，重新成为当前版本）；
     ///     其他任务对本任务的替换声明一并清除，不留悬空引用。
     /// </summary>
-    public async Task DeleteAsync(Guid              taskId, bool deleteFromDownloader, bool deleteFiles,
-                                  CancellationToken cancellationToken = default)
+    public async Task DeleteAsync(
+        Guid taskId, bool deleteFromDownloader, bool deleteFiles, CancellationToken cancellationToken = default)
     {
         using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
         var       task              = await LoadTaskAsync(taskId, cancellationToken);
@@ -779,8 +1111,7 @@ public sealed class DownloadService(
                            DownloadTaskLookups.IsSingleEpisodeCarrier(aniParser, task, video, taskEpisode, taskFiles)
                               ? taskEpisode
                               : null);
-            if (episode is not { } key || byEpisode.ContainsKey(key)) continue;
-            byEpisode[key] = video;
+            if (episode is not { } key || !byEpisode.TryAdd(key, video)) continue;
         }
 
         if (byEpisode.Count == 0) return;
@@ -943,21 +1274,20 @@ public sealed class DownloadService(
             return;
         }
 
-        if (task is { Status: DownloadTaskStatus.Submitting, AttemptCount: >= MaxAutoSubmitAttempts })
+        switch (task)
         {
-            await MarkFailedAsync(task.Id, task.Status, "提交", "多次提交后仍未在下载器中发现该任务，请检查下载器后人工重试。",
-                                  cancellationToken);
-            return;
-        }
-
-        // 添加可见性窗口内不重复提交：上次 Add 请求可能仍被下载器处理中（或响应结果未知），
-        // hash 对账未命中先等待窗口到期；查询轮次与 pulse 不消耗提交预算。
-        if (task is { Status: DownloadTaskStatus.Submitting, LastSubmitAttemptAtUtc: { } attemptedAt } &&
-            timeProvider.GetUtcNow() < attemptedAt + timing.AddVisibilityWindow)
-        {
-            await DeferObservationAsync(task.Id, task.Status,
-                                        timeProvider.GetUtcNow() + timing.PreparationSampleInterval, cancellationToken);
-            return;
+            case { Status: DownloadTaskStatus.Submitting, AttemptCount: >= MaxAutoSubmitAttempts } :
+                await MarkFailedAsync(task.Id, task.Status, "提交", "多次提交后仍未在下载器中发现该任务，请检查下载器后人工重试。",
+                                      cancellationToken);
+                return;
+            // 添加可见性窗口内不重复提交：上次 Add 请求可能仍被下载器处理中（或响应结果未知），
+            // hash 对账未命中先等待窗口到期；查询轮次与 pulse 不消耗提交预算。
+            case { Status: DownloadTaskStatus.Submitting, LastSubmitAttemptAtUtc: { } attemptedAt } when
+                timeProvider.GetUtcNow() < attemptedAt + timing.AddVisibilityWindow :
+                await DeferObservationAsync(task.Id, task.Status,
+                                            timeProvider.GetUtcNow() + timing.PreparationSampleInterval,
+                                            cancellationToken);
+                return;
         }
 
         // 一个规划流程：已有候选先校验；需要替换旧版时暂存；其余任务直接在正式根下载。
@@ -965,22 +1295,32 @@ public sealed class DownloadService(
 
         string addRoot;
         var    replacing = false;
+        var    withFiles = await LoadTaskWithFilesAsync(task.Id, cancellationToken) ?? task;
         try
         {
             verificationAdd = await TryPlanVerificationAddAsync(session, task, cancellationToken);
             replacing = task.ReplacesTaskId is not null || (downloadFileService is not null &&
                                                             await downloadFileService
                                                                .HasReplacementAsync(task.Id, cancellationToken));
+            // 纯正片包（无 Seed 附件）可以直接在动画目录下载：后者是当前布局中清白任务的正式根，
+            // 归档时 Plan 保留该根并原地改名，省去从全局根迁入的一次 SetLocation。含 Seed 的包、
+            // 复用校验与替换暂存仍沿用各自根目录——它们需要媒体目录与做种目录共用同一个父根。
+            var mediaRoot = downloadFileService is not null                   &&
+                            !replacing                                        &&
+                            !string.IsNullOrWhiteSpace(task.DownloadRootPath) &&
+                            !string.IsNullOrWhiteSpace(task.MediaDirectory)   &&
+                            withFiles.Files.Count > 0                         &&
+                            withFiles.Files.All(file => file.Kind != DownloadFileKind.Seed)
+                ? DownloadPathNamePolicy.JoinSavePath(task.DownloadRootPath!, task.MediaDirectory!)
+                : null;
             addRoot = verificationAdd?.CandidateRoot ??
                       (string.IsNullOrWhiteSpace(task.DownloadRootPath) ? task.SavePath :
                           replacing ? DownloadTaskPlacement.TaskRoot(task.DownloadRootPath, task.Id) :
-                                      task.DownloadRootPath);
+                                      mediaRoot ?? task.DownloadRootPath);
             task.SavePath = addRoot;
             if (verificationAdd is null                   && !string.IsNullOrWhiteSpace(task.DownloadRootPath) &&
                 !DownloadTaskPlacement.IsTaskScoped(task) && downloadFileService is not null                   &&
-                await InitialLayoutConflictsAsync(session,
-                                                  await LoadTaskWithFilesAsync(task.Id, cancellationToken) ?? task,
-                                                  addRoot, cancellationToken))
+                await InitialLayoutConflictsAsync(session, withFiles, addRoot, cancellationToken))
                 throw new TargetPathOccupiedException("种子的原始布局被其他任务占用，不能在该目录直接添加，请先处理冲突。");
         }
         catch (InvalidOperationException exception)
@@ -1489,9 +1829,9 @@ public sealed class DownloadService(
             };
             if (failureCount >= timing.MaxRecheckSendFailures)
             {
-                await EnterVerificationUnconfirmedAsync(task, failed,
-                                                        "校验请求连续发送失败（网络或下载器异常，无法确认请求是否已被下载器接收），校验执行未确认；"
-                                                      + "未改动任何文件，可重新校验或核对下载器。", ct);
+                await EnterVerificationUnconfirmedAsync(task, failed, "校验请求连续发送失败（网络或下载器异常，"      +
+                                                                      "无法确认请求是否已被下载器接收），校验执行未确认；" +
+                                                                      "未改动任何文件，可重新校验或核对下载器。", ct);
                 return;
             }
 
@@ -1615,8 +1955,8 @@ public sealed class DownloadService(
     ///     见证只给出方向；逐文件结论仍由结果读取、映射一致性与稳定窗口核对决定。
     /// </summary>
     private async Task<string?> TryEvaluateCompletionEvidenceAsync(
-        IQbittorrentSession        session, DownloadTask      task, TorrentSnapshot snapshot,
-        DownloadVerificationIntent intent,  CancellationToken ct)
+        IQbittorrentSession session, DownloadTask task, TorrentSnapshot snapshot, DownloadVerificationIntent intent,
+        CancellationToken   ct)
     {
         if (intent.Baseline is not { } baseline || intent.RecheckAttemptedAtUtc is null) return null;
         if (intent.RequestState is null or DownloadVerificationRequestState.NotSent) return null;
@@ -1715,21 +2055,17 @@ public sealed class DownloadService(
         // 校验/移动/错误快照不构成启动条件：不请求、不记录，交由既有校验/对账路径处理。
         if (stable.Category != QbittorrentTorrentCategory.Stopped) return null;
 
-        if (task.ExternalStopObservedAtUtc is not null)
+        if (task.ExternalStopObservedAtUtc is null) return await IssueRunResumeAsync(session, task, purpose, null, ct);
+        var stopped = new DownloadRunRecovery
         {
-            var stopped = new DownloadRunRecovery
-            {
-                Purpose           = purpose,
-                State             = DownloadRunStates.DownloaderStopped,
-                LastObservedAtUtc = now,
-                ObservedCategory  = stable.Category.ToString(),
-                Reason            = "启动前已观察到下载器端外部停止；不自动拉起"
-            };
-            await SaveRunRecoveryAsync(task.Id, task.Status, stopped, null, ct);
-            return stopped;
-        }
-
-        return await IssueRunResumeAsync(session, task, purpose, null, ct);
+            Purpose           = purpose,
+            State             = DownloadRunStates.DownloaderStopped,
+            LastObservedAtUtc = now,
+            ObservedCategory  = stable.Category.ToString(),
+            Reason            = "启动前已观察到下载器端外部停止；不自动拉起"
+        };
+        await SaveRunRecoveryAsync(task.Id, task.Status, stopped, null, ct);
+        return stopped;
     }
 
     /// <summary>
@@ -1737,8 +2073,8 @@ public sealed class DownloadService(
     ///     并立即观察一次——快速生效时无需等下一轮。响应丢失不断言失败：转 ResponseUnknown 由观察确认。
     /// </summary>
     private async Task<DownloadRunRecovery?> IssueRunResumeAsync(
-        IQbittorrentSession  session,  DownloadTask      task, string purpose,
-        DownloadRunRecovery? previous, CancellationToken ct)
+        IQbittorrentSession session, DownloadTask task, string purpose, DownloadRunRecovery? previous,
+        CancellationToken   ct)
     {
         var now = timeProvider.GetUtcNow();
         var recovery = new DownloadRunRecovery
@@ -1990,9 +2326,9 @@ public sealed class DownloadService(
     ///     映射未变、无移动、无错误，并在停止状态读取文件结果。仅做种收尾的暂停不单独作废证据；
     ///     未确认共享数据时出现下载则保留风险，即使已停止也不得沿用旧证据。已落库的启动意图单独恢复。
     /// </summary>
-    private async Task AdvanceVerificationAsync(IQbittorrentSession session,  DownloadTask               task,
-                                                TorrentSnapshot?    snapshot, DownloadVerificationIntent intent,
-                                                CancellationToken   ct)
+    private async Task AdvanceVerificationAsync(
+        IQbittorrentSession session, DownloadTask task, TorrentSnapshot? snapshot, DownloadVerificationIntent intent,
+        CancellationToken   ct)
     {
         // 校验未确认是等待人工「重新校验」的终点，不是自动推进态：空闲对账不得重发 recheck、
         // 重置证据或绕过人工确认，否则任务会在无人工介入时反复进退。
@@ -2025,8 +2361,7 @@ public sealed class DownloadService(
                 await SaveVerificationIntentAsync(task.Id, task.Status, invalidated, ct);
                 await DeferObservationAsync(task.Id, task.Status,
                                             timeProvider.GetUtcNow() + timing.PreparationSampleInterval, ct);
-                logger.LogInformation(
-                                      "任务 {TaskId} 的校验意图来自其他应用实例，本轮证据已作废，下一轮重新捕获基线并重发。", task.Id);
+                logger.LogInformation("任务 {TaskId} 的校验意图来自其他应用实例，本轮证据已作废，下一轮重新捕获基线并重发。", task.Id);
                 return;
             }
         }
@@ -2058,167 +2393,167 @@ public sealed class DownloadService(
         }
 
         var now = timeProvider.GetUtcNow();
-        if (snapshot is { Category: QbittorrentTorrentCategory.Checking } or { IsMoving: true })
+        switch (snapshot)
         {
-            // 校验/移动期间的观察同步：进度、采样节奏与意图变更一次落库，各等待路径共用。
-            async Task SyncCheckingRoundAsync()
+            case { Category: QbittorrentTorrentCategory.Checking } or { IsMoving: true } :
             {
-                await UpdateTaskAsync(task.Id, task.Status, update =>
+                // 校验/移动期间的观察同步：进度、采样节奏与意图变更一次落库，各等待路径共用。
+                async Task SyncCheckingRoundAsync()
                 {
-                    update.Progress             = snapshot.Progress;
-                    update.TotalSize            = snapshot.TotalSize;
-                    update.LastSyncedAtUtc      = now;
-                    // 校验/移动期间按长校验采样节奏观察，窗口到期前的轮次跳过本任务。
-                    update.NextObservationAtUtc = now + timing.VerificationSampleInterval;
-                    update.VerificationIntent   = intent.ToJson();
-                }, ct);
-            }
+                    await UpdateTaskAsync(task.Id, task.Status, update =>
+                    {
+                        update.Progress             = snapshot.Progress;
+                        update.TotalSize            = snapshot.TotalSize;
+                        update.LastSyncedAtUtc      = now;
+                        // 校验/移动期间按长校验采样节奏观察，窗口到期前的轮次跳过本任务。
+                        update.NextObservationAtUtc = now + timing.VerificationSampleInterval;
+                        update.VerificationIntent   = intent.ToJson();
+                    }, ct);
+                }
 
-            string TimeoutStopReason()
-            {
-                // 已作废轮次的残留校验没有本轮锚点可计期限：按残留未退出说明原因。
-                if (intent is { Step: DownloadVerificationStep.Requested, RecheckRequestedAtUtc: null })
-                    return "已作废轮次的校验残留未退出";
-                return now - (intent.CheckStartedAtUtc ?? now) >= timing.VerificationRoundLimit
-                    ? "单轮校验超过总上限"
-                    : "校验长时间无有效进展";
-            }
-
-            async Task IssueTimeoutStopAsync()
-            {
-                intent = intent with
+                string TimeoutStopReason()
                 {
-                    TimeoutStopRequestedAtUtc = now, TimeoutStopAttempts = intent.TimeoutStopAttempts + 1
-                };
-                await SaveVerificationIntentAsync(task.Id, task.Status, intent, ct);
-                await session.PauseAsync(task.InfoHash, ct);
-                logger.LogWarning("任务 {TaskId} {Reason}（进度 {Progress:P1}），退出前先停止校验的临时运行（第 {Attempts} 次请求）。",
-                                  task.Id, TimeoutStopReason(), snapshot.Progress, intent.TimeoutStopAttempts);
-            }
+                    // 已作废轮次的残留校验没有本轮锚点可计期限：按残留未退出说明原因。
+                    if (intent is { Step: DownloadVerificationStep.Requested, RecheckRequestedAtUtc: null })
+                        return "已作废轮次的校验残留未退出";
+                    return now - (intent.CheckStartedAtUtc ?? now) >= timing.VerificationRoundLimit
+                        ? "单轮校验超过总上限"
+                        : "校验长时间无有效进展";
+                }
 
-            // Moving 不是 Checking：本轮校验后发生的移动可能已改变目标，证据作废、回到等待校验开始；
-            // 映射阶段的移动只等待其自然结束。移动等待独立计时：起点只在首次观察时记录、重复快照
-            // 不重置，前面校验的耗时不得占用移动等待额度——期限从起点起算，超期才按持续超时受阻。
-            if (snapshot.IsMoving)
-            {
-                var movingSince = intent.MovingObservedAtUtc ?? now;
-                if (now - movingSince >= timing.VerificationNoProgressWindow)
+                async Task IssueTimeoutStopAsync()
+                {
+                    intent = intent with
+                    {
+                        TimeoutStopRequestedAtUtc = now, TimeoutStopAttempts = intent.TimeoutStopAttempts + 1
+                    };
+                    await SaveVerificationIntentAsync(task.Id, task.Status, intent, ct);
+                    await session.PauseAsync(task.InfoHash, ct);
+                    logger.LogWarning("任务 {TaskId} {Reason}（进度 {Progress:P1}），退出前先停止校验的临时运行（第 {Attempts} 次请求）。",
+                                      task.Id, TimeoutStopReason(), snapshot.Progress, intent.TimeoutStopAttempts);
+                }
+
+                // Moving 不是 Checking：本轮校验后发生的移动可能已改变目标，证据作废、回到等待校验开始；
+                // 映射阶段的移动只等待其自然结束。移动等待独立计时：起点只在首次观察时记录、重复快照
+                // 不重置，前面校验的耗时不得占用移动等待额度——期限从起点起算，超期才按持续超时受阻。
+                if (snapshot.IsMoving)
+                {
+                    var movingSince = intent.MovingObservedAtUtc ?? now;
+                    if (now - movingSince >= timing.VerificationNoProgressWindow)
+                    {
+                        await MarkFailedAsync(task.Id, task.Status, "复用校验", "校验或移动持续超时，请人工核对下载器。", ct);
+                        return;
+                    }
+
+                    if (intent.ObservedChecking)
+                    {
+                        await SaveVerificationIntentAsync(task.Id, task.Status,
+                                                          ResetRoundEvidence(intent, DownloadVerificationStep.Requested)
+                                                              with
+                                                              {
+                                                                  MovingObservedAtUtc = movingSince
+                                                              }, ct);
+                        return;
+                    }
+
+                    if (intent.MovingObservedAtUtc is null)
+                        intent = intent with { MovingObservedAtUtc = movingSince };
+                    await SyncCheckingRoundAsync();
+                    return;
+                }
+
+                // 映射阶段的外部校验不可归属任何请求：等待其结束并保留有界兜底，超时按无法解释处理。
+                if (intent.Step == DownloadVerificationStep.Mapping &&
+                    now         >= (intent.DeadlineUtc ?? intent.CreatedAtUtc + timing.VerificationNoProgressWindow))
                 {
                     await MarkFailedAsync(task.Id, task.Status, "复用校验", "校验或移动持续超时，请人工核对下载器。", ct);
                     return;
                 }
 
-                if (intent.ObservedChecking)
+                // 旧意图（本轮实现前落库）缺校验锚点：恢复观察的第一轮补齐并落库，两个期限从补齐时刻起算。
+                if (intent is { ObservedChecking: true, CheckStartedAtUtc: null })
+                    intent = intent with
+                    {
+                        CheckStartedAtUtc = now,
+                        LastCheckProgressAtUtc = intent.LastCheckProgressAtUtc ?? now,
+                        LastCheckProgress = intent.LastCheckProgress           ?? snapshot.Progress
+                    };
+
+                // 已作废轮次的残留校验不可归属任何请求（作废未伴随停止请求记录时首遇即发出）：
+                // 停止确认的期限与预算接管——窗口内等待、有界补发、耗尽受阻；停稳后由补发路径
+                // 重新发起可信校验，不得无限等待一个已作废的校验自然结束。重新校验待发/发送结果未知
+                // 时不能把 Checking 当成已作废残留，否则会误停可能正是本次请求的校验。
+                if (intent is
+                    {
+                        Step                     : DownloadVerificationStep.Requested,
+                        RecheckRequestedAtUtc    : null,
+                        RequestState             : null or DownloadVerificationRequestState.Sent,
+                        TimeoutStopRequestedAtUtc: null
+                    })
                 {
-                    await SaveVerificationIntentAsync(task.Id, task.Status,
-                                                      ResetRoundEvidence(intent, DownloadVerificationStep.Requested)
-                                                          with
-                                                          {
-                                                              MovingObservedAtUtc = movingSince
-                                                          }, ct);
+                    await IssueTimeoutStopAsync();
                     return;
                 }
 
-                if (intent.MovingObservedAtUtc is null)
-                    intent = intent with { MovingObservedAtUtc = movingSince };
+                // 请求前观察到的外部校验不能充当本轮请求的完成证据：只归属本轮请求的 Checking 记为证据。
+                // checkingResumeData 不是内容校验证据；无原始状态的旧意图/会话保持原有语义。
+                if (intent.Step != DownloadVerificationStep.Mapping                                          &&
+                    intent is { IssuedCount: > 0, RecheckRequestedAtUtc: not null, ObservedChecking: false } &&
+                    IsDataCheckingRawState(snapshot.RawState))
+                    intent = intent with
+                    {
+                        ObservedChecking = true,
+                        Step = DownloadVerificationStep.Observing,
+                        CheckStartedAtUtc = intent.CheckStartedAtUtc           ?? now,
+                        LastCheckProgressAtUtc = intent.LastCheckProgressAtUtc ?? now,
+                        LastCheckProgress = intent.LastCheckProgress           ?? snapshot.Progress,
+                        ObservedRawState = snapshot.RawState
+                    };
+
+                // 校验进行中：退出校验前积累的稳定样本已作废（再次校验后的旧结果不再有效）。
+                if (intent.StabilitySample is not null)
+                    intent = VoidStabilitySamples(intent);
+
+                // 已决定到期退出后，停止确认独立于进度：校验仍在推进也不能重置期限、绕过停止请求的确认窗口。
+                if (intent.TimeoutStopRequestedAtUtc is { } stopRequestedAt)
+                {
+                    if (now < stopRequestedAt + timing.ControlConfirmationWindow)
+                    {
+                        await SyncCheckingRoundAsync();
+                        return;
+                    }
+
+                    if (intent.TimeoutStopAttempts >= timing.MaxVerificationPauseAttempts)
+                    {
+                        await MarkFailedAsync(task.Id, task.Status, "复用校验",
+                                              $"{TimeoutStopReason()}且停止请求未生效，为保护共享数据已停止推进，请人工核对下载器。", ct);
+                        return;
+                    }
+
+                    await IssueTimeoutStopAsync();
+                    return;
+                }
+
+                // “无进展”只由有意义的校验进展重置：重复同样快照、请求成功或网络重试不算进展。
+                if (intent.ObservedChecking && snapshot.Progress != intent.LastCheckProgress)
+                    intent = intent with { LastCheckProgress = snapshot.Progress, LastCheckProgressAtUtc = now };
+
+                // 校验中的两个独立期限：无进展期限按最后有效进展计算，单轮总上限防进度抖动无限续期。
+                // 到期不直接判死：先停止确认（校验的临时运行不带离自动推进）；停止生效后按「校验被中断」受阻。
+                if (now - (intent.LastCheckProgressAtUtc ?? now) >= timing.VerificationNoProgressWindow ||
+                    now - (intent.CheckStartedAtUtc      ?? now) >= timing.VerificationRoundLimit)
+                {
+                    await IssueTimeoutStopAsync();
+                    return;
+                }
+
                 await SyncCheckingRoundAsync();
                 return;
             }
-
-            // 映射阶段的外部校验不可归属任何请求：等待其结束并保留有界兜底，超时按无法解释处理。
-            if (intent.Step == DownloadVerificationStep.Mapping &&
-                now         >= (intent.DeadlineUtc ?? intent.CreatedAtUtc + timing.VerificationNoProgressWindow))
-            {
-                await MarkFailedAsync(task.Id, task.Status, "复用校验", "校验或移动持续超时，请人工核对下载器。", ct);
+            // 校验后进入错误状态：结果不可解释，不算通过，转独立下载（先于运行分支处理）。
+            case { Category: QbittorrentTorrentCategory.Error } :
+                await EnterIsolationAsync(task, intent, "校验结束后任务进入错误状态，结果不可用，转为独立下载。", ct);
                 return;
-            }
-
-            // 旧意图（本轮实现前落库）缺校验锚点：恢复观察的第一轮补齐并落库，两个期限从补齐时刻起算。
-            if (intent is { ObservedChecking: true, CheckStartedAtUtc: null })
-                intent = intent with
-                {
-                    CheckStartedAtUtc = now,
-                    LastCheckProgressAtUtc = intent.LastCheckProgressAtUtc ?? now,
-                    LastCheckProgress = intent.LastCheckProgress           ?? snapshot.Progress
-                };
-
-            // 已作废轮次的残留校验不可归属任何请求（作废未伴随停止请求记录时首遇即发出）：
-            // 停止确认的期限与预算接管——窗口内等待、有界补发、耗尽受阻；停稳后由补发路径
-            // 重新发起可信校验，不得无限等待一个已作废的校验自然结束。重新校验待发/发送结果未知
-            // 时不能把 Checking 当成已作废残留，否则会误停可能正是本次请求的校验。
-            if (intent is
-                {
-                    Step                     : DownloadVerificationStep.Requested,
-                    RecheckRequestedAtUtc    : null,
-                    RequestState             : null or DownloadVerificationRequestState.Sent,
-                    TimeoutStopRequestedAtUtc: null
-                })
-            {
-                await IssueTimeoutStopAsync();
-                return;
-            }
-
-            // 请求前观察到的外部校验不能充当本轮请求的完成证据：只归属本轮请求的 Checking 记为证据。
-            // checkingResumeData 不是内容校验证据；无原始状态的旧意图/会话保持原有语义。
-            if (intent.Step != DownloadVerificationStep.Mapping                                          &&
-                intent is { IssuedCount: > 0, RecheckRequestedAtUtc: not null, ObservedChecking: false } &&
-                IsDataCheckingRawState(snapshot.RawState))
-                intent = intent with
-                {
-                    ObservedChecking = true,
-                    Step = DownloadVerificationStep.Observing,
-                    CheckStartedAtUtc = intent.CheckStartedAtUtc           ?? now,
-                    LastCheckProgressAtUtc = intent.LastCheckProgressAtUtc ?? now,
-                    LastCheckProgress = intent.LastCheckProgress           ?? snapshot.Progress,
-                    ObservedRawState = snapshot.RawState
-                };
-
-            // 校验进行中：退出校验前积累的稳定样本已作废（再次校验后的旧结果不再有效）。
-            if (intent.StabilitySample is not null)
-                intent = VoidStabilitySamples(intent);
-
-            // 已决定到期退出后，停止确认独立于进度：校验仍在推进也不能重置期限、绕过停止请求的确认窗口。
-            if (intent.TimeoutStopRequestedAtUtc is { } stopRequestedAt)
-            {
-                if (now < stopRequestedAt + timing.ControlConfirmationWindow)
-                {
-                    await SyncCheckingRoundAsync();
-                    return;
-                }
-
-                if (intent.TimeoutStopAttempts >= timing.MaxVerificationPauseAttempts)
-                {
-                    await MarkFailedAsync(task.Id, task.Status, "复用校验",
-                                          $"{TimeoutStopReason()}且停止请求未生效，为保护共享数据已停止推进，请人工核对下载器。", ct);
-                    return;
-                }
-
-                await IssueTimeoutStopAsync();
-                return;
-            }
-
-            // “无进展”只由有意义的校验进展重置：重复同样快照、请求成功或网络重试不算进展。
-            if (intent.ObservedChecking && snapshot.Progress != intent.LastCheckProgress)
-                intent = intent with { LastCheckProgress = snapshot.Progress, LastCheckProgressAtUtc = now };
-
-            // 校验中的两个独立期限：无进展期限按最后有效进展计算，单轮总上限防进度抖动无限续期。
-            // 到期不直接判死：先停止确认（校验的临时运行不带离自动推进）；停止生效后按「校验被中断」受阻。
-            if (now - (intent.LastCheckProgressAtUtc ?? now) >= timing.VerificationNoProgressWindow ||
-                now - (intent.CheckStartedAtUtc      ?? now) >= timing.VerificationRoundLimit)
-            {
-                await IssueTimeoutStopAsync();
-                return;
-            }
-
-            await SyncCheckingRoundAsync();
-            return;
-        }
-
-        // 校验后进入错误状态：结果不可解释，不算通过，转独立下载（先于运行分支处理）。
-        if (snapshot is { Category: QbittorrentTorrentCategory.Error })
-        {
-            await EnterIsolationAsync(task, intent, "校验结束后任务进入错误状态，结果不可用，转为独立下载。", ct);
-            return;
         }
 
         switch (readyToRun)

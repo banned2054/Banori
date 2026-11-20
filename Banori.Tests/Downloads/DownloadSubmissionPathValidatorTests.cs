@@ -102,6 +102,63 @@ public sealed class DownloadSubmissionPathValidatorTests
         h.AssertNoSideEffects();
     }
 
+    [Fact]
+    public async Task TerminalBadRecordOutsideTargetsIsIgnoredEvenWhenRootsOverlap()
+    {
+        await using var h     = await Harness.Create();
+        // /downloads 是目标根 /downloads/media 的父目录，根相交；但 ../outside.mkv 解析后落在 /outside.mkv。
+        var             other = NewTask("unrelated.mkv", "/downloads");
+        other.Status = DownloadTaskStatus.Completed;
+        other.Files.Add(File(other, "../outside.mkv"));
+        await h.Add(other);
+        await h.Validate();
+        h.AssertNoSideEffects();
+    }
+
+    [Fact]
+    public async Task TerminalBadRecordThatMayOccupyTargetStillBlocksSubmission()
+    {
+        await using var h     = await Harness.Create();
+        var             other = NewTask("unrelated.mkv");
+        other.Status = DownloadTaskStatus.Completed;
+        // 相对当前保存根解析后正好命中目标 /downloads/media/episode.mkv，无法排除占用。
+        other.Files.Add(File(other, "../media/episode.mkv"));
+        await h.Add(other);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(h.Validate);
+        Assert.Contains("不安全", error.Message);
+        h.AssertNoSideEffects();
+    }
+
+    [Fact]
+    public async Task NetworkShareBadRecordThatMayOccupyTargetStillBlocksSubmission()
+    {
+        await using var h = await Harness.Create();
+        h.Task.SavePath = "//nas/share/downloads/media";
+        // 网络共享根以 // 开头；坏记录的 ../media/episode.mkv 解析后仍落在
+        // //nas/share/downloads/media/episode.mkv，不能因丢失一个 / 而误判为不相交。
+        var other = NewTask("unrelated.mkv", "//nas/share/downloads/media");
+        other.Status = DownloadTaskStatus.Completed;
+        other.Files.Add(File(other, "../media/episode.mkv"));
+        await h.Add(other);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(h.Validate);
+        Assert.Contains("不安全", error.Message);
+        h.AssertNoSideEffects();
+    }
+
+    [Fact]
+    public async Task NetworkShareBadRecordOutsideTargetsIsIgnored()
+    {
+        await using var h = await Harness.Create();
+        h.Task.SavePath = "//nas/share/downloads/media";
+        // 保留 // 前缀后解析到 //nas/share/downloads/outside.mkv，与目标不相交，可安全跳过。
+        var other = NewTask("unrelated.mkv", "//nas/share/downloads/media");
+        other.Status = DownloadTaskStatus.Completed;
+        other.Files.Add(File(other, "../outside.mkv"));
+        await h.Add(other);
+        await h.Validate();
+        h.AssertNoSideEffects();
+    }
+
     [Theory]
     [InlineData("episode.mkv", "episode.mkv")]
     [InlineData("episode.mkv", "EPISODE.MKV")]
