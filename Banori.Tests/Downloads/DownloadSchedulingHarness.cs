@@ -36,10 +36,11 @@ internal sealed class SchedulingHarness(
 {
     private const string DownloadRoot = "/downloads";
 
-    public IServiceProvider              Provider { get; } = provider;
-    public FakeTorrentStore              Store    { get; } = store;
-    public FakeQbittorrentSessionFactory Factory  { get; } = factory;
-    public StepTimeProvider              Time     { get; } = time;
+    public IServiceProvider              Provider     { get; } = provider;
+    public FakeTorrentStore              Store        { get; } = store;
+    public FakeQbittorrentSessionFactory Factory      { get; } = factory;
+    public StepTimeProvider              Time         { get; } = time;
+    public string                        DatabasePath { get; } = Path.Combine(directory.FullName, "scheduling.db");
 
     public void Dispose()
     {

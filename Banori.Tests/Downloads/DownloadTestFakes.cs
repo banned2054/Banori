@@ -69,6 +69,12 @@ public sealed class MemoryApplicationSettingStore : IApplicationSettingStore
 }
 
 /// <summary>模拟 qBittorrent 服务器内部的种子存储：跨会话共享，天然表达“下载器状态在应用重启后仍在”。</summary>
+/// <summary>Add 方法入口请求记录：hash、保存根与由种子清单推导的完整目标路径。</summary>
+public sealed record AddEntry(
+    string                                  Hash,
+    string                                  SavePath,
+    IReadOnlyList<(string Path, long Size)> TargetPaths);
+
 public sealed class FakeTorrentStore
 {
     public Dictionary<string, TorrentSnapshot> Torrents { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -143,16 +149,23 @@ public sealed class FakeTorrentStore
     public List<(string Hash, IReadOnlyCollection<int> Indices, bool Download)> PendingSelections { get; } = [];
 
     public List<(byte[] Bytes, string SavePath, IReadOnlyList<string> Tags, string? Rename)> AddCalls { get; } = [];
-    public List<(string Hash, string Name)> RenameCalls { get; } = [];
-    public List<(string Hash, string OldPath, string NewPath)> RenameFileCalls { get; } = [];
-    public List<(string Hash, string OldPath, string NewPath)> RenameFolderCalls { get; } = [];
-    public List<(string Hash, string Tag)> AddTagCalls { get; } = [];
-    public List<string> ResumeCalls { get; } = [];
-    public List<string> PauseCalls { get; } = [];
-    public List<(string Hash, bool DeleteFiles)> DeleteCalls { get; } = [];
-    public List<(string Hash, IReadOnlyCollection<int> Indices, bool Download)> SelectionCalls { get; } = [];
-    public List<string> RecheckCalls { get; } = [];
-    public List<string> ReannounceCalls { get; } = [];
+
+    /// <summary>
+    ///     Add 方法入口处记录每次请求（在 fake 决定接受/拒绝/抛异常之前）：hash、保存根、由种子清单
+    ///     推导的完整目标路径。供竞争场景按 hash 精确断言「另一个种子是否真的发出了 Add」。
+    /// </summary>
+    public List<AddEntry> AddEntries { get; } = [];
+
+    public List<(string Hash, string Name)>                                     RenameCalls       { get; } = [];
+    public List<(string Hash, string OldPath, string NewPath)>                  RenameFileCalls   { get; } = [];
+    public List<(string Hash, string OldPath, string NewPath)>                  RenameFolderCalls { get; } = [];
+    public List<(string Hash, string Tag)>                                      AddTagCalls       { get; } = [];
+    public List<string>                                                         ResumeCalls       { get; } = [];
+    public List<string>                                                         PauseCalls        { get; } = [];
+    public List<(string Hash, bool DeleteFiles)>                                DeleteCalls       { get; } = [];
+    public List<(string Hash, IReadOnlyCollection<int> Indices, bool Download)> SelectionCalls    { get; } = [];
+    public List<string>                                                         RecheckCalls      { get; } = [];
+    public List<string>                                                         ReannounceCalls   { get; } = [];
 
     /// <summary>测试显式播种的可导出种子字节（qBittorrent /export 的内存对应物）；未播种视为导出失败。</summary>
     public Dictionary<string, byte[]> ExportedTorrents { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -317,6 +330,12 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     /// <summary>FindTorrents 前回调：确定性挂起预检/查询，用于测试迟到结果处理。</summary>
     public Func<IReadOnlyCollection<string>, Task>? BeforeFindTorrentsAsync { get; set; }
 
+    /// <summary>ListTorrents 前回调：用于模拟生产 HTTP null 查询未知。</summary>
+    public Func<Task>? BeforeListTorrentsAsync { get; set; }
+
+    /// <summary>ListFiles 前回调：可在此刻删种，用于复现「查询时还在、读取清单前被删」的竞态。</summary>
+    public Func<string, Task>? BeforeListFilesAsync { get; set; }
+
     /// <summary>设置后 RecheckTorrent 抛出该异常，模拟请求发送失败（请求可能已被接收，无法确认）。</summary>
     public Exception? RecheckException { get; set; }
 
@@ -340,11 +359,20 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     {
         if (BeforeAddTorrentAsync is not null) await BeforeAddTorrentAsync();
 
-        if (AddException is not null) throw AddException;
-
         if (!TorrentDownloadPolicy.TryLoad(torrentBytes, out var torrent, out var isMultiFile))
             throw new InvalidOperationException("测试种子字节无效。");
         var hash = torrent.InfoHashes.V1!.ToHex().ToLowerInvariant();
+
+        // 入口记录必须在 fake 决定接受/拒绝/抛异常之前：由种子清单与保存根推导完整目标路径。
+        var targets = torrent.Files
+                             .Select(file => TorrentDownloadPolicy.GetRelativePath(torrent, file, isMultiFile))
+                             .Zip(torrent.Files,
+                                  (relative, file) =>
+                                      (savePath.TrimEnd('/') + "/" + relative.Replace('\\', '/'), file.Length))
+                             .ToList();
+        store.AddEntries.Add(new AddEntry(hash, savePath, targets));
+
+        if (AddException is not null) throw AddException;
 
         if (FailOnDuplicate && store.Torrents.ContainsKey(hash)) return "Fails.";
 
@@ -398,19 +426,17 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
     }
 
 
-    public Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(
+    public async Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(
         string? tag, CancellationToken cancellationToken = default)
     {
-        return Task.FromResult<IReadOnlyList<TorrentSnapshot>>(store.Torrents.Values
-                                                                    .Where(snapshot =>
-                                                                               !store.HiddenTorrents
-                                                                                  .Contains(snapshot.Hash) &&
-                                                                               (tag is null ||
-                                                                                   SnapshotFor(snapshot.Hash).Tags
-                                                                                      .Contains(tag, StringComparer
-                                                                                          .OrdinalIgnoreCase)))
-                                                                    .Select(snapshot => SnapshotFor(snapshot.Hash))
-                                                                    .ToList());
+        if (BeforeListTorrentsAsync is not null) await BeforeListTorrentsAsync();
+        return store.Torrents.Values
+                    .Where(snapshot => !store.HiddenTorrents.Contains(snapshot.Hash) &&
+                                       (tag is null ||
+                                        SnapshotFor(snapshot.Hash).Tags
+                                                                  .Contains(tag, StringComparer.OrdinalIgnoreCase)))
+                    .Select(snapshot => SnapshotFor(snapshot.Hash))
+                    .ToList();
     }
 
     public Task AddTagAsync(string infoHash, string tag, CancellationToken cancellationToken = default)
@@ -429,16 +455,17 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         Task.FromResult<IReadOnlyList<string>>(store.Files.TryGetValue(infoHash, out var names) ? names : []);
 
 
-    public Task<IReadOnlyList<TorrentFileSnapshot>> ListFilesAsync(
+    public async Task<IReadOnlyList<TorrentFileSnapshot>> ListFilesAsync(
         string infoHash, CancellationToken cancellationToken = default)
     {
+        if (BeforeListFilesAsync is not null) await BeforeListFilesAsync(infoHash);
         if (store.FileIdentities.TryGetValue(infoHash, out var files))
-            return Task.FromResult<IReadOnlyList<TorrentFileSnapshot>>(files.ToList());
-        return Task.FromResult<IReadOnlyList<TorrentFileSnapshot>>(store.Files.TryGetValue(infoHash, out var names)
-                                                                       ? names.Select((name, index) =>
-                                                                           new TorrentFileSnapshot(index, name,
-                                                                               1024)).ToList()
-                                                                       : []);
+            return files.ToList();
+        return store.Files.TryGetValue(infoHash, out var names)
+            ? names.Select((name, index) =>
+                               new TorrentFileSnapshot(index, name,
+                                                       1024)).ToList()
+            : [];
     }
 
     public Task<byte[]> ExportTorrentAsync(string infoHash, CancellationToken cancellationToken = default)
@@ -693,6 +720,9 @@ public sealed class FakeQbittorrentSessionFactory(FakeTorrentStore store) : IQbi
 
     public FakeQbittorrentSession LastSession { get; private set; } = null!;
 
+    /// <summary>最近一次按显式设置创建会话时传入的配置，用于核对证据与实际连接一致。</summary>
+    public QbittorrentSettings? LastSettings { get; private set; }
+
     public Task<IQbittorrentSession> CreateAsync(CancellationToken cancellationToken = default) =>
         CreateAsync(new QbittorrentSettings("http://qb.test", "admin", "/downloads", true), "secret",
                     cancellationToken);
@@ -702,7 +732,8 @@ public sealed class FakeQbittorrentSessionFactory(FakeTorrentStore store) : IQbi
     {
         if (ThrowOnCreate) throw new QbittorrentException("模拟下载器不可达");
 
-        LastSession = new FakeQbittorrentSession(store);
+        LastSettings = settings;
+        LastSession  = new FakeQbittorrentSession(store);
         SessionConfigurator?.Invoke(LastSession);
         return Task.FromResult<IQbittorrentSession>(LastSession);
     }
