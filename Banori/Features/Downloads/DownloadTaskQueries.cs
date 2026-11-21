@@ -103,7 +103,7 @@ public sealed class DownloadTaskQueries(
     /// <summary>
     ///     状态分组过滤：与 DownloadStatusFilter.GroupOf 同一口径的 SQL 形状（等价性测试锁定两边一致）。
     ///     集合就是要显示的分组：空集合（页面全不勾选）时所有分支都不启用，谓词恒不成立；
-    ///     全部勾选与不限制状态等价，直接省略谓词，默认列表不拼出九个分支的 OR。
+    ///     全部勾选与不限制状态等价，直接省略状态谓词。
     ///     显示阶段的细分（隔离/校验意图/准备阶段）都落在「准备与校验中」桶；校验意图存 JSON 无法直接查询，
     ///     仅「暂停/运行任务被下载器端 recheck 观察为校验中」这一处影响归属，用空意图近似该判断；
     ///     「校验未确认」同样是 Paused 但归准备与校验桶，按意图 JSON 的 Unconfirmed 片段精确归属；
@@ -114,41 +114,37 @@ public sealed class DownloadTaskQueries(
     {
         if (DownloadStatusFilter.Choices.All(groups.Contains)) return query;
 
-        var wantWaitingSubmit     = groups.Contains(DownloadStatusFilterGroup.WaitingSubmit);
-        var wantWaitingAddConfirm = groups.Contains(DownloadStatusFilterGroup.WaitingAddConfirm);
-        var wantPreparingChecking = groups.Contains(DownloadStatusFilterGroup.PreparingChecking);
+        (DownloadStatusFilterGroup Group, DownloadTaskStatus Status)[] directStatusGroups =
+        [
+            (DownloadStatusFilterGroup.WaitingSubmit, DownloadTaskStatus.PendingSubmit),
+            (DownloadStatusFilterGroup.WaitingAddConfirm, DownloadTaskStatus.Submitting),
+            (DownloadStatusFilterGroup.Completed, DownloadTaskStatus.Completed),
+            (DownloadStatusFilterGroup.Failed, DownloadTaskStatus.Failed),
+            (DownloadStatusFilterGroup.Lost, DownloadTaskStatus.Lost),
+            (DownloadStatusFilterGroup.Replaced, DownloadTaskStatus.Replaced)
+        ];
+        var selectedStatuses = directStatusGroups.Where(pair => groups.Contains(pair.Group))
+                                                 .Select(pair => pair.Status).ToArray();
         var wantDownloading       = groups.Contains(DownloadStatusFilterGroup.Downloading);
+        var wantPreparingChecking = groups.Contains(DownloadStatusFilterGroup.PreparingChecking);
         var wantPaused            = groups.Contains(DownloadStatusFilterGroup.Paused);
-        var wantCompleted         = groups.Contains(DownloadStatusFilterGroup.Completed);
-        var wantFailed            = groups.Contains(DownloadStatusFilterGroup.Failed);
         var wantLost              = groups.Contains(DownloadStatusFilterGroup.Lost);
-        var wantReplaced          = groups.Contains(DownloadStatusFilterGroup.Replaced);
-        return query.Where(task =>
-                               (wantWaitingSubmit     && task.Status == DownloadTaskStatus.PendingSubmit) ||
-                               (wantWaitingAddConfirm && task.Status == DownloadTaskStatus.Submitting)    ||
-                               // 运行中任务被下载器端 recheck 观察到校验时展示为校验中，归准备与校验桶。
-                               (wantDownloading      && task.Status == DownloadTaskStatus.Downloading &&
-                                !task.IsSystemPaused &&
-                                task.LastObservedCategory != QbittorrentTorrentCategory.Checking) ||
-                               (wantPreparingChecking &&
-                                ((task.Status == DownloadTaskStatus.Downloading &&
-                                  (task.IsSystemPaused ||
-                                   task.LastObservedCategory == QbittorrentTorrentCategory.Checking)) ||
-                                 (task.Status == DownloadTaskStatus.Paused &&
-                                  ((task.LastObservedCategory == QbittorrentTorrentCategory.Checking &&
-                                    string.IsNullOrEmpty(task.VerificationIntent)) ||
-                                   (!task.IsUserPaused &&
-                                    EF.Functions.Like(task.VerificationIntent, UnconfirmedIntentPattern)))))) ||
-                               (wantPaused && task.Status == DownloadTaskStatus.Paused &&
-                                !(task.LastObservedCategory == QbittorrentTorrentCategory.Checking &&
-                                  string.IsNullOrEmpty(task.VerificationIntent)) &&
-                                (task.VerificationIntent == null ||
-                                 task.IsUserPaused               ||
-                                 !EF.Functions.Like(task.VerificationIntent, UnconfirmedIntentPattern))) ||
-                               (wantCompleted && task.Status == DownloadTaskStatus.Completed)            ||
-                               (wantFailed    && task.Status == DownloadTaskStatus.Failed)               ||
-                               (wantLost      && task.Status == DownloadTaskStatus.Lost)                 ||
-                               (wantReplaced  && task.Status == DownloadTaskStatus.Replaced));
+
+        return from task in query
+               let isChecking = task.LastObservedCategory == QbittorrentTorrentCategory.Checking
+               let isPreparingDownload = task.IsSystemPaused || isChecking
+               let hasUnconfirmedVerification = task.VerificationIntent != null &&
+                                                EF.Functions.Like(task.VerificationIntent, UnconfirmedIntentPattern)
+               let isPausedForPreparation = (isChecking         && string.IsNullOrEmpty(task.VerificationIntent)) ||
+                                            (!task.IsUserPaused && hasUnconfirmedVerification)
+               where selectedStatuses.Contains(task.Status) ||
+                     (task.Status == DownloadTaskStatus.Downloading &&
+                      (isPreparingDownload ? wantPreparingChecking : wantDownloading)) ||
+                     (task.Status == DownloadTaskStatus.Paused &&
+                      (isPausedForPreparation ? wantPreparingChecking : wantPaused)) ||
+                     // 确认缺种的已完成任务同时归入「已完成」和「丢失」。
+                     (wantLost && task.Status == DownloadTaskStatus.Completed && task.TorrentMissingAtUtc != null)
+               select task;
     }
 
     /// <summary>语言筛选：字幕语言存于要素 JSON 的 "language" 值，多选 OR；空字符串哨兵匹配键缺失或为空的无语言任务。</summary>
@@ -324,6 +320,7 @@ public sealed class DownloadTaskQueries(
             LastSyncedAtUtc           = task.LastSyncedAtUtc,
             LastObservedCategory      = task.LastObservedCategory,
             NextObservationAtUtc      = task.NextObservationAtUtc,
+            TorrentMissingAtUtc       = task.TorrentMissingAtUtc,
             AttemptCount              = task.AttemptCount,
             DownloaderReady           = downloaderReady,
             PathDecisionKind          = decision?.Kind,

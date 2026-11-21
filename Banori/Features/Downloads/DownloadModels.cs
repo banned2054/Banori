@@ -711,6 +711,12 @@ public sealed record DownloadTaskView
     /// <summary>下一次允许观察/推进本任务的最早时间；null 表示随对账正常处理，终态不展示。</summary>
     public DateTimeOffset? NextObservationAtUtc { get; init; }
 
+    /// <summary>缺种确认时间；非空表示下载器中已连续两次查无该种子。Status 仍为 Completed。</summary>
+    public DateTimeOffset? TorrentMissingAtUtc { get; init; }
+
+    /// <summary>种子是否已被确认缺失：仅 Completed 且带缺种确认时间时为真。</summary>
+    public bool IsTorrentMissing => Status == DownloadTaskStatus.Completed && TorrentMissingAtUtc != null;
+
     /// <summary>已发起的提交尝试次数（含隔离重加）；只用于解释等待位置，不参与推进。</summary>
     public int AttemptCount { get; init; }
 

@@ -197,6 +197,13 @@ else
 					</td>
 					<td>
 						<span class="badge @StatusClass(task.Phase)">@task.StatusText</span>
+						@if (task.IsTorrentMissing)
+						{
+							<div class="small mt-1">
+								<span class="badge text-bg-warning">种子丢失</span>
+								<span class="text-body-secondary">qBittorrent 中已找不到该种子，完成记录与逐集归属仍保留。</span>
+							</div>
+						}
 						<div class="small text-body-secondary">@task.WaitingForText</div>
 						@foreach (var note in task.PhaseNotes)
 						{
@@ -274,6 +281,9 @@ else
 									break;
 								case DownloadTaskStatus.Paused when task.IsUserPaused :
 									<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => ResumeAsync(task.Id)">恢复</button>
+									break;
+								case DownloadTaskStatus.Completed when task.IsTorrentMissing :
+									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RedownloadAsync(task.Id)">重新下载</button>
 									break;
 								case DownloadTaskStatus.Completed when task.RunState is DownloadRunStates.FailedRetryable or DownloadRunStates.DownloaderStopped :
 									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ResumeRunAsync(task.Id)"> 恢复做种 </button>
@@ -500,6 +510,12 @@ else
 	private Task RetryAsync(Guid taskId)
 	{
 		return RunOperationAsync(() => _vm.RetryAsync(taskId, _cts.Token));
+	}
+
+	/// <summary>种子丢失后重新下载：沿用原决策重新提交，完成记录与逐集归属不变。</summary>
+	private Task RedownloadAsync(Guid taskId)
+	{
+		return RunOperationAsync(() => _vm.RedownloadAsync(taskId, _cts.Token));
 	}
 
 	private Task ReverifyAsync(Guid taskId)

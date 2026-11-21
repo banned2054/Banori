@@ -436,6 +436,11 @@ public sealed class DownloadTasksPageViewModel(
         {
             throw;
         }
+        catch (TorrentMissingException)
+        {
+            // 种子在下载器中已丢失：按固定文案提示重新下载，不记警告日志。
+            if (IsCurrentFileState(taskId, state)) state.Error = "qBittorrent 中已找不到该种子";
+        }
         catch (Exception exception)
         {
             logger.LogWarning(exception, "下载任务 {TaskId} 文件 {FileIndex} 修改预览失败。", taskId, fileIndex);
@@ -711,6 +716,13 @@ public sealed class DownloadTasksPageViewModel(
     {
         await RunOperationAsync(taskId, () => downloadService.RetryAsync(taskId, cancellationToken),
                                 "任务已重新排队，等待提交。", cancellationToken);
+    }
+
+    /// <summary>种子丢失后重新下载：沿用原决策与命名快照重新提交，完成记录与逐集归属不变。</summary>
+    public async Task RedownloadAsync(Guid taskId, CancellationToken cancellationToken = default)
+    {
+        await RunOperationAsync(taskId, () => downloadService.RetryAsync(taskId, cancellationToken),
+                                "已重新提交下载，等待下载器确认。", cancellationToken);
     }
 
     /// <summary>重新校验：仅作用于校验未确认的任务；保留候选与文件，只重置本轮证据并重发 recheck。</summary>

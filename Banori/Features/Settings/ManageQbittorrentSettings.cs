@@ -56,6 +56,27 @@ public sealed class ManageQbittorrentSettings(
                                        proxyId);
     }
 
+    /// <summary>
+    ///     一次读取连接所需的全部设置（含解密后的密码）：创建会话与生成配置指纹必须使用同一份快照，
+    ///     否则两次读取之间切换下载器会把 A/B 两次查无误当成同一配置下的确认。
+    /// </summary>
+    public async Task<(QbittorrentSettings Settings, string? Password)> GetConnectionAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var enabledText = await settingStore.GetAsync(EnabledKey, cancellationToken);
+        var baseUrl     = await settingStore.GetAsync(BaseUrlKey, cancellationToken)  ?? string.Empty;
+        var username    = await settingStore.GetAsync(UsernameKey, cancellationToken) ?? string.Empty;
+        var password    = await settingStore.GetAsync(PasswordKey, cancellationToken);
+        var savePath    = await settingStore.GetAsync(SavePathKey, cancellationToken) ?? string.Empty;
+        var proxyId = Guid.TryParse(await settingStore.GetAsync(ProxyIdKey, cancellationToken), out var parsed)
+            ? (Guid?)parsed
+            : null;
+        var settings = new QbittorrentSettings(baseUrl.Trim(), username, savePath.Trim(),
+                                               string.Equals(enabledText, "true", StringComparison.OrdinalIgnoreCase),
+                                               proxyId);
+        return (settings, password);
+    }
+
     /// <summary>保存设置；password 为 null 或空白表示不修改已保存密码。</summary>
     public async Task SaveAsync(QbittorrentSettings settings, string? password = null,
                                 CancellationToken   cancellationToken = default)

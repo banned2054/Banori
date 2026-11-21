@@ -21,7 +21,7 @@ namespace Banori.Features.Downloads;
 ///     直接接管推进，不重复提交；接管时补打来源 tag 并把隔离路径对齐为种子真实位置。
 ///     提交时随种子设置来源 tag 与命名快照名；数据库唯一约束兜底并发。单条任务失败不影响其他任务，更不影响既有资源。
 /// </summary>
-public sealed class DownloadService(
+public sealed partial class DownloadService(
     IDbContextFactory<ApplicationDbContext> dbContextFactory,
     DownloadCoordinationGate                coordinationGate,
     IQbittorrentSessionFactory              sessionFactory,
@@ -77,8 +77,12 @@ public sealed class DownloadService(
     public async Task ReconcileAsync(CancellationToken cancellationToken = default)
     {
         using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
-        var       settings          = await qbittorrentSettings.GetAsync(cancellationToken);
+        // 指纹与会话必须来自同一次读取：清理查询与确认标记若跨两次读取，期间切换 qB 时会把 B 上
+        // 的查无记成 A 上已清理，切回 A 后旧种子被永久跳过。
+        var (settings, password) = await qbittorrentSettings.GetConnectionAsync(cancellationToken);
         if (!settings.Enabled || !settings.IsConfigured) return;
+        // 清理确认按下载器配置与承接任务限定作用域：换 qB 或换承接者都要重新确认，不能永久跳过。
+        var cleanupConfigKey = BuildMissingCheckConfigKey(settings);
         // 旧版纯正片布局只扫一次；扫描结果无论是迁移还是安全跳过都留下标记，未确认的远端移动由
         // 同一份 pending 日志在后续轮次恢复，扫描本身不重复规划。
         if (downloadFileService is not null) await MigrateLegacyLayoutsAsync(cancellationToken);
@@ -98,7 +102,12 @@ public sealed class DownloadService(
             // 存在被替换墓碑时清理环仍需执行：全部任务静默（完成/被替换）不能让冗余种子无限滞留。
             hasRetiredCleanup = await db.DownloadTasks.AsNoTracking()
                                         .AnyAsync(task => task.Status           == DownloadTaskStatus.Replaced &&
-                                                          task.ReplacedByTaskId != null, cancellationToken);
+                                                          task.ReplacedByTaskId != null                        &&
+                                                          (task.MissingCleanupConfirmedAtUtc == null                 ||
+                                                           task.MissingCleanupScopeKey       == null                 ||
+                                                           !task.MissingCleanupScopeKey.StartsWith(cleanupConfigKey) ||
+                                                           task.MissingCleanupReplacedById != task.ReplacedByTaskId),
+                                                  cancellationToken);
         }
 
         // SQLite 不支持 DateTimeOffset 服务端排序；先创建先处理，在内存中排序。
@@ -121,7 +130,8 @@ public sealed class DownloadService(
 
         if (tasks.Count == 0 && pendingFileTasks.Count == 0 && !hasRetiredCleanup) return;
 
-        await using var session = await sessionFactory.CreateAsync(cancellationToken);
+        // 会话与清理指纹共用开头读取的连接快照，杜绝两次读取之间切换下载器导致的误确认。
+        await using var session = await sessionFactory.CreateAsync(settings, password, cancellationToken);
 
         // 校验或移动中的种子不得执行冲突计划（改名/移动）：恢复链先看快照状态，
         // 处于 Checking 或 IsMoving 的任务本轮跳过，待其稳定后再恢复。
@@ -183,37 +193,54 @@ public sealed class DownloadService(
             superseded = await db.DownloadTasks.AsNoTracking()
                                  .Include(task => task.Files)
                                  .Where(task => task.Status           == DownloadTaskStatus.Replaced &&
-                                                task.ReplacedByTaskId != null)
+                                                task.ReplacedByTaskId != null                        &&
+                                                (task.MissingCleanupConfirmedAtUtc == null                 ||
+                                                 task.MissingCleanupScopeKey       == null                 ||
+                                                 !task.MissingCleanupScopeKey.StartsWith(cleanupConfigKey) ||
+                                                 task.MissingCleanupReplacedById != task.ReplacedByTaskId))
                                  .ToListAsync(cancellationToken);
         }
 
+        // 先筛出有资格且作用域未确认的墓碑，再一次性批查 hash：查询失败按未知处理，不落任何标记。
+        var cleanupTasks = new List<DownloadTask>();
         foreach (var oldTask in superseded)
+        {
+            if (oldTask.FailedStep == SelectionLossStep) continue;
+            // 未清的执行意图与操作日志是恢复线索：改名日志两端任一非空都视为未收敛，
+            // pending 收敛前不动远端资源，避免丢失恢复信息。
+            if (oldTask.PendingSavePath is not null                   ||
+                oldTask.VerificationIntent is not null                ||
+                oldTask.ArchiveReview is not null                     ||
+                oldTask.IsolationState != DownloadIsolationState.None ||
+                oldTask.Files.Any(file => file.PendingRenameFrom is not null ||
+                                          file.PendingRenameTo is not null))
+                continue;
+            // 清理必须有正向生命周期证据（提交、同步接管或完成过）：待提交即被替代的记录
+            // 从未拥有下载器资源，没有证据一律保守跳过，即便同 hash 种子位于确认根也不清理。
+            if (oldTask is { AttemptCount: 0, LastSyncedAtUtc: null, CompletedAtUtc: null, SubmittedAtUtc : null })
+                continue;
+            // 确认标记绑定下载器与本次承接：换 qB 或重新获得种子后再次被替代时必须重新确认。
+            if (oldTask.MissingCleanupConfirmedAtUtc is not null &&
+                string.Equals(oldTask.MissingCleanupScopeKey,
+                              BuildMissingCleanupScopeKey(cleanupConfigKey, oldTask.ReplacedByTaskId),
+                              StringComparison.Ordinal))
+                continue;
+            if (await IsActiveTaskForHashAsync(oldTask.InfoHash, oldTask.Id, cancellationToken)) continue;
+            cleanupTasks.Add(oldTask);
+        }
+
+        if (cleanupTasks.Count > 0)
+        {
+            var cleanupHashes = cleanupTasks.Select(task => task.InfoHash)
+                                            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            Dictionary<string, List<TorrentSnapshot>> cleanupFound;
+            var                                       cleanupQuerySucceeded = true;
             try
             {
-                if (oldTask.FailedStep == SelectionLossStep) continue;
-                // 未清的执行意图与操作日志是恢复线索：改名日志两端任一非空都视为未收敛，
-                // pending 收敛前不动远端资源，避免丢失恢复信息。
-                if (oldTask.PendingSavePath is not null                   ||
-                    oldTask.VerificationIntent is not null                ||
-                    oldTask.ArchiveReview is not null                     ||
-                    oldTask.IsolationState != DownloadIsolationState.None ||
-                    oldTask.Files.Any(file => file.PendingRenameFrom is not null ||
-                                              file.PendingRenameTo is not null))
-                    continue;
-                // 清理必须有正向生命周期证据（提交、同步接管或完成过）：待提交即被替代的记录
-                // 从未拥有下载器资源，没有证据一律保守跳过，即便同 hash 种子位于确认根也不清理。
-                if (oldTask.SubmittedAtUtc is null &&
-                    oldTask is { AttemptCount: 0, LastSyncedAtUtc: null, CompletedAtUtc: null })
-                    continue;
-                var stillOwned = await IsActiveTaskForHashAsync(oldTask.InfoHash, oldTask.Id, cancellationToken);
-                if (stillOwned) continue;
-                var foundOld = await session.FindTorrentsAsync([oldTask.InfoHash], cancellationToken);
-                if (foundOld.Count == 0) continue;
-                // 对所有待清理任务核对实际根与确认根（统一规范化比较）：受管种子被外部移动、
-                // 或同 hash 外部种子位于别处时一律保守保留，路径异常交由人工或后续轮次处理。
-                if (foundOld.Any(snapshot => !MatchesIsolationPath(snapshot.SavePath, oldTask.SavePath)))
-                    continue;
-                await session.DeleteTorrentAsync(oldTask.InfoHash, false, cancellationToken);
+                cleanupFound = (await session.FindTorrentsAsync(cleanupHashes, cancellationToken))
+                              .GroupBy(snapshot => snapshot.Hash, StringComparer.OrdinalIgnoreCase)
+                              .ToDictionary(group => group.Key, group => group.ToList(),
+                                            StringComparer.OrdinalIgnoreCase);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -221,8 +248,60 @@ public sealed class DownloadService(
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "清理被顶替任务 {TaskId} 的下载器资源失败，下一轮重试。", oldTask.Id);
+                // 查询未知不等于查无：保留全部墓碑的清理资格，下一轮重试。
+                logger.LogError(exception, "批量查询被替代任务的种子失败，下一轮重试。");
+                cleanupFound          = [];
+                cleanupQuerySucceeded = false;
             }
+
+            if (cleanupQuerySucceeded)
+            {
+                var confirmedAbsent = new List<DownloadTask>();
+                var deleteTasks     = new List<DownloadTask>();
+                foreach (var oldTask in cleanupTasks)
+                {
+                    if (!cleanupFound.TryGetValue(oldTask.InfoHash, out var foundOld))
+                    {
+                        // 成功查无：清理目标已达成，落确认标记退出后续轮次的清理资格。
+                        confirmedAbsent.Add(oldTask);
+                        continue;
+                    }
+
+                    // 对所有待清理任务核对实际根与确认根（统一规范化比较）：受管种子被外部移动、
+                    // 或同 hash 外部种子位于别处时一律保守保留，路径异常交由人工或后续轮次处理。
+                    if (foundOld.Any(snapshot => !MatchesIsolationPath(snapshot.SavePath, oldTask.SavePath)))
+                        continue;
+                    deleteTasks.Add(oldTask);
+                }
+
+                foreach (var task in confirmedAbsent)
+                    await ConfirmMissingCleanupAsync(task, cleanupConfigKey, cancellationToken);
+
+                if (deleteTasks.Count > 0)
+                {
+                    var deleteHashes = deleteTasks.Select(task => task.InfoHash)
+                                                  .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                    try
+                    {
+                        // 承接方仍需旧数据作恢复线索：删除种子一律 deleteFiles=false。
+                        await session.DeleteTorrentsAsync(deleteHashes, false, cancellationToken);
+                        // 删除请求返回不等于种子已消失；按 hash 成功查无才收尾清理资格。
+                        var survivors = (await session.FindTorrentsAsync(deleteHashes, cancellationToken))
+                                       .Select(snapshot => snapshot.Hash).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        foreach (var task in deleteTasks.Where(task => !survivors.Contains(task.InfoHash)))
+                            await ConfirmMissingCleanupAsync(task, cleanupConfigKey, cancellationToken);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        logger.LogError(exception, "清理被顶替任务的下载器资源失败，下一轮重试。");
+                    }
+                }
+            }
+        }
 
         var reconcileHashes = tasks
                              .Where(task =>
@@ -708,13 +787,51 @@ public sealed class DownloadService(
         }, cancellationToken);
     }
 
-    /// <summary>人工重试：失败或丢失的任务重新进入待提交队列，沿用原决策与命名快照。</summary>
+    /// <summary>
+    ///     人工重试/重下载：失败、丢失或已完成但种子在下载器中缺失的任务重新进入受控流程。
+    ///     入口先按 hash 核对下载器现状——缺种任务的种子又回来时只清标记；查无才走受控重下；
+    ///     结果未知不改任何状态。普通重试保留未确认布局日志，只重置请求预算；缺种重下才建立新一轮记录。
+    /// </summary>
     public async Task RetryAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
         using var coordinationLease = await coordinationGate.EnterAsync(cancellationToken);
         var       task              = await LoadTaskAsync(taskId, cancellationToken);
-        if (task.Status is not (DownloadTaskStatus.Failed or DownloadTaskStatus.Lost))
-            throw new InvalidOperationException("只有失败或丢失的任务可以重试。");
+        if (task is not ({ Status: DownloadTaskStatus.Failed or DownloadTaskStatus.Lost } or
+                         { Status: DownloadTaskStatus.Completed, TorrentMissingAtUtc: not null }))
+            throw new InvalidOperationException("只有失败、丢失或已完成但种子缺失的任务可以重试。");
+
+        // 同 hash 已有活动任务时明确拒绝：唯一索引之外先给出可展示原因，避免重复提交抢占同一资源。
+        if (await IsActiveTaskForHashAsync(task.InfoHash, task.Id, cancellationToken))
+            throw new InvalidOperationException("该种子的其他任务正在下载中，请等待其结束后重试。");
+
+        bool torrentPresent;
+        try
+        {
+            await using var session = await sessionFactory.CreateAsync(cancellationToken);
+            torrentPresent = (await session.FindTorrentsAsync([task.InfoHash], cancellationToken)).Count > 0;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "人工重试：查询下载器中任务 {TaskId} 的种子失败，未改动任务状态。", taskId);
+            throw new InvalidOperationException("查询下载器中的种子失败，请稍后重试。", exception);
+        }
+
+        // 只有缺种任务的“种子又回来了”才清标记退出：Failed/Lost 的种子仍在下载器时属于原有的
+        // “重试准备/布局流程”语义，继续走受控重试，不因种子存在而拒绝人工重试。
+        if (torrentPresent && task.TorrentMissingAtUtc is not null)
+        {
+            await UpdateTaskAsync(taskId, task.Status, update =>
+            {
+                update.TorrentMissingAtUtc      = null;
+                update.MissingCheckPendingAtUtc = null;
+                update.MissingCheckConfigKey    = null;
+            }, cancellationToken);
+            throw new InvalidOperationException("下载器中已存在该种子，缺种标记已清除，无需重新下载。");
+        }
 
         // 存量失败任务可能在登记时未建立“规则优胜 → 旧成片”的替换关系：重试前按已落库的
         // 优胜选择补建一次，只补已完成现任，不改写其他任务或本任务已有的文件选择。补建失败
@@ -734,22 +851,61 @@ public sealed class DownloadService(
                 logger.LogWarning(exception, "任务 {TaskId} 重试前补建同集替换关系失败，按现有记录继续重试。", taskId);
             }
 
+        // 上一次 Add 可能已被下载器接受但尚未可见：人工重试同样先尊重添加可见性窗口，
+        // 不能凭“查无”立即再发一条 Add 绕过占用与 hash 对账。
+        if (DownloadRoundLayout.IsPending(task) && WithinAddVisibilityWindow(task))
+            throw new InvalidOperationException("上一次添加尚未在下载器中可见，请在确认窗口后重试。");
+
+        // 旧校验意图尚未收敛：转隔离独立下载（deleteFiles=false，旧成片留在磁盘），这是“需独立
+        // 重下”路径；无旧意图时下一轮 SubmitAsync 由 TryPlanVerificationAddAsync 重新枚举归档
+        // 复用候选（含本任务旧成片）并新建 DownloadVerificationMapping，映射原成片并真实校验。
+        // 种子已不在下载器时（含明确缺种确认）才开启新一轮；仍在下载器的普通重试只重置预算。
+        var redownload = !torrentPresent || task.TorrentMissingAtUtc is not null;
         if (DownloadVerificationIntent.FromJson(task.VerificationIntent) is { } intent)
-            await EnterIsolationAsync(task, intent, "人工重试校验失败的任务，废弃旧证据并转为独立下载。", cancellationToken);
+            await EnterIsolationAsync(task, intent, "人工重新下载，废弃旧校验证据并转为独立下载。", cancellationToken);
 
         await UpdateTaskAsync(taskId, task.Status, update =>
-        {
-            update.Status                      = DownloadTaskStatus.PendingSubmit;
-            update.AttemptCount                = 0;
-            update.FailedStep                  = null;
-            update.Error                       = null;
-            // 人工重试开启新的受控轮次：布局与选择请求台账重置（含预算耗尽的任务），
-            // 未收敛的改名/选择计划按确认窗口与全新预算重新推进。
-            update.PendingLayoutRequestedAtUtc = null;
-            update.PendingLayoutRequestCount   = 0;
-            update.SelectionRequestCount       = 0;
-            update.NextObservationAtUtc        = null;
-        }, cancellationToken);
+                              {
+                                  update.Status                      = DownloadTaskStatus.PendingSubmit;
+                                  update.AttemptCount                = 0;
+                                  update.FailedStep                  = null;
+                                  update.Error                       = null;
+                                  // 两类重试共用请求预算重置：原种子仍在 qB、异步改名或移动可能已生效的普通重试
+                                  // 必须保留 PendingSavePath 与逐文件改名日志，否则后续对账失去判断依据。
+                                  update.PendingLayoutRequestedAtUtc = null;
+                                  update.PendingLayoutRequestCount   = 0;
+                                  update.SelectionRequestCount       = 0;
+                                  update.NextObservationAtUtc        = null;
+                                  if (!redownload) return;
+
+                                  // 只有确认开启缺种重下才建立新一轮记录：清除旧意图、旧路径台账和缺种证据，
+                                  // 由 TryPlanVerificationAddAsync 重新建立映射；保留 CompletedAtUtc、VerificationPath、
+                                  // SupersededByTaskId、TorrentFile 与 NamingSnapshot，旧成片路径与逐集引用继续有效。
+                                  update.VerificationIntent       = null;
+                                  update.PendingSavePath          = null;
+                                  // 待确认提交根是尚未确认 Add 的占用证据：人工重试、失败状态与重启都保留，
+                                  // 直到按 hash 确认接管或明确拒绝后收尾释放。
+                                  update.TorrentMissingAtUtc      = null;
+                                  update.MissingCheckPendingAtUtc = null;
+                                  update.MissingCheckConfigKey    = null;
+                              }, cancellationToken,
+                              async (db, updated) =>
+                              {
+                                  if (!redownload) return;
+                                  // 先固化已发布成片布局：后续 Add、映射与改名只推进本轮下载器布局，
+                                  // 进程重启或响应丢失时仍能从两份持久路径解析出旧成片完整位置。
+                                  var files = await db.DownloadTaskFiles
+                                                      .Where(file => file.DownloadTaskId == taskId)
+                                                      .ToListAsync(cancellationToken);
+                                  DownloadRoundLayout.CapturePublished(updated, files);
+                                  // 未收敛的改名日志属于旧路径证据：新一轮由 TryPlanVerificationAddAsync 重新规划，
+                                  // 不把上一轮的目标路径带回来。VerificationPath / SupersededByTaskId 保持不动。
+                                  foreach (var file in files)
+                                  {
+                                      file.PendingRenameFrom = null;
+                                      file.PendingRenameTo   = null;
+                                  }
+                              });
     }
 
     /// <summary>人工重新校验：保留候选映射、文件与种子，只重置本轮证据并等待下一轮重发 recheck；不隔离、不重下。</summary>
@@ -4380,6 +4536,22 @@ public sealed class DownloadService(
             await subjectCache.SaveTitleMappingAsync(normalizedTitle, boundSubjectId, cancellationToken);
     }
 
+
+    /// <summary>
+    ///     墓碑清理确认：只在成功查无、或删除后按 hash 复查确认消失时落标记（deleteFiles=false 不变）；
+    ///     标记绑定实际下载器与本次承接关系，查询/删除失败与结果未知都不写，下一轮保留清理资格。
+    /// </summary>
+    private Task ConfirmMissingCleanupAsync(
+        DownloadTask task, string configKey, CancellationToken cancellationToken) =>
+        UpdateTaskAsync(task.Id, DownloadTaskStatus.Replaced, update =>
+        {
+            update.MissingCleanupConfirmedAtUtc = timeProvider.GetUtcNow();
+            update.MissingCleanupScopeKey       = BuildMissingCleanupScopeKey(configKey, update.ReplacedByTaskId);
+            update.MissingCleanupReplacedById   = update.ReplacedByTaskId;
+        }, cancellationToken);
+
+    private static string BuildMissingCleanupScopeKey(string configKey, Guid? replacedById) =>
+        $"{configKey}:{replacedById?.ToString("D") ?? string.Empty}";
 
     private async Task<bool> IsActiveTaskForHashAsync(
         string infoHash, Guid exceptTaskId, CancellationToken cancellationToken)

@@ -21,6 +21,7 @@ public sealed class DownloadReconcileWorker(
     ILogger<DownloadReconcileWorker>?       logger       = null) : BackgroundService
 {
     private readonly DownloadTimingPolicy timing = timingPolicy ?? DownloadTimingPolicy.Default;
+    private          DateTimeOffset?      _lastMissingPatrolAtUtc;
 
     private DateTimeOffset _lastRoundAtUtc;
 
@@ -36,6 +37,15 @@ public sealed class DownloadReconcileWorker(
                            .RecoverPendingSelectionsAsync(stoppingToken);
                 await scope.ServiceProvider.GetRequiredService<DownloadService>()
                            .ReconcileAsync(stoppingToken);
+                // 缺种巡检独立于对账节流：高频脉冲与空闲 15 秒轮询都不得把它变成高频批次。
+                var patrolAtNow = timeProvider.GetUtcNow();
+                if (ShouldRunMissingPatrol(patrolAtNow, _lastMissingPatrolAtUtc, timing))
+                {
+                    await scope.ServiceProvider.GetRequiredService<DownloadService>()
+                               .ReconcileMissingTorrentsAsync(stoppingToken);
+                    // 失败由上层记录日志，不推进节流时间，下一轮仍可重试。
+                    _lastMissingPatrolAtUtc = patrolAtNow;
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -69,7 +79,28 @@ public sealed class DownloadReconcileWorker(
             logger?.LogWarning(exception, "查询最早到期观察时间失败，退回空闲间隔。");
         }
 
-        var delay = ComputeWakeDelay(timeProvider.GetUtcNow(), earliestDue, _lastRoundAtUtc, timing);
+        var now      = timeProvider.GetUtcNow();
+        var patrolAt = NextPatrolAt(now, _lastMissingPatrolAtUtc, timing);
+        if (patrolAt is { } nextPatrol)
+        {
+            // 巡检仍被节流：以它的下一次允许时间唤醒，不读取全部已排期的完成任务时间。
+            if (earliestDue is null || nextPatrol < earliestDue) earliestDue = nextPatrol;
+        }
+        else
+        {
+            try
+            {
+                var missingDue = await GetEarliestMissingCheckAsync(cancellationToken);
+                if (missingDue is { } due && (earliestDue is null || due < earliestDue)) earliestDue = due;
+            }
+            catch (Exception exception)
+            {
+                // 缺种巡检同样只影响唤醒时机；失败仍由空闲间隔兜底。
+                logger?.LogWarning(exception, "查询最早缺种巡检时间失败，退回空闲间隔。");
+            }
+        }
+
+        var delay = ComputeWakeDelay(now, earliestDue, _lastRoundAtUtc, timing);
         while (true)
         {
             using var linked    = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -85,6 +116,24 @@ public sealed class DownloadReconcileWorker(
             if (remaining <= TimeSpan.Zero) return;
             delay = remaining;
         }
+    }
+
+    /// <summary>缺种巡检批次是否到期；零间隔策略保持旧的每轮执行语义。</summary>
+    internal static bool ShouldRunMissingPatrol(
+        DateTimeOffset now, DateTimeOffset? lastPatrolAtUtc, DownloadTimingPolicy timing)
+    {
+        var interval = timing.MissingCheckPatrolInterval;
+        return interval <= TimeSpan.Zero ||
+               lastPatrolAtUtc is null   ||
+               now - lastPatrolAtUtc.Value >= interval;
+    }
+
+    /// <summary>巡检被节流时的下一次允许时间；null 表示本轮即可执行。</summary>
+    internal static DateTimeOffset? NextPatrolAt(
+        DateTimeOffset now, DateTimeOffset? lastPatrolAtUtc, DownloadTimingPolicy timing)
+    {
+        if (ShouldRunMissingPatrol(now, lastPatrolAtUtc, timing)) return null;
+        return lastPatrolAtUtc!.Value + timing.MissingCheckPatrolInterval;
     }
 
     /// <summary>
@@ -126,6 +175,23 @@ public sealed class DownloadReconcileWorker(
                                             task.PendingSavePath != null                             ||
                                             task.Files.Any(file => file.PendingRenameTo != null)))
                             .Select(task => task.NextObservationAtUtc!.Value)
+                            .ToListAsync(cancellationToken);
+        var now = timeProvider.GetUtcNow();
+        times = times.Where(value => value > now).ToList();
+        return times.Count == 0 ? null : times.Min();
+    }
+
+    /// <summary>
+    ///     已完成任务中最早的缺种巡检到期时间；只在巡检批次本身已到期时查询，只影响唤醒，
+    ///     SQLite 不支持 DateTimeOffset 服务端聚合，取回候选列后在内存求最小值。
+    /// </summary>
+    private async Task<DateTimeOffset?> GetEarliestMissingCheckAsync(CancellationToken cancellationToken)
+    {
+        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var times = await db.DownloadTasks.AsNoTracking()
+                            .Where(task => task.Status                == DownloadTaskStatus.Completed &&
+                                           task.NextMissingCheckAtUtc != null)
+                            .Select(task => task.NextMissingCheckAtUtc!.Value)
                             .ToListAsync(cancellationToken);
         var now = timeProvider.GetUtcNow();
         times = times.Where(value => value > now).ToList();

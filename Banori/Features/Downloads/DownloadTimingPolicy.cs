@@ -24,7 +24,11 @@ public sealed class DownloadTimingPolicy
         SelectionConfirmationWindow = TimeSpan.Zero,
         ResultStabilityWindow       = TimeSpan.Zero,
         ResultStabilitySamples      = 1,
-        ResultStabilityMaxWindow    = TimeSpan.Zero
+        ResultStabilityMaxWindow    = TimeSpan.Zero,
+        MissingCheckReviewInterval  = TimeSpan.Zero,
+        MissingCheckPatrolInterval  = TimeSpan.Zero,
+        MissingCheckLongInterval    = TimeSpan.Zero,
+        MissingCheckJitterWindow    = TimeSpan.Zero
     };
 
     /// <summary>生产默认策略：按异步生命周期计划的建议初始参数，真实 qB 验收后再校准。</summary>
@@ -92,4 +96,19 @@ public sealed class DownloadTimingPolicy
     ///     只对响应未知（RequestOutcome=Unknown）自动重试，耗尽后转可人工恢复的 FailedRetryable。
     /// </summary>
     public int MaxRunResumeAttempts { get; init; } = 3;
+
+    /// <summary>缺种巡检：首次成功查无后等待复核的间隔。</summary>
+    public TimeSpan MissingCheckReviewInterval { get; init; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>缺种巡检：确认缺失或复查到种子后的再查间隔。</summary>
+    public TimeSpan MissingCheckLongInterval { get; init; } = TimeSpan.FromHours(12);
+
+    /// <summary>缺种巡检：在长间隔上叠加的确定性抖动上限，用于错开批量任务的到期时间。</summary>
+    public TimeSpan MissingCheckJitterWindow { get; init; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>缺种巡检：单轮最多处理的任务数（存量未排期任务按同一上限逐步覆盖）。</summary>
+    public int MissingCheckBatchSize { get; init; } = 100;
+
+    /// <summary>缺种巡检批次的独立节流：对账可被脉冲高频驱动，巡检自身至少间隔此时间再开下一批。</summary>
+    public TimeSpan MissingCheckPatrolInterval { get; init; } = TimeSpan.FromMinutes(2);
 }
