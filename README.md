@@ -12,7 +12,7 @@
 <br>
 
 <div>
-    <a href="https://github.com/banned2054/Banori/releases/tag/v0.3.1"><img alt="Version 0.3.1" src="https://img.shields.io/badge/version-0.3.1-blue"></a>
+    <a href="https://github.com/banned2054/Banori/releases/tag/v0.4.0"><img alt="Version 0.4.0" src="https://img.shields.io/badge/version-0.4.0-blue"></a>
     <a href="https://dotnet.microsoft.com/"><img alt=".NET 11" src="https://img.shields.io/badge/.NET-11.0-512BD4"></a>
     <a href="https://learn.microsoft.com/aspnet/core/blazor/"><img alt="Blazor" src="https://img.shields.io/badge/Blazor-Interactive_Server-7B2CBF"></a>
     <a href="https://learn.microsoft.com/ef/core/"><img alt="EF Core" src="https://img.shields.io/badge/EF_Core-11-2EA44F"></a>
@@ -34,7 +34,7 @@
 
 - **订阅与刷新** — 管理 Mikan（含 `mikanani.me`、`mikanime.tv`）、AniBT RSS，定时刷新并去重入库；RSS 地址加密保存。
 - **条目评估** — 解析条目信息、关联 Bangumi，并展示筛选理由与命名预览。
-- **下载管理** — 支持 RSS 链接、本地种子和已有种子接管；下载前确认文件选择与命名，按所选内容跟踪进度，展示等待原因、复用结果和恢复操作。
+- **下载管理** — 支持 RSS 链接、本地种子和已有种子接管；下载前确认文件选择与命名，按所选内容跟踪进度，展示等待原因、复用结果和恢复操作。种子从下载器丢失后自动巡检确认，支持受控重下。
 - **逐集择优** — 同一来源内的单集与合集跨包比较版本，不同来源独立竞争，按每集分配下载职责；新版本完成后切换，删除承接方时按关系回退。
 - **数据复用** — 通过 qBittorrent 校验已有文件，确认后复用或交叉做种；不能确认时保留原数据并独立下载。
 - **整理归档** — 按命名模板整理媒体文件与随行字幕；归档受阻时展示原因并支持重新核对，冗余种子自动移除且保留磁盘文件。
@@ -80,13 +80,13 @@ docker compose pull
 docker compose up -d
 ```
 
-数据库结构会在启动时自动更新，无需手动迁移。建议升级前备份整个 `config/` 目录，不要让新旧实例同时写入同一数据库；版本变化见 [更新日志](Docs/CHANGELOG.md)。
+数据库结构会在启动时自动更新，无需手动迁移。0.4.0 会新增缺种巡检、已发布成片布局与未确认提交根台账字段；不要让新旧实例同时写入同一数据库。回退时恢复升级前的数据库和配套配置、密钥，不能只切换回旧镜像。具体变化与验收情况见 [v0.4.0 发布说明](Docs/RELEASE_NOTES_v0.4.0.md)；历史版本见 [更新日志](Docs/CHANGELOG.md)。
 
-GitHub Actions 在发布 GitHub Release 或手动运行 `Publish container image` 工作流时构建并推送镜像；普通分支 push 或单独推送标签不会触发发布。Release 按 Git 标签名生成同名版本镜像（本项目使用 `v*`，例如 `v0.3.1`），并按 [metadata-action 的默认标签规则](https://github.com/docker/metadata-action#latest-tag) 同时更新 `latest`；在默认分支手动运行也会更新 `latest`。工作流还会生成 `sha-` 前缀的提交标签。例如：
+GitHub Actions 在发布 GitHub Release 或手动运行 `Publish container image` 工作流时构建并推送镜像；普通分支 push 或单独推送标签不会触发发布。Release 按 Git 标签名生成同名版本镜像（本项目使用 `v*`，例如 `v0.4.0`），并按 [metadata-action 的默认标签规则](https://github.com/docker/metadata-action#latest-tag) 同时更新 `latest`；在默认分支手动运行也会更新 `latest`。工作流还会生成 `sha-` 前缀的提交标签。例如：
 
 ```text
 ghcr.io/banned2054/banori:latest
-ghcr.io/banned2054/banori:v0.3.1
+ghcr.io/banned2054/banori:v0.4.0
 ```
 
 ### 数据持久化
