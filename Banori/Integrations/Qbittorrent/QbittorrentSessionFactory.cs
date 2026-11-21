@@ -41,26 +41,30 @@ public sealed class QbittorrentSessionFactory(
             ? await settingStore.GetAsync(ManageQbittorrentSettings.PasswordKey, cancellationToken) ?? string.Empty
             : password;
 
-        var proxy = await proxyService.ResolveWebProxyAsync(settings.ProxyId, cancellationToken);
-        var options = proxy is null
-            ? new QBittorrentClientOptions
-            {
-                MaxRetries = 2,
-                Timeout    = TimeSpan.FromSeconds(20)
-            }
-            : new QBittorrentClientOptions
-            {
-                MaxRetries = 2,
-                Timeout    = TimeSpan.FromSeconds(20),
-                // 注入的 HttpClient 由包内部使用；会话释放时 QbittorrentSession 会连带释放 client。
-                HttpClient = new HttpClient(new SocketsHttpHandler { Proxy = proxy })
-                {
-                    Timeout = TimeSpan.FromSeconds(20)
-                }
-            };
+        var proxy        = await proxyService.ResolveWebProxyAsync(settings.ProxyId, cancellationToken);
+        // 生产传输同样要在 HTTP 层捕获 torrents/info 的原始正文：库会把 JSON null 折叠成空列表，
+        // 只有原始正文才能区分「成功查无」与「无效响应」。捕获器由本会话持有并随会话释放。
+        var bodyObserver = new TorrentInfoBodyObserver();
+        var innerHandler = proxy is null
+            ? new SocketsHttpHandler()
+            : new SocketsHttpHandler { Proxy = proxy };
+        var httpClient = new HttpClient(new TorrentInfoBodyCapturingHandler(bodyObserver)
+        {
+            InnerHandler = innerHandler
+        })
+        {
+            Timeout = TimeSpan.FromSeconds(20)
+        };
+        var options = new QBittorrentClientOptions
+        {
+            MaxRetries = 2,
+            Timeout    = TimeSpan.FromSeconds(20),
+            // 注入的 HttpClient 生命周期由 QbittorrentSession 负责（会话释放时一并 dispose）。
+            HttpClient = httpClient
+        };
 
         var client = await QBittorrentClient.Create(settings.BaseUrl, settings.Username, effectivePassword,
                                                     options, cancellationToken);
-        return new QbittorrentSession(client);
+        return new QbittorrentSession(client, bodyObserver, httpClient);
     }
 }

@@ -32,6 +32,43 @@ public sealed class QbittorrentSessionFactoryTests
         Assert.Equal("v5.0.0", session.ServerVersion);
     }
 
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[]")]
+    public async Task FindTorrents_RealHttp_NullIsUnknownAndEmptyArrayIsNotFound(string infoBody)
+    {
+        var store = new MemoryApplicationSettingStore();
+        await using var stub = StubQbittorrentServer.Start("pw");
+        stub.InfoResponseBody = infoBody;
+        var factory = new QbittorrentSessionFactory(store, ProxyServiceTestFactory.CreateEphemeral());
+        await using var session = await factory.CreateAsync(
+            new QbittorrentSettings(stub.BaseUrl, "admin", "/downloads", true), "pw");
+
+        var hashes = new[] { new string('a', 40) };
+        if (infoBody == "null")
+            await Assert.ThrowsAsync<QbittorrentException>(() => session.FindTorrentsAsync(hashes));
+        else
+            Assert.Empty(await session.FindTorrentsAsync(hashes));
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[]")]
+    public async Task ListTorrents_RealHttp_NullIsUnknownAndEmptyArrayIsEmpty(string infoBody)
+    {
+        var store = new MemoryApplicationSettingStore();
+        await using var stub = StubQbittorrentServer.Start("pw");
+        stub.InfoResponseBody = infoBody;
+        var factory = new QbittorrentSessionFactory(store, ProxyServiceTestFactory.CreateEphemeral());
+        await using var session = await factory.CreateAsync(
+            new QbittorrentSettings(stub.BaseUrl, "admin", "/downloads", true), "pw");
+
+        if (infoBody == "null")
+            await Assert.ThrowsAsync<QbittorrentException>(() => session.ListTorrentsAsync(null));
+        else
+            Assert.Empty(await session.ListTorrentsAsync(null));
+    }
+
     [Fact]
     public async Task Create_WithDraftPassword_SendsDraftInsteadOfSaved()
     {
@@ -58,6 +95,9 @@ public sealed class QbittorrentSessionFactoryTests
         public string  BaseUrl          { get; private set; } = string.Empty;
         public string? ReceivedUsername { get; private set; }
         public string? ReceivedPassword { get; private set; }
+
+        /// <summary>torrents/info 的原始响应正文；默认成功空列表。设为 "null" 模拟无效响应。</summary>
+        public string InfoResponseBody { get; set; } = "[]";
 
         public ValueTask DisposeAsync()
         {
@@ -115,6 +155,14 @@ public sealed class QbittorrentSessionFactoryTests
                                            ReceivedPassword == expectedPassword
                                                ? "Ok."
                                                : "Fails.");
+                        return;
+                    }
+
+                    // torrents/info 按配置返回原始正文：null 是无效响应，[] 是成功空列表。
+                    // 用 application/json 与其他端点区分，覆盖生产客户端真实反序列化路径。
+                    if (request.Path.EndsWith("torrents/info", StringComparison.Ordinal))
+                    {
+                        await RespondAsync(stream, InfoResponseBody, "application/json");
                         return;
                     }
 
@@ -203,11 +251,14 @@ public sealed class QbittorrentSessionFactoryTests
             return (fields.GetValueOrDefault("username"), fields.GetValueOrDefault("password"));
         }
 
-        private static async Task RespondAsync(NetworkStream stream, string body)
+        private static Task RespondAsync(NetworkStream stream, string body) =>
+            RespondAsync(stream, body, "text/plain; charset=utf-8");
+
+        private static async Task RespondAsync(NetworkStream stream, string body, string contentType)
         {
             var payload = Encoding.UTF8.GetBytes(body);
             var header = Encoding.ASCII.GetBytes(
-                                                 $"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+                                                 $"HTTP/1.1 200 OK\r\nContent-Type: {contentType}\r\n" +
                                                  $"Content-Length: {payload.Length}\r\nConnection: close\r\n\r\n");
             await stream.WriteAsync(header);
             await stream.WriteAsync(payload);

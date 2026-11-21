@@ -8,9 +8,38 @@ using Banned.Qbittorrent.Utils;
 namespace Banori.Integrations.Qbittorrent;
 
 /// <summary>包装 Banned.Qbittorrent 客户端：临时文件上传、Hash 规范化与快照映射都在这里完成。</summary>
-public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentSession
+public sealed class QbittorrentSession(
+    QBittorrentClient         client,
+    TorrentInfoBodyObserver?  bodyObserver   = null,
+    HttpClient?               ownedHttpClient = null) : IQbittorrentSession
 {
+    private readonly TorrentInfoBodyObserver? _bodyObserver   = bodyObserver;
+    private readonly HttpClient?              _ownedHttpClient = ownedHttpClient;
+
+    /// <summary>
+    ///     torrents/info 列表读取的可注入边界。Banned.Qbittorrent 1.8.0 会把 JSON null 归并为空列表，
+    ///     业务层无法从返回类型区分「成功查无」与「无效响应」。适配层在此把原始列表结果纳入显式判空：
+    ///     只有成功返回的有效列表才能证明查无；生产走客户端调用，测试注入 null 与空数组两个用例。
+    /// </summary>
+    internal Func<IReadOnlyList<string>?, string?, CancellationToken, Task<List<TorrentInfo>?>>? InfoListFetcher
+    {
+        get; init;
+    }
+
     public string ServerVersion => client.QbittorrentVersion;
+
+    private async Task<List<TorrentInfo>?> FetchInfosAsync(
+        IReadOnlyList<string>? hashes, string? tag, CancellationToken cancellationToken)
+    {
+        if (InfoListFetcher is not null) return await InfoListFetcher(hashes, tag, cancellationToken);
+
+        // 生产传输也要区分 JSON null 与空数组：库会把 null 折叠成空列表，只能用捕获到的原始正文判定。
+        using var scope = _bodyObserver?.BeginScope();
+        var infos = hashes is { Count: > 0 }
+            ? await client.Torrent.GetTorrentInfos([.. hashes], cancellationToken : cancellationToken)
+            : await client.Torrent.GetTorrentInfos(tag : tag, cancellationToken : cancellationToken);
+        return scope?.IsNullResponse == true ? null : infos;
+    }
 
     public async Task<string> AddTorrentAsync(byte[]                torrentBytes, string  savePath,
                                               IReadOnlyList<string> tags,         string? rename,
@@ -55,15 +84,16 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
         if (infoHashes.Count == 0) return [];
 
         var hashes = infoHashes.Select(NormalizeHash).ToList();
-        var infos = await client.Torrent.GetTorrentInfos(hashes,
-                                                         cancellationToken : cancellationToken);
+        var infos  = await FetchInfosAsync(hashes, null, cancellationToken)
+                     ?? throw new QbittorrentException("下载器未返回有效的种子列表，无法确认查无。");
         return infos.Select(ToSnapshot).ToList();
     }
 
     public async Task<IReadOnlyList<TorrentSnapshot>> ListTorrentsAsync(
         string? tag, CancellationToken cancellationToken = default)
     {
-        var infos = await client.Torrent.GetTorrentInfos(tag : tag, cancellationToken : cancellationToken);
+        var infos = await FetchInfosAsync(null, tag, cancellationToken)
+                    ?? throw new QbittorrentException("下载器未返回有效的种子列表，无法确认查无。");
         return infos.Select(ToSnapshot).ToList();
     }
 
@@ -159,7 +189,8 @@ public sealed class QbittorrentSession(QBittorrentClient client) : IQbittorrentS
 
     public ValueTask DisposeAsync()
     {
-        client.Dispose();
+        client?.Dispose();
+        _ownedHttpClient?.Dispose();
         return ValueTask.CompletedTask;
     }
 
