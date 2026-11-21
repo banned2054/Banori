@@ -25,7 +25,7 @@ public static class DownloadTaskPlacement
     {
         if (string.IsNullOrWhiteSpace(task.DownloadRootPath)) return false;
         var baseRoot = DownloadPathNamePolicy.NormalizePath(task.DownloadRootPath);
-        var savePath = DownloadPathNamePolicy.NormalizePath(task.SavePath);
+        var savePath = DownloadPathNamePolicy.NormalizePath(DownloadRoundLayout.Root(task));
         return string.Equals(savePath, baseRoot, StringComparison.Ordinal) ||
                (!string.IsNullOrWhiteSpace(task.MediaDirectory) &&
                 string.Equals(savePath,
@@ -37,7 +37,7 @@ public static class DownloadTaskPlacement
     public static bool IsTaskScoped(DownloadTask task)
     {
         if (string.IsNullOrWhiteSpace(task.DownloadRootPath)) return false;
-        return string.Equals(DownloadPathNamePolicy.NormalizePath(task.SavePath),
+        return string.Equals(DownloadPathNamePolicy.NormalizePath(DownloadRoundLayout.Root(task)),
                              DownloadPathNamePolicy.NormalizePath(TaskRoot(task.DownloadRootPath, task.Id)),
                              StringComparison.Ordinal);
     }

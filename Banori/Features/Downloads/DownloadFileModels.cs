@@ -61,3 +61,6 @@ public interface IDownloadFileService
     /// </summary>
     Task RetryArchiveAsync(Guid taskId, CancellationToken cancellationToken = default);
 }
+
+/// <summary>预览按 hash 即时核对发现种子已不在下载器；消息固定，供界面直接展示。</summary>
+public sealed class TorrentMissingException() : InvalidOperationException("qBittorrent 中已找不到该种子");

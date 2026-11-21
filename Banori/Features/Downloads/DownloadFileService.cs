@@ -83,16 +83,24 @@ public sealed class DownloadFileService(
         using var       lease   = await coordinationGate.EnterAsync(cancellationToken);
         await using var session = await sessionFactory.CreateAsync(cancellationToken);
         await using var db      = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        EnsureEditable(await LoadAsync(db, taskId, cancellationToken));
-        var task = await InitializeUnderGateAsync(db, session, taskId, cancellationToken);
+        var             task    = await LoadAsync(db, taskId, cancellationToken);
+        EnsureEditable(task);
+        // 查询放在清单/快照读取之后：查询时种子还在、读取前被删的竞态下，读取失败才触发按 hash 补查。
+        // 只有成功查无才升级为专用提示；查询未知沿用原错误；取消正常传播。补查只读，不写库。
+        task = await WithMissingTorrentCheckAsync(() => InitializeUnderGateAsync(db, session, taskId,
+                                                      cancellationToken), session, task.InfoHash,
+                                                  cancellationToken);
         if (HasPending(task)) throw new InvalidOperationException("文件操作尚未确认，请等待对账后重试。");
         var file    = FindFile(task, index);
-        var current = file.CurrentRelativePath;
+        var current = DownloadRoundLayout.CurrentRelative(task, file);
         ApplyEdit(file, request);
-        var plan = await PlanEditUnderGateAsync(db, session, task, index, cancellationToken);
-        return new DownloadFilePreview(Join(task.SavePath, current), Join(plan.Root, plan.Paths[index]), task.SavePath,
+        var plan = await WithMissingTorrentCheckAsync(() => PlanEditUnderGateAsync(db, session, task, index,
+                                                          cancellationToken), session, task.InfoHash,
+                                                      cancellationToken);
+        var root = DownloadRoundLayout.Root(task);
+        return new DownloadFilePreview(Join(root, current), Join(plan.Root, plan.Paths[index]), root,
                                        plan.Root,
-                                       !SameRoot(task.SavePath, plan.Root), !SameRoot(task.SavePath, plan.Root)
+                                       !SameRoot(root, plan.Root), !SameRoot(root, plan.Root)
                                            ? "保存目录改变会移动整个种子；所有文件路径将一起安全转换，异步移动完成前不能再次编辑。"
                                            : null);
     }
@@ -133,12 +141,18 @@ public sealed class DownloadFileService(
                 throw new InvalidOperationException("只有已完成但归档待核对的任务可以确认归档。");
             infoHash = task.InfoHash;
 
-            var snapshot = await SnapshotAsync(session, infoHash, cancellationToken);
-            var remote   = MatchRemoteFiles(task.Files, await session.ListFilesAsync(infoHash, cancellationToken));
+            var snapshot  = await SnapshotAsync(session, infoHash, cancellationToken);
+            // 上一轮改名可能已在下载器生效但应用未确认：按持久化日志两端核对身份，不能因此拒绝重核。
+            var remote    = MatchRemoteFiles(task, await session.ListFilesAsync(infoHash, cancellationToken), true);
+            // 重下轮的本轮下载器根仍在 PendingSubmitSavePath，SavePath 仍是旧成片根；已登记的移动目标
+            // 也可能已在下载器生效。按本轮布局核对，不能拿历史成片根否定重新核对入口。
+            var roundRoot = DownloadRoundLayout.Root(task);
+            var movedRoot = task.PendingSavePath;
             if (snapshot.IsMoving                                                                            ||
                 snapshot.Category is QbittorrentTorrentCategory.Checking or QbittorrentTorrentCategory.Error ||
-                !SameRoot(snapshot.SavePath, task.SavePath)                                                  ||
-                task.Files.All(file => !file.IsSelectedForDownload)                                          ||
+                (!SameRoot(snapshot.SavePath, roundRoot) &&
+                 (movedRoot is null || !SameRoot(snapshot.SavePath, movedRoot))) ||
+                task.Files.All(file => !file.IsSelectedForDownload)              ||
                 task.Files.Where(file => file.IsSelectedForDownload)
                     .Any(file => !remote[file.FileIndex].IsSelectedForDownload ||
                                  (file.Size > 0 && remote[file.FileIndex].Progress < 1)))
@@ -150,9 +164,56 @@ public sealed class DownloadFileService(
             finalSnapshot.IsMoving)
             throw new InvalidOperationException("下载器状态发生变化，请等待稳定后重新核对。");
         await PlanAndExecuteUnderGateAsync(session, taskId, finalSnapshot with { Progress = 1 }, cancellationToken);
-        if ((await ReadTaskAsync(taskId, cancellationToken)).ArchiveReview is { } remaining &&
-            DownloadArchiveReview.FromJson(remaining) is { } blocked)
+        var after = await ReadTaskAsync(taskId, cancellationToken);
+        // 占用解除后归档计划可能只发出移动/改名请求，异步确认前仍留着旧核对原因：
+        // 这是待确认而非再次受阻，不能把上一次的占用原因当成当前失败抛出。
+        var hasPendingMove = after.PendingSavePath is not null ||
+                             after.Files.Any(file => file.PendingRenameFrom is not null ||
+                                                     file.PendingRenameTo is not null);
+        if (after.ArchiveReview is { } remaining                     &&
+            DownloadArchiveReview.FromJson(remaining) is { } blocked &&
+            !hasPendingMove)
             throw new InvalidOperationException(blocked.Reason);
+    }
+
+    /// <summary>
+    ///     包裹一次可能读取文件清单/快照的操作：失败后按 hash 补查，只有成功返回的有效空列表
+    ///     才升级为专用缺种提示；查询未知沿用原错误，取消照常传播。补查只读。
+    /// </summary>
+    private static async Task<T> WithMissingTorrentCheckAsync<T>(
+        Func<Task<T>> operation, IQbittorrentSession session, string infoHash, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await operation();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            try
+            {
+                // 成功返回且为空才算「确认查无」；无效响应在适配层已翻译为异常，落入下方保留原错误。
+                if ((await session.FindTorrentsAsync([infoHash], cancellationToken)).Count == 0)
+                    throw new TorrentMissingException();
+            }
+            catch (TorrentMissingException)
+            {
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // 查询未知：保留原始读取失败，不误报缺种。
+            }
+
+            throw;
+        }
     }
 
     public async Task InitializeAsync(Guid taskId, CancellationToken cancellationToken = default)
@@ -166,7 +227,7 @@ public sealed class DownloadFileService(
     private static void EnsureEditable(DownloadTask task)
     {
         if (task.VerificationIntent is not null || task.IsolationState != DownloadIsolationState.None ||
-            task.Files.Any(file => HasVerifiedReuseEvidence(task, Join(task.SavePath, file.CurrentRelativePath),
+            task.Files.Any(file => HasVerifiedReuseEvidence(task, DownloadRoundLayout.CurrentAbsolute(task, file),
                                                             file.Size)))
             throw new InvalidOperationException("任务正在校验、隔离或复用共享数据，不能通过文件编辑移动共享布局。");
     }
@@ -236,8 +297,9 @@ public sealed class DownloadFileService(
                                      .Where(file => targets.Any(target =>
                                                                     sizeByIndex[target.FileIndex] == file.Size &&
                                                                     EqualPath(target.TargetPath,
-                                                                              Join(owner.SavePath,
-                                                                                  file.CurrentRelativePath))))
+                                                                              DownloadRoundLayout
+                                                                                 .PublishedAbsolute(owner,
+                                                                                      file))))
                                      .ToList();
             if (matchingFiles.Count == 0) continue;
             var torrent = torrents.FirstOrDefault(value => string.Equals(value.Hash, owner.InfoHash,
@@ -246,7 +308,7 @@ public sealed class DownloadFileService(
             var remoteFiles = torrent is null ? null : await session.ListFilesAsync(owner.InfoHash, cancellationToken);
             foreach (var file in matchingFiles)
             {
-                var absolute = Join(owner.SavePath, file.CurrentRelativePath);
+                var absolute = DownloadRoundLayout.PublishedAbsolute(owner, file);
                 if (remoteFiles is not null &&
                     !remoteFiles.Any(remote => EqualPath(Join(owner.SavePath, remote.Path), absolute) &&
                                                remote.Size == file.Size                               &&
@@ -285,8 +347,42 @@ public sealed class DownloadFileService(
         return result.Values.ToList();
     }
 
+    /// <summary>
+    ///     只从本任务已登记的旧归档证据里建立复用候选：用户删除种子但保留成片时，普通枚举会排除本任务，
+    ///     只剩这些文件时也必须走受控映射与真实校验。只接受同路径同大小且未被其他任务承接的文件。
+    /// </summary>
+    public async Task<IReadOnlyList<ReuseCandidate>> EnumerateOwnReuseCandidatesAsync(
+        Guid              taskId, IReadOnlyList<(int FileIndex, string TargetPath)> targets,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db     = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var             task   = await LoadAsync(db, taskId, cancellationToken);
+        var             result = new Dictionary<int, ReuseCandidate>();
+        foreach (var file in task.Files)
+        {
+            if (!file.IsSelectedForDownload || file.SupersededByTaskId is not null || file.Size <= 0) continue;
+            // 以已发布的成片布局为准：重下期间 CurrentRelativePath 已切到下载器原始文件名，
+            // 不能再与成片根拼接；VerificationPath 也可能残留复用失败的旧校验路径，只作附加线索。
+            var confirmed = DownloadRoundLayout.PublishedAbsolute(task, file);
+            var stalePath = string.IsNullOrWhiteSpace(file.VerificationPath)
+                ? null
+                : DownloadPathNamePolicy.NormalizePath(file.VerificationPath);
+            foreach (var (index, target) in targets)
+            {
+                if (index != file.FileIndex) continue;
+                var normalizedTarget = DownloadPathNamePolicy.NormalizePath(target);
+                if (EqualPath(normalizedTarget, confirmed) ||
+                    (stalePath is not null && EqualPath(normalizedTarget, stalePath)))
+                    result[index] = new ReuseCandidate(index, target, file.Size, true);
+            }
+        }
+
+        return [.. result.Values];
+    }
+
     private static bool HasUnsettledReuseLayout(DownloadTask task) =>
         task.PendingSavePath is not null                                                               ||
+        DownloadRoundLayout.IsPending(task)                                                            ||
         task.Files.Any(file => file.PendingRenameFrom is not null || file.PendingRenameTo is not null) ||
         task.VerificationIntent is not null                                                            ||
         task.IsolationState != DownloadIsolationState.None;
@@ -302,15 +398,17 @@ public sealed class DownloadFileService(
         var             task = await InitializeUnderGateAsync(db, session, taskId, cancellationToken);
         var intent = DownloadVerificationIntent.FromJson(task.VerificationIntent) ??
                      throw new DownloadFileIdentityException("受控映射缺少持久化校验意图。");
-        if (intent.Step != DownloadVerificationStep.Mapping || !SameRoot(task.SavePath, intent.CandidateRoot))
+        if (intent.Step != DownloadVerificationStep.Mapping ||
+            !SameRoot(DownloadRoundLayout.Root(task), intent.CandidateRoot))
             throw new DownloadFileIdentityException("受控映射阶段或保存根已改变。");
         var mappingPaths = intent.Files.Where(file => file.IsCandidate).Select(file => file.VerificationPath)
                                  .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (!mappingPaths.SetEquals(candidateRelativePaths.Values.Select(path => Join(task.SavePath, path))))
+        var roundRoot = DownloadRoundLayout.Root(task);
+        if (!mappingPaths.SetEquals(candidateRelativePaths.Values.Select(path => Join(roundRoot, path))))
             throw new DownloadFileIdentityException("受控映射许可与持久化意图不一致。");
 
         // 布局只由提交规划生成一次；执行与恢复直接消费同一份持久化计划。
-        var rootPrefix = Root(task.SavePath) + "/";
+        var rootPrefix = Root(roundRoot) + "/";
         if (intent.Files.Count != task.Files.Count ||
             intent.Files.Any(file => !file.VerificationPath.StartsWith(rootPrefix, StringComparison.Ordinal)))
             throw new DownloadFileIdentityException("校验布局与保存根不一致。");
@@ -325,7 +423,7 @@ public sealed class DownloadFileService(
                                                                            StringComparison.OrdinalIgnoreCase))))
             throw new InvalidOperationException("受控映射的目标路径冲突，拒绝执行。");
 
-        var plan = new FilePlan(task.SavePath, paths);
+        var plan = new FilePlan(roundRoot, paths);
         if (HasPending(task))
         {
             if (!SameRoot(task.PendingSavePath ?? string.Empty, intent.CandidateRoot) ||
@@ -401,14 +499,16 @@ public sealed class DownloadFileService(
         if (!DownloadTaskPlacement.IsFormalRoot(task)) return false;
 
         var snapshot = await SnapshotAsync(session, task.InfoHash, cancellationToken);
-        if (snapshot.IsMoving || snapshot.Progress >= 1 || !SameRoot(snapshot.SavePath, task.SavePath)) return false;
+        if (snapshot.IsMoving || snapshot.Progress >= 1 ||
+            !SameRoot(snapshot.SavePath, DownloadRoundLayout.Root(task))) return false;
         if (snapshot.Category != QbittorrentTorrentCategory.Stopped) return false;
 
         // 路径或大小无法与持久化身份唯一对应时不得移动：身份不明时既不能证明目标可写，也不能猜测布局。
-        MatchRemoteFiles(task.Files, await session.ListFilesAsync(task.InfoHash, cancellationToken));
+        MatchRemoteFiles(task, await session.ListFilesAsync(task.InfoHash, cancellationToken));
 
         var plan = new FilePlan(targetRoot,
-                                task.Files.ToDictionary(file => file.FileIndex, file => file.CurrentRelativePath));
+                                task.Files.ToDictionary(file => file.FileIndex,
+                                                        file => DownloadRoundLayout.CurrentRelative(task, file)));
         Stage(task, plan);
         await db.SaveChangesAsync(cancellationToken);
         return true;
@@ -457,10 +557,13 @@ public sealed class DownloadFileService(
                                                             CancellationToken ct)
     {
         // 整体 SetLocation 会先改相对路径再搬根；即使最终绝对路径相同，也不能借此移动共享候选。
-        if (task.Files.Any(file => HasVerifiedReuseEvidence(task, Join(task.SavePath, file.CurrentRelativePath),
+        var currentRoot = DownloadRoundLayout.Root(task);
+        if (task.Files.Any(file => HasVerifiedReuseEvidence(task,
+                                                            DownloadRoundLayout.CurrentAbsolute(task, file),
                                                             file.Size) &&
-                                   (!SameRoot(task.SavePath, plan.Root) ||
-                                    !EqualPath(file.CurrentRelativePath, plan.Paths[file.FileIndex]))))
+                                   (!SameRoot(currentRoot, plan.Root) ||
+                                    !EqualPath(DownloadRoundLayout.CurrentRelative(task, file),
+                                               plan.Paths[file.FileIndex]))))
         {
             await SaveArchiveReviewAsync(db, task, "归档计划会移动正在复用的共享文件，需先解除共享布局。", ct);
             return true;
@@ -514,7 +617,11 @@ public sealed class DownloadFileService(
         var asideCandidates = await LoadReplacementAsideFilesAsync(db, task, ct);
         if (asideCandidates.Count == 0) return true;
 
-        var targets = plan.Paths.Values.SelectMany(path => new[] { Join(plan.Root, path), Join(task.SavePath, path) })
+        var targets = plan.Paths.Values
+                          .SelectMany(path => new[]
+                           {
+                               Join(plan.Root, path), Join(DownloadRoundLayout.Root(task), path)
+                           })
                           .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var infoHashByOwner = asideCandidates.GroupBy(item => item.OwnerId)
                                              .ToDictionary(group => group.Key, group => group.First().InfoHash);
@@ -540,7 +647,7 @@ public sealed class DownloadFileService(
             var filesToMoveAside = new List<(ReplacementAsideEntry, DownloadTaskFile, string)>();
             foreach (var file in owner.Files.Where(file => candidateIndices.Contains(file.FileIndex)))
             {
-                var occupied = Join(owner.SavePath, file.CurrentRelativePath);
+                var occupied = DownloadRoundLayout.PublishedAbsolute(owner, file);
                 foreach (var target in targets)
                 {
                     if (!PathsOverlap(target, occupied)) continue;
@@ -606,15 +713,7 @@ public sealed class DownloadFileService(
         foreach (var other in others)
         foreach (var file in other.Files)
         {
-            var occupied = new List<string> { Join(other.SavePath, file.CurrentRelativePath) };
-            if (other.PendingSavePath is not null) occupied.Add(Join(other.PendingSavePath, file.CurrentRelativePath));
-            foreach (var pending in
-                     new[] { file.PendingRenameFrom, file.PendingRenameTo }.Where(value => value is not null))
-            {
-                occupied.Add(Join(other.SavePath, pending!));
-                if (other.PendingSavePath is not null) occupied.Add(Join(other.PendingSavePath, pending!));
-            }
-
+            var occupied = DownloadRoundLayout.OccupiedPaths(other, file);
             if (occupied.Any(path => asidePaths.Any(aside => PathsOverlap(path, aside))))
                 throw new TargetPathOccupiedException($"迁让对象路径仍被任务“{other.NamingSnapshot}”（任务 ID {other.Id}）引用，" +
                                                       "不能移动其共享文件，请先人工处理。");
@@ -649,9 +748,10 @@ public sealed class DownloadFileService(
         task.Files.Any(file => file is { IsSelectedForDownload: true, VerificationOutcome: not null } &&
                                string.Equals(file.VerificationOutcome,
                                              DownloadFileVerificationOutcomes.ReusedVerified,
-                                             StringComparison.Ordinal)                                &&
-                               EqualPath(file.VerificationPath, absolutePath)                         &&
-                               EqualPath(Join(task.SavePath, file.CurrentRelativePath), absolutePath) &&
+                                             StringComparison.Ordinal)        &&
+                               EqualPath(file.VerificationPath, absolutePath) &&
+                               (EqualPath(DownloadRoundLayout.PublishedAbsolute(task, file), absolutePath) ||
+                                EqualPath(DownloadRoundLayout.CurrentAbsolute(task, file), absolutePath)) &&
                                file.Size == occupantSize);
 
     /// <summary>
@@ -847,7 +947,7 @@ public sealed class DownloadFileService(
             }
         }
 
-        MatchRemoteFiles(task.Files, remote, true);
+        MatchRemoteFiles(task, remote, true);
 
         if (task.MediaDirectory is null || task.SeedDirectory is null)
         {
@@ -893,10 +993,10 @@ public sealed class DownloadFileService(
         return (torrent, isMultiFile);
     }
 
-    private static IReadOnlyDictionary<int, TorrentFileSnapshot> MatchRemoteFiles(
-        ICollection<DownloadTaskFile> files, IReadOnlyList<TorrentFileSnapshot> remote, bool allowPendingPaths = false)
+    private IReadOnlyDictionary<int, TorrentFileSnapshot> MatchRemoteFiles(
+        DownloadTask task, IReadOnlyList<TorrentFileSnapshot> remote, bool allowPendingPaths = false)
     {
-        if (files.Count == 0 || remote.Count != files.Count)
+        if (task.Files.Count == 0 || remote.Count != task.Files.Count)
             throw new DownloadFileIdentityException("下载器文件清单不完整或包含未登记文件，拒绝猜测身份。");
         var byPath = new Dictionary<string, TorrentFileSnapshot>(StringComparer.Ordinal);
         foreach (var observed in remote)
@@ -908,7 +1008,7 @@ public sealed class DownloadFileService(
 
         var matched = new Dictionary<int, TorrentFileSnapshot>();
         var claimed = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var file in files)
+        foreach (var file in task.Files)
         {
             var paths = new HashSet<string>(StringComparer.Ordinal);
             if (file.PendingRenameFrom is not null || file.PendingRenameTo is not null)
@@ -922,7 +1022,15 @@ public sealed class DownloadFileService(
                 }
             }
 
-            if (paths.Count == 0) paths.Add(file.CurrentRelativePath.Replace('\\', '/'));
+            if (paths.Count == 0) paths.Add(DownloadRoundLayout.CurrentRelative(task, file).Replace('\\', '/'));
+            // 未发布的新轮次同时接受已登记路径：映射阶段下载器仍报原始文件名，映射执行后又可能已改名；
+            // 按 index 与大小的唯一匹配裁决，不能把「计划位置」当成当前身份。
+            if (DownloadRoundLayout.IsPending(task))
+            {
+                paths.Add(file.OriginalRelativePath.Replace('\\', '/'));
+                paths.Add(file.CurrentRelativePath.Replace('\\', '/'));
+            }
+
             var candidates = paths
                             .Where(path => byPath.TryGetValue(path, out var observed) && observed.Size == file.Size)
                             .Select(path => byPath[path]).ToArray();
@@ -1031,9 +1139,10 @@ public sealed class DownloadFileService(
 
         try
         {
-            var basePath = Root(task.DownloadRootPath ?? task.SavePath);
-            var media    = RelativeDownloadPathPolicy.Normalize(task.MediaDirectory!);
-            var seed     = RelativeDownloadPathPolicy.Normalize(task.SeedDirectory!);
+            var currentRoot = DownloadRoundLayout.Root(task);
+            var basePath    = Root(task.DownloadRootPath ?? currentRoot);
+            var media       = RelativeDownloadPathPolicy.Normalize(task.MediaDirectory!);
+            var seed        = RelativeDownloadPathPolicy.Normalize(task.SeedDirectory!);
             RelativeDownloadPathPolicy.ValidateDirectories(media, seed);
             var root        = Join(basePath, media);
             var ingredients = TorrentNamingIngredients.FromJson(task.NamingIngredients);
@@ -1043,7 +1152,7 @@ public sealed class DownloadFileService(
                 string relative;
                 if (!file.IsSelectedForDownload)
                 {
-                    relative = RelativeUnderRoot(Join(task.SavePath, file.CurrentRelativePath), root);
+                    relative = RelativeUnderRoot(DownloadRoundLayout.CurrentAbsolute(task, file), root);
                 }
                 else
                 {
@@ -1063,9 +1172,9 @@ public sealed class DownloadFileService(
 
             // 复用证据绑定当前根上的绝对路径：能表达时继续保留旧根，不为归档先移动共享数据。
             plan = task.Files.Any(file => HasVerifiedReuseEvidence(task,
-                                                                   Join(task.SavePath, file.CurrentRelativePath),
+                                                                   DownloadRoundLayout.CurrentAbsolute(task, file),
                                                                    file.Size)) &&
-                   paths.Values.All(path => IsWithin(Join(root, path), task.SavePath))
+                   paths.Values.All(path => IsWithin(Join(root, path), currentRoot))
                 ? AdjustPlanToCurrentRoot(task, root, paths)
                 : new FilePlan(root, paths);
             return true;
@@ -1083,13 +1192,14 @@ public sealed class DownloadFileService(
     /// <summary>升级前的归档布局：全局根 + 媒体/做种目录前缀，保留未选中文件的既有停靠路径。</summary>
     private FilePlan LegacyPlan(DownloadTask task, bool intraTask)
     {
-        var basePath = Root(task.DownloadRootPath ?? task.SavePath);
-        var media    = RelativeDownloadPathPolicy.Normalize(task.MediaDirectory!);
-        var seed     = RelativeDownloadPathPolicy.Normalize(task.SeedDirectory!);
+        var currentRoot = DownloadRoundLayout.Root(task);
+        var basePath    = Root(task.DownloadRootPath ?? currentRoot);
+        var media       = RelativeDownloadPathPolicy.Normalize(task.MediaDirectory!);
+        var seed        = RelativeDownloadPathPolicy.Normalize(task.SeedDirectory!);
         RelativeDownloadPathPolicy.ValidateDirectories(media, seed);
         var ingredients        = TorrentNamingIngredients.FromJson(task.NamingIngredients);
         var cleanPrefix        = media + "/";
-        var currentRootIsMedia = SameRoot(task.SavePath, Join(basePath, media));
+        var currentRootIsMedia = SameRoot(currentRoot, Join(basePath, media));
         var clean              = task.Files.All(file => file.Kind != DownloadFileKind.Seed) && currentRootIsMedia;
         var absolute           = new Dictionary<int, string>();
         foreach (var file in task.Files)
@@ -1097,7 +1207,9 @@ public sealed class DownloadFileService(
             var keepCurrentPath = !file.IsSelectedForDownload &&
                                   file is not { Kind: DownloadFileKind.Seed, SupersededByTaskId: null };
             var relative = keepCurrentPath
-                ? currentRootIsMedia ? cleanPrefix + file.CurrentRelativePath : file.CurrentRelativePath
+                ? currentRootIsMedia
+                    ? cleanPrefix + DownloadRoundLayout.CurrentRelative(task, file)
+                    : DownloadRoundLayout.CurrentRelative(task, file)
                 : file.Kind == DownloadFileKind.Seed
                     ? seed        + "/" + file.OriginalRelativePath
                     : cleanPrefix + (file.AnimeRelativePathOverride ?? ContentName(task, file, ingredients));
@@ -1113,10 +1225,11 @@ public sealed class DownloadFileService(
                                                       right.StartsWith(left + "/",
                                                                        StringComparison.OrdinalIgnoreCase))))
             throw new InvalidOperationException("多个文件的目标路径冲突，请修改集数或手工动画路径。");
-        if (intraTask) return new FilePlan(task.SavePath, paths);
-        if (task.Files.Any(file => HasVerifiedReuseEvidence(task, Join(task.SavePath, file.CurrentRelativePath),
+        if (intraTask) return new FilePlan(currentRoot, paths);
+        if (task.Files.Any(file => HasVerifiedReuseEvidence(task,
+                                                            DownloadRoundLayout.CurrentAbsolute(task, file),
                                                             file.Size)) &&
-            paths.Values.All(path => IsWithin(Join(root, path), task.SavePath)))
+            paths.Values.All(path => IsWithin(Join(root, path), currentRoot)))
             return AdjustPlanToCurrentRoot(task, root, paths);
 
         return new FilePlan(root, paths);
@@ -1126,7 +1239,7 @@ public sealed class DownloadFileService(
     private static FilePlan AdjustPlanToCurrentRoot(
         DownloadTask task, string plannedRoot, IReadOnlyDictionary<int, string> paths)
     {
-        var currentRoot = Root(task.SavePath);
+        var currentRoot = Root(DownloadRoundLayout.Root(task));
         var prefix      = currentRoot + "/";
         return paths.Values.Any(path => !Join(plannedRoot, path).StartsWith(prefix, StringComparison.Ordinal))
             ? new FilePlan(plannedRoot, paths)
@@ -1146,7 +1259,8 @@ public sealed class DownloadFileService(
         await EnsureNamingIngredientsAsync(task, cancellationToken);
         // 任务专属根的任务执行任务内计划（改名只发生在命名空间内）；正式布局的迁入只经归档链。
         var plan = Plan(task, DownloadTaskPlacement.IsTaskScoped(task));
-        if (!SameRoot(task.SavePath, plan.Root)) EnsureUnselectedPathsPreserved(task, plan, editedIndex);
+        if (!SameRoot(DownloadRoundLayout.Root(task), plan.Root))
+            EnsureUnselectedPathsPreserved(task, plan, editedIndex);
         await ValidatePlanAsync(db, session, task, plan, cancellationToken);
         return plan;
     }
@@ -1156,7 +1270,7 @@ public sealed class DownloadFileService(
     {
         foreach (var file in task.Files.Where(file => !file.IsSelectedForDownload && file.FileIndex != editedIndex))
         {
-            var current = Join(task.SavePath, file.CurrentRelativePath);
+            var current = DownloadRoundLayout.CurrentAbsolute(task, file);
             var target  = Join(plan.Root, plan.Paths[file.FileIndex]);
             if (!string.Equals(current, target, StringComparison.Ordinal))
                 throw new TargetPathOccupiedException($"布局转换会移动未选中的保留文件“{current}”，拒绝修改。");
@@ -1227,10 +1341,10 @@ public sealed class DownloadFileService(
                                          HashSet<string>?     verificationMappingPaths = null)
     {
         var snapshot = await SnapshotAsync(session, task.InfoHash, ct);
-        if (snapshot.IsMoving || !SameRoot(snapshot.SavePath, task.SavePath))
+        if (snapshot.IsMoving || !SameRoot(snapshot.SavePath, DownloadRoundLayout.Root(task)))
             throw new DownloadFileIdentityException("下载器保存目录不一致或仍在移动，拒绝规划。");
         var remote  = await session.ListFilesAsync(task.InfoHash, ct);
-        var matched = MatchRemoteFiles(task.Files, remote);
+        var matched = MatchRemoteFiles(task, remote);
         foreach (var file in task.Files)
         {
             var target = plan.Paths[file.FileIndex];
@@ -1247,7 +1361,7 @@ public sealed class DownloadFileService(
                                                     IReadOnlyList<TorrentFileSnapshot> remote, CancellationToken ct,
                                                     HashSet<string>?                   verificationMappingPaths = null)
     {
-        var matched = MatchRemoteFiles(task.Files, remote, true);
+        var matched = MatchRemoteFiles(task, remote, true);
         var entries = plan.Paths.ToList();
         foreach (var (index, path) in entries)
         {
@@ -1257,15 +1371,16 @@ public sealed class DownloadFileService(
                 throw new TargetPathOccupiedException("目标路径与同种子另一文件目标/当前路径相同或互为父子，不能安全执行。");
         }
 
+        var currentRoot = DownloadRoundLayout.Root(task);
         var targets = plan.Paths.Values.Select(path => Join(plan.Root, path))
-                          .Concat(plan.Paths.Values.Select(path => Join(task.SavePath, path)))
+                          .Concat(plan.Paths.Values.Select(path => Join(currentRoot, path)))
                           .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var targetSizes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         var sizeByIndex = task.Files.ToDictionary(file => file.FileIndex, file => file.Size);
         foreach (var pair in plan.Paths)
         {
-            targetSizes[Join(plan.Root, pair.Value)]     = sizeByIndex[pair.Key];
-            targetSizes[Join(task.SavePath, pair.Value)] = sizeByIndex[pair.Key];
+            targetSizes[Join(plan.Root, pair.Value)]   = sizeByIndex[pair.Key];
+            targetSizes[Join(currentRoot, pair.Value)] = sizeByIndex[pair.Key];
         }
 
         // 受管与外部占用采用同一证据要求：休眠或已被替换的任务也可能保留真实文件，不能直接放行。
@@ -1276,23 +1391,18 @@ public sealed class DownloadFileService(
                                                      StringComparer.OrdinalIgnoreCase);
         foreach (var other in others)
         {
-            var hasPendingFileOperation = other.PendingSavePath is not null ||
+            var hasPendingFileOperation = other.PendingSavePath is not null    ||
+                                          DownloadRoundLayout.IsPending(other) ||
                                           other.Files.Any(file => file.PendingRenameFrom is not null ||
                                                                   file.PendingRenameTo is not null);
-            if (other.Files.Count == 0 && targets.Any(path => IsWithin(path, other.SavePath)))
+            if (other.Files.Count == 0 && targets.Any(path =>
+                                                          IsWithin(path, other.SavePath) ||
+                                                          (other.PendingSubmitSavePath is not null &&
+                                                           IsWithin(path, other.PendingSubmitSavePath))))
                 throw new TargetPathOccupiedException("目标目录可能被其他尚未初始化的任务占用。");
             foreach (var file in other.Files)
             {
-                var occupied = new List<string> { Join(other.SavePath, file.CurrentRelativePath) };
-                if (other.PendingSavePath is not null)
-                    occupied.Add(Join(other.PendingSavePath, file.CurrentRelativePath));
-                foreach (var pending in
-                         new[] { file.PendingRenameFrom, file.PendingRenameTo }.Where(value => value is not null))
-                {
-                    occupied.Add(Join(other.SavePath, pending!));
-                    if (other.PendingSavePath is not null) occupied.Add(Join(other.PendingSavePath, pending!));
-                }
-
+                var occupied = DownloadRoundLayout.OccupiedPaths(other, file).ToList();
                 foreach (var target in targets)
                 foreach (var path in occupied)
                 {
@@ -1386,7 +1496,7 @@ public sealed class DownloadFileService(
         task.PendingLayoutRequestCount   = 0;
         foreach (var file in task.Files)
         {
-            file.PendingRenameFrom = file.CurrentRelativePath;
+            file.PendingRenameFrom = DownloadRoundLayout.CurrentRelative(task, file);
             file.PendingRenameTo   = plan.Paths[file.FileIndex];
             file.UpdatedAtUtc      = timeProvider.GetUtcNow();
         }
@@ -1501,18 +1611,20 @@ public sealed class DownloadFileService(
 
         if (verificationMappingPaths is not null &&
             (snapshot.Category != QbittorrentTorrentCategory.Stopped || task.IsUserPaused)) return false;
-        if (task.Files.Any(file => HasVerifiedReuseEvidence(task, Join(task.SavePath, file.CurrentRelativePath),
+        if (task.Files.Any(file => HasVerifiedReuseEvidence(task, DownloadRoundLayout.CurrentAbsolute(task, file),
                                                             file.Size) &&
-                                   (!SameRoot(task.SavePath, targetRoot) ||
-                                    !EqualPath(file.CurrentRelativePath, file.PendingRenameTo!))))
+                                   (!SameRoot(DownloadRoundLayout.Root(task), targetRoot) ||
+                                    !EqualPath(DownloadRoundLayout.CurrentRelative(task, file),
+                                               file.PendingRenameTo!))))
             throw new DownloadFileIdentityException("文件操作日志会移动正在复用的共享文件，拒绝执行。");
-        if (!SameRoot(snapshot.SavePath, task.SavePath) && !SameRoot(snapshot.SavePath, targetRoot))
+        if (!SameRoot(snapshot.SavePath, DownloadRoundLayout.Root(task)) &&
+            !SameRoot(snapshot.SavePath, targetRoot))
             throw new DownloadFileIdentityException("下载器被外部移动到未知目录，不能恢复操作。");
         var remote = await session.ListFilesAsync(task.InfoHash, ct);
         // Validate every identity and reservation before executing even the first remaining side effect.
         if (task.Files.Any(file => file.PendingRenameFrom is null || file.PendingRenameTo is null))
             throw new DownloadFileIdentityException("文件操作日志不完整。");
-        var matched = MatchRemoteFiles(task.Files, remote, true);
+        var matched = MatchRemoteFiles(task, remote, true);
 
         var pendingPlan =
             new FilePlan(targetRoot, task.Files.ToDictionary(file => file.FileIndex, file => file.PendingRenameTo!));
@@ -1524,7 +1636,7 @@ public sealed class DownloadFileService(
         // 升级前已落库的归档日志目标为“下载根 + 媒体目录前缀”，不能用新版纯正片根重新推导。
         var legacyArchive = !migration && IsLegacyArchiveLog(task, pendingPlan);
         if (!migration && !legacyArchive && task.VerificationIntent is null && snapshot.Progress >= 1 &&
-            !SameRoot(task.SavePath, targetRoot))
+            !SameRoot(DownloadRoundLayout.Root(task), targetRoot))
         {
             var expected = Plan(task);
             if (!SameRoot(expected.Root, pendingPlan.Root) ||
@@ -1574,7 +1686,7 @@ public sealed class DownloadFileService(
             }
 
             remote  = await session.ListFilesAsync(task.InfoHash, ct);
-            matched = MatchRemoteFiles(task.Files, remote, true);
+            matched = MatchRemoteFiles(task, remote, true);
             if (task.Files.Any(file => matched[file.FileIndex].Path !=
                                        RelativeDownloadPathPolicy.Normalize(file.PendingRenameTo!)))
             {
@@ -1593,6 +1705,7 @@ public sealed class DownloadFileService(
         }
 
         // Only publish paths after every remote rename and the asynchronous move have been observed.
+        // 新一轮未确认时（校验映射、下载期改名）只清操作日志：成片路径须等校验或归档成功后发布。
         foreach (var file in task.Files)
         {
             file.CurrentRelativePath = file.PendingRenameTo!;
@@ -1612,7 +1725,20 @@ public sealed class DownloadFileService(
                 DecidedAtUtc = timeProvider.GetUtcNow()
             }.ToJson();
 
-        task.SavePath                    = targetRoot;
+        // 成片根只在文件已确认迁入正式目标后发布：本轮从未暂存的普通任务在正式根原地改名可直接发布；
+        // 重下轮的目标必须不是任务专属暂存根，且下载器快照已位于该目标根（迁入/改名已被观察）。
+        // 整种进度 100% 不能单独证明正式路径——下载期暂存日志会随重下种子一起到 100%，而正式归档
+        // 仍可能因目标占用受阻（ArchiveReview）；此时逐集现任必须继续沿已发布的旧成片完整路径解析。
+        // 校验映射只更新逐文件真实路径，成片路径由 DownloadService 按校验证据逐个发布。
+        var stagingRoot = string.IsNullOrWhiteSpace(task.DownloadRootPath)
+            ? null
+            : DownloadTaskPlacement.TaskRoot(task.DownloadRootPath, task.Id);
+        var isStagingTarget = stagingRoot is not null && SameRoot(targetRoot, stagingRoot);
+        var publishRound = !DownloadRoundLayout.IsPending(task) ||
+                           (verificationMappingPaths is null &&
+                            !isStagingTarget                 &&
+                            SameRoot(snapshot.SavePath, targetRoot));
+        if (publishRound) DownloadRoundLayout.Publish(task, task.Files, targetRoot);
         task.PendingSavePath             = null;
         task.PendingLayoutRequestedAtUtc = null;
         task.PendingLayoutRequestCount   = 0;
@@ -1626,7 +1752,7 @@ public sealed class DownloadFileService(
         ApplicationDbContext db, DownloadTask task, CancellationToken ct)
     {
         var supersededNames = await SupersededNamesAsync(db, task, ct);
-        return new DownloadTaskFilesView(task.Id, task.SavePath, ProjectFiles(task, supersededNames));
+        return new DownloadTaskFilesView(task.Id, DownloadRoundLayout.Root(task), ProjectFiles(task, supersededNames));
     }
 
     private IReadOnlyList<DownloadFileView> ProjectFiles(
@@ -1643,7 +1769,8 @@ public sealed class DownloadFileService(
                  var supersededByNaming = file.SupersededByTaskId is { } supersededId
                      ? supersededNames.GetValueOrDefault(supersededId)
                      : null;
-                 return new DownloadFileView(file.FileIndex, file.OriginalRelativePath, file.CurrentRelativePath,
+                 return new DownloadFileView(file.FileIndex, file.OriginalRelativePath,
+                                             DownloadRoundLayout.CurrentRelative(task, file),
                                              file.Kind, file.ClassificationReason, episode, end,
                                              file.AnimeRelativePathOverride, file.Size,
                                              file.IsSelectedForDownload, file.SelectionReason,

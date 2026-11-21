@@ -35,12 +35,16 @@ public sealed class DownloadSubmissionPathValidator(IDbContextFactory<Applicatio
                             .Where(value => value.Id != task.Id)
                             .Select(value => new
                              {
-                                 value.Id, value.InfoHash, value.Status, value.SavePath, value.PendingSavePath
+                                 value.Id, value.InfoHash, value.Status, value.SavePath, value.PendingSavePath,
+                                 value.PendingSubmitSavePath, value.UnconfirmedAddSavePaths,
+                                 HasPublishedPath = value.Files.Any(file => file.PublishedPath != null)
                              })
                             .ToListAsync(ct);
         var root = Root(task.SavePath);
         var ids = probe.Where(value => !SameHash(value.InfoHash, task.InfoHash))
-                       .Where(value => RootsOverlap(root, value.SavePath, value.PendingSavePath))
+                       .Where(value => value.HasPublishedPath ||
+                                       RootsOverlap(root, value.SavePath, value.PendingSavePath,
+                                                    value.PendingSubmitSavePath, value.UnconfirmedAddSavePaths))
                        .Select(value => value.Id)
                        .ToList();
         if (ids.Count == 0) return;
@@ -51,27 +55,39 @@ public sealed class DownloadSubmissionPathValidator(IDbContextFactory<Applicatio
         {
             ct.ThrowIfCancellationRequested();
             var source = $"数据库下载任务 {other.Id}（{other.InfoHash}）";
+            // 待确认提交根同样可能已被下载器接受：查询未知期间它尚未出现在 SavePath，
+            // 但原始文件已可能占用该根下的路径，必须一并比对，不能让第二个不同 hash 任务放行。
+            var unconfirmedRoots =
+                DownloadRoundLayout.PendingAddRoots(other.PendingSubmitSavePath, other.UnconfirmedAddSavePaths);
             var roots = new[] { other.SavePath, other.PendingSavePath }
-                       .Where(value => value is not null).Select(value => value!)
+                       .Concat(unconfirmedRoots)
+                       .Where(value => !string.IsNullOrWhiteSpace(value)).Select(value => value!)
                        .Distinct(StringComparer.OrdinalIgnoreCase)
                        .ToArray();
+            var pendingRoots = new[] { other.PendingSavePath }
+                              .Concat(unconfirmedRoots)
+                              .Where(value => !string.IsNullOrWhiteSpace(value)).Select(value => value!)
+                              .Distinct(StringComparer.OrdinalIgnoreCase)
+                              .ToArray();
             if (other.Files.Count != 0)
             {
                 foreach (var file in other.Files)
                 {
-                    // Cover current, journal source and destination at both roots. In particular,
+                    // 已发布成片的完整路径可能在另一个根上；待确认根下 qB 写入的是原始文件名，
+                    // 不能等 CurrentRelativePath 对齐后才认为该路径被占用。
+                    CheckFile(targets, DownloadRoundLayout.PublishedAbsolute(other, file), source);
+                    // Cover current, published and journal paths at both roots. In particular,
                     // rename succeeds BEFORE move, so old-root/new-relative is already occupied.
-                    var paths = new[] { file.CurrentRelativePath, file.PendingRenameFrom, file.PendingRenameTo }
-                               .Where(path => path is not null).Select(path => path!)
+                    var paths = new[]
+                                {
+                                    file.CurrentRelativePath, DownloadRoundLayout.PublishedRelative(file),
+                                    file.PendingRenameFrom, file.PendingRenameTo
+                                }
+                               .Where(path => !string.IsNullOrWhiteSpace(path)).Select(path => path!)
                                .Distinct(StringComparer.OrdinalIgnoreCase);
-                    foreach (var path in paths)
-                    {
-                        // 坏记录隔离只适用于终态且没有挂起转移的任务，并且必须能证明其文件落在
-                        // 本次目标之外；解析失败或仍可能占用目标时一律 fail-closed。
-                        if (!IsSafeRelativePath(path) && UnsafePathIsDisjoint(other, path, targets)) continue;
-                        foreach (var candidate in roots)
-                            CheckFile(targets, Join(candidate, path), source);
-                    }
+                    foreach (var path in paths) CheckRelative(other, path, roots, targets, source);
+                    foreach (var path in new[] { file.OriginalRelativePath }.Distinct(StringComparer.OrdinalIgnoreCase))
+                        CheckRelative(other, path, pendingRoots, targets, source);
                 }
 
                 continue;
@@ -92,9 +108,13 @@ public sealed class DownloadSubmissionPathValidator(IDbContextFactory<Applicatio
     }
 
     /// <summary>判断其他任务的任一保存根与新任务保存根是否可能 共享路径树；无法规范化的根按相交保守处理。</summary>
-    private static bool RootsOverlap(string root, string? savePath, string? pendingSavePath)
+    private static bool RootsOverlap(
+        string  root, string? savePath, string? pendingSavePath, string? pendingSubmitSavePath,
+        string? unconfirmedAddSavePaths)
     {
-        foreach (var raw in new[] { savePath, pendingSavePath })
+        var roots = new[] { savePath, pendingSavePath }
+           .Concat(DownloadRoundLayout.PendingAddRoots(pendingSubmitSavePath, unconfirmedAddSavePaths));
+        foreach (var raw in roots)
         {
             if (raw is null) continue;
             if (!TryRoot(raw, out var otherRoot)) return true;
@@ -125,6 +145,15 @@ public sealed class DownloadSubmissionPathValidator(IDbContextFactory<Applicatio
         string.Equals(left, right, StringComparison.OrdinalIgnoreCase)   ||
         left.StartsWith(right + "/", StringComparison.OrdinalIgnoreCase) ||
         right.StartsWith(left + "/", StringComparison.OrdinalIgnoreCase);
+
+    private static void CheckRelative(
+        DownloadTask other, string path, IEnumerable<string> roots, IEnumerable<string> targets, string source)
+    {
+        // 坏记录隔离只适用于终态且没有挂起转移的任务，并且必须能证明其文件落在
+        // 本次目标之外；解析失败或仍可能占用目标时一律 fail-closed。
+        if (!IsSafeRelativePath(path) && UnsafePathIsDisjoint(other, path, targets)) return;
+        foreach (var candidate in roots) CheckFile(targets, Join(candidate, path), source);
+    }
 
     private static void CheckFile(IEnumerable<string> targets, string occupied, string source)
     {
@@ -161,7 +190,9 @@ public sealed class DownloadSubmissionPathValidator(IDbContextFactory<Applicatio
     /// </summary>
     private static bool UnsafePathIsDisjoint(DownloadTask other, string path, IEnumerable<string> targets)
     {
-        if (other.Status.IsActive() || other.PendingSavePath is not null ||
+        if (other.Status.IsActive()                                   || other.PendingSavePath is not null ||
+            other.PendingSubmitSavePath is not null                   ||
+            !string.IsNullOrWhiteSpace(other.UnconfirmedAddSavePaths) ||
             other.Files.Any(file => file.PendingRenameFrom is not null || file.PendingRenameTo is not null))
             return false;
 

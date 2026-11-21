@@ -57,6 +57,23 @@ public sealed class DownloadSubmissionPathValidatorTests
     }
 
     [Fact]
+    public async Task PendingSubmitSavePathReservesOriginalFileEvenBeforeSavePathSwitches()
+    {
+        await using var h     = await Harness.Create();
+        var             other = NewTask("unrelated.mkv", "/old");
+        other.Status                = DownloadTaskStatus.Submitting;
+        other.PendingSubmitSavePath = "/downloads/media";
+        other.Files.Add(File(other, "episode.mkv"));
+        await h.Add(other);
+        // 第一个 Add 已被 qB 接受但暂时不可见：新根只在 PendingSubmitSavePath，
+        // 第二个不同 hash 任务不得获准写入同一原始文件路径。
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(h.Validate);
+        Assert.Contains("/downloads/media/episode.mkv", error.Message);
+        Assert.Contains(other.InfoHash, error.Message);
+        h.AssertNoSideEffects();
+    }
+
+    [Fact]
     public async Task SameHashDatabaseTaskIsExcludedForAdoption()
     {
         await using var h     = await Harness.Create();
