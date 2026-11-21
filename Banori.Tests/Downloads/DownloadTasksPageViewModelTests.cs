@@ -668,6 +668,9 @@ public sealed class DownloadTasksPageViewModelTests
         public Task<DownloadTaskFilesView> ListAsync(Guid taskId, CancellationToken cancellationToken = default) =>
             Task.FromResult(FilesView);
 
+        public Task<DownloadTaskFilesView> RefreshAsync(Guid taskId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(FilesView);
+
         public Task<DownloadFilePreview> PreviewAsync(
             Guid taskId, int index, DownloadFileEditRequest request, CancellationToken cancellationToken = default) =>
             PreviewException is null

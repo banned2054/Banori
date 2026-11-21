@@ -1524,6 +1524,274 @@ public sealed class DownloadFileServiceTests
         Assert.Contains("export", notSupported.Endpoint, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Refresh_ArchivedCompletedExternalRenameKeepsIdentityAndSyncsPublishedPath()
+    {
+        const string original = "作品/E07 mikan.mp4";
+        const string renamed  = "作品/E07.mp4";
+        const string root     = "/downloads/Media/Anime";
+        await using var h = await Harness.Create(original);
+        await h.Service.InitializeAsync(h.Task.Id);
+
+        var remoteBefore = Assert.Single(h.Store.FileIdentities[h.Task.InfoHash]);
+        Assert.Equal("Original/" + original, remoteBefore.Path);
+        Guid fileId;
+        int  fileIndex;
+        await using (var db = await h.Factory.CreateDbContextAsync())
+        {
+            var task = await db.DownloadTasks.Include(task => task.Files).SingleAsync();
+            task.Status = DownloadTaskStatus.Completed;
+            var file = task.Files.Single();
+            fileId                         = file.Id;
+            fileIndex                      = file.FileIndex;
+            file.CurrentRelativePath       = original;
+            file.PublishedRelativePath     = original;
+            file.PublishedPath             = root + "/" + original;
+            file.EpisodeNumberOverride     = 7m;
+            file.AnimeRelativePathOverride = "Manual/E07.mkv";
+            file.IsManualOverride          = true;
+            await db.SaveChangesAsync();
+        }
+
+        // qB 外部改名：hash、index 与字节数均保持不变。
+        h.Store.FileIdentities[h.Task.InfoHash] = [remoteBefore with { Path = renamed }];
+        var view      = await h.Service.RefreshAsync(h.Task.Id);
+        var refreshed = Assert.Single(view.Files);
+        Assert.Equal(renamed, refreshed.CurrentPath);
+        Assert.Equal("Original/" + original, refreshed.OriginalPath);
+        Assert.Equal(remoteBefore.Size, refreshed.Size);
+
+        var afterRefresh = await h.Load();
+        var persisted    = afterRefresh.Files.Single();
+        Assert.Equal(DownloadTaskStatus.Completed, afterRefresh.Status);
+        Assert.Equal(fileId, persisted.Id);
+        Assert.Equal(fileIndex, persisted.FileIndex);
+        Assert.Equal("Original/" + original, persisted.OriginalRelativePath);
+        Assert.Equal(renamed, persisted.CurrentRelativePath);
+        Assert.Equal(renamed, persisted.PublishedRelativePath);
+        Assert.Equal(root + "/" + renamed, persisted.PublishedPath);
+        Assert.True(persisted.IsManualOverride);
+        Assert.Equal(7m, persisted.EpisodeNumberOverride);
+        Assert.Equal("Manual/E07.mkv", persisted.AnimeRelativePathOverride);
+        Assert.Empty(h.Store.RenameFileCalls);
+        Assert.Empty(h.Store.RenameFolderCalls);
+        Assert.Empty(h.Store.RenameCalls);
+        Assert.Empty(h.Store.SetLocationCalls);
+
+        var preview = await h.Service.PreviewAsync(h.Task.Id, fileIndex,
+                                                   new DownloadFileEditRequest(DownloadFileKind.Anime,
+                                                                               Episode : 7m,
+                                                                               AnimeRelativePath : "Manual/E07.mkv"));
+        Assert.Equal(root + "/" + renamed, preview.CurrentPath.Replace('\\', '/'));
+        var taskAfterPreview = await h.Load();
+        var afterPreview     = taskAfterPreview.Files.Single();
+        Assert.Equal(DownloadTaskStatus.Completed, taskAfterPreview.Status);
+        Assert.Equal(renamed, afterPreview.CurrentRelativePath);
+        Assert.Equal(fileId, afterPreview.Id);
+        Assert.Equal(fileIndex, afterPreview.FileIndex);
+        Assert.Equal("Original/" + original, afterPreview.OriginalRelativePath);
+        Assert.True(afterPreview.IsManualOverride);
+        Assert.Equal(7m, afterPreview.EpisodeNumberOverride);
+        Assert.Equal("Manual/E07.mkv", afterPreview.AnimeRelativePathOverride);
+        Assert.Empty(h.Store.RenameFileCalls);
+        Assert.Empty(h.Store.RenameFolderCalls);
+        Assert.Empty(h.Store.RenameCalls);
+        Assert.Empty(h.Store.SetLocationCalls);
+    }
+
+    [Fact]
+    public async Task Refresh_CaseOnlyRenameUpdatesExactCurrentPathAndPreviewSource()
+    {
+        const string original       = "E07.MP4";
+        const string renamed        = "Original/E07.mp4";
+        const string expectedSource = "/downloads/Media/Anime/" + renamed;
+        await using var h = await Harness.Create(original);
+        await h.Service.InitializeAsync(h.Task.Id);
+        var remoteBefore = Assert.Single(h.Store.FileIdentities[h.Task.InfoHash]);
+        Assert.Equal("Original/" + original, remoteBefore.Path);
+
+        h.Store.FileIdentities[h.Task.InfoHash] = [remoteBefore with { Path = renamed }];
+        var view = await h.Service.RefreshAsync(h.Task.Id);
+        Assert.Equal(renamed, Assert.Single(view.Files).CurrentPath);
+
+        var persisted = (await h.Load()).Files.Single();
+        Assert.Equal(renamed, persisted.CurrentRelativePath);
+        Assert.Equal(renamed, persisted.PublishedRelativePath);
+        Assert.Equal(expectedSource, persisted.PublishedPath);
+        h.AssertNoRemoteWrites();
+
+        var preview = await h.Service.PreviewAsync(h.Task.Id, persisted.FileIndex,
+                                                   new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 7m));
+        Assert.Equal(expectedSource, preview.CurrentPath.Replace('\\', '/'));
+    }
+
+    [Fact]
+    public async Task Refresh_ReversedRemoteResponseStillMatchesByOriginalPathIndex()
+    {
+        const string first  = "E07.mkv";
+        const string second = "E08.mkv";
+        await using var h = await Harness.CreateWithFiles((first, 1024), (second, 2048));
+        await h.Service.InitializeAsync(h.Task.Id);
+
+        // qB index 必须从种子字节推导，刷新按 index/大小匹配而不是响应数组位置。
+        Assert.True(TorrentDownloadPolicy.TryLoad(h.Task.TorrentFile, out var torrent, out var isMultiFile));
+        var indices = TorrentDownloadPolicy.GetQbittorrentFileIndices(h.Task.TorrentFile, torrent, isMultiFile);
+        Assert.Equal(0, indices["Original/" + first]);
+        Assert.Equal(1, indices["Original/" + second]);
+        h.Store.FileIdentities[h.Task.InfoHash] =
+        [
+            new TorrentFileSnapshot(indices["Original/" + second], "Original/renamed-E08.mkv", 2048),
+            new TorrentFileSnapshot(indices["Original/" + first],  "Original/renamed-E07.mkv", 1024)
+        ];
+
+        var view = await h.Service.RefreshAsync(h.Task.Id);
+        Assert.Equal("Original/renamed-E07.mkv",
+                     view.Files.Single(file => file.OriginalPath == "Original/" + first).CurrentPath);
+        Assert.Equal("Original/renamed-E08.mkv",
+                     view.Files.Single(file => file.OriginalPath == "Original/" + second).CurrentPath);
+        Assert.Equal(2048, view.Files.Single(file => file.OriginalPath == "Original/" + second).Size);
+        h.AssertNoRemoteWrites();
+    }
+
+    [Theory]
+    [InlineData("wrong-size")]
+    [InlineData("extra")]
+    [InlineData("missing")]
+    [InlineData("duplicate-index")]
+    [InlineData("absolute-path")]
+    [InlineData("trailing-whitespace-path")]
+    [InlineData("hash-mismatch")]
+    [InlineData("list-failure")]
+    [InlineData("missing-torrent")]
+    [InlineData("pending-rename")]
+    [InlineData("save-root-change")]
+    [InlineData("save-root-change-after-list")]
+    [InlineData("torrent-moving")]
+    public async Task Refresh_InvalidRemoteManifestRejectsWithoutPersisting(string invalid)
+    {
+        await using var h = await Harness.CreateWithFiles(("one.mkv", 1024), ("two.mkv", 2048));
+        await h.Service.InitializeAsync(h.Task.Id);
+        var originalIdentities = h.Store.FileIdentities[h.Task.InfoHash].ToList();
+        switch (invalid)
+        {
+            case "wrong-size" :
+                h.Store.FileIdentities[h.Task.InfoHash][0] = originalIdentities[0] with { Size = 9999 };
+                break;
+            case "extra" :
+                h.Store.FileIdentities[h.Task.InfoHash].Add(new TorrentFileSnapshot(90, ".pad/123", 123));
+                break;
+            case "missing" :
+                h.Store.FileIdentities[h.Task.InfoHash].RemoveAt(1);
+                break;
+            case "duplicate-index" :
+                h.Store.FileIdentities[h.Task.InfoHash] =
+                [
+                    originalIdentities[0] with { Index = 7 },
+                    originalIdentities[1] with { Index = 7 }
+                ];
+                break;
+            case "absolute-path" :
+                h.Store.FileIdentities[h.Task.InfoHash][0] = originalIdentities[0] with { Path = "/escape.mkv" };
+                break;
+            case "trailing-whitespace-path" :
+                h.Store.FileIdentities[h.Task.InfoHash][0] =
+                    originalIdentities[0] with { Path = "Original/one.mkv " };
+                break;
+            case "hash-mismatch" :
+                await h.Update(task => task.TorrentFile = []);
+                h.Store.ExportedTorrents[h.Task.InfoHash] = TestTorrentBytes.Create("Different Name");
+                break;
+            case "list-failure" :
+                h.Sessions.SessionConfigurator = session =>
+                    session.BeforeListFilesAsync = _ => throw new QbittorrentException("模拟读取文件清单失败");
+                break;
+            case "missing-torrent" :
+                h.Sessions.SessionConfigurator = session =>
+                    session.BeforeListFilesAsync = hash =>
+                    {
+                        h.Store.HiddenTorrents.Add(hash);
+                        throw new QbittorrentException("模拟读取文件清单失败");
+                    };
+                break;
+            case "pending-rename" :
+                await using (var db = await h.Factory.CreateDbContextAsync())
+                {
+                    var task = await db.DownloadTasks.Include(task => task.Files).SingleAsync();
+                    task.Files.First().PendingRenameTo = "Archived/0.mkv";
+                    await db.SaveChangesAsync();
+                }
+
+                break;
+            case "save-root-change" :
+                h.Store.Torrents[h.Task.InfoHash] =
+                    h.Store.Torrents[h.Task.InfoHash] with { SavePath = "/moved/elsewhere" };
+                break;
+            case "save-root-change-after-list" :
+                // 首次快照通过后、清单返回前换根；新文件名仍能按原 index 与大小通过现有校验。
+                h.Sessions.SessionConfigurator = session =>
+                    session.BeforeListFilesAsync = hash =>
+                    {
+                        h.Store.Torrents[hash] =
+                            h.Store.Torrents[hash] with { SavePath = "/moved/elsewhere" };
+                        h.Store.FileIdentities[hash] =
+                        [
+                            originalIdentities[0] with { Path = "Original/renamed-one.mkv" },
+                            originalIdentities[1] with { Path = "Original/renamed-two.mkv" }
+                        ];
+                        return Task.CompletedTask;
+                    };
+                break;
+            case "torrent-moving" :
+                h.Store.Torrents[h.Task.InfoHash] =
+                    h.Store.Torrents[h.Task.InfoHash] with { IsMoving = true };
+                break;
+        }
+
+        var before        = await h.Load();
+        var filesBefore   = SnapshotFiles(before);
+        var torrentBefore = before.TorrentFile;
+        switch (invalid)
+        {
+            case "pending-rename" :
+                await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.RefreshAsync(h.Task.Id));
+                break;
+            case "list-failure" :
+                await Assert.ThrowsAsync<QbittorrentException>(() => h.Service.RefreshAsync(h.Task.Id));
+                break;
+            case "missing-torrent" :
+                await Assert.ThrowsAsync<TorrentMissingException>(() => h.Service.RefreshAsync(h.Task.Id));
+                break;
+            default :
+                await Assert.ThrowsAsync<DownloadFileIdentityException>(() => h.Service.RefreshAsync(h.Task.Id));
+                break;
+        }
+
+        var after = await h.Load();
+        Assert.Equal(filesBefore, SnapshotFiles(after));
+        Assert.Equal(torrentBefore, after.TorrentFile);
+        h.AssertNoRemoteWrites();
+    }
+
+    private sealed record RefreshFileSnapshot(
+        int FileIndex, string OriginalRelativePath, string CurrentRelativePath, long Size,
+        string? PublishedRelativePath, string? PublishedPath, DownloadFileKind Kind,
+        decimal? EpisodeNumberOverride, decimal? EpisodeEndOverride, string? AnimeRelativePathOverride,
+        bool IsManualOverride, string ClassificationReason, bool IsSelectedForDownload,
+        string? SelectionReason, Guid? SupersededByTaskId, string? VerificationOutcome,
+        string? VerificationPath, string? PendingRenameFrom, string? PendingRenameTo,
+        DateTimeOffset UpdatedAtUtc);
+
+    private static IReadOnlyList<RefreshFileSnapshot> SnapshotFiles(DownloadTask task) =>
+        task.Files.OrderBy(file => file.FileIndex)
+            .Select(file => new RefreshFileSnapshot(
+                file.FileIndex, file.OriginalRelativePath, file.CurrentRelativePath, file.Size,
+                file.PublishedRelativePath, file.PublishedPath, file.Kind,
+                file.EpisodeNumberOverride, file.EpisodeEndOverride, file.AnimeRelativePathOverride,
+                file.IsManualOverride, file.ClassificationReason, file.IsSelectedForDownload,
+                file.SelectionReason, file.SupersededByTaskId, file.VerificationOutcome,
+                file.VerificationPath, file.PendingRenameFrom, file.PendingRenameTo,
+                file.UpdatedAtUtc)).ToList();
+
     private sealed class ProtocolHandler : HttpMessageHandler
     {
         /// <summary>服务器 WebAPI 版本应答，默认新版；旧版本用于验证端点版本门槛的异常翻译。</summary>

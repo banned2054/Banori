@@ -229,6 +229,79 @@ public sealed class DownloadTaskFilesTests
     }
 
     [Fact]
+    public async Task RefreshFiles_UsesExplicitRefreshEntry_PreservesDraftsAndInvalidatesPreview()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        var       id      = await harness.CreateUploadAsync(TestTorrentBytes.Create("Files Refresh - 01"));
+        var       service = new FakeFileService(id);
+        var       vm      = CreateViewModel(harness, service);
+        await vm.ToggleFilesAsync(id);
+        Assert.Equal(1, service.ListCalls);
+        vm.BeginFileEdit(id, 0);
+        var draft = vm.FileState(id).Drafts[0];
+        draft.Episode = 7.5m;
+        await vm.PreviewFileAsync(id, 0);
+        Assert.True(draft.CanApply);
+
+        service.RefreshedDetails = service.Details with
+        {
+            Files = service.Details.Files.Select(file => file with
+            {
+                CurrentPath = $"Refreshed/Renamed{file.Index}.mkv"
+            }).ToArray()
+        };
+        await vm.RefreshFilesAsync(id);
+
+        Assert.Equal(1, service.RefreshCalls);
+        Assert.Equal(1, service.ListCalls); // 显式刷新没有退回 ListAsync。
+        Assert.Same(service.RefreshedDetails, vm.FileState(id).Details);
+        Assert.Contains("Refreshed/Renamed0.mkv", vm.FileState(id).Details!.Files[0].CurrentPath);
+        Assert.Same(draft, vm.FileState(id).Drafts[0]);
+        Assert.Equal(7.5m, draft.Episode);
+        Assert.Null(draft.Preview);
+        Assert.False(draft.CanApply);
+    }
+
+    [Fact]
+    public async Task RefreshFiles_FailureKeepsExistingDetailsAndReportsReason()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        var       id      = await harness.CreateUploadAsync(TestTorrentBytes.Create("Files Refresh Fail - 01"));
+        var       service = new FakeFileService(id) { FailRefresh = true };
+        var       vm      = CreateViewModel(harness, service);
+        await vm.ToggleFilesAsync(id);
+        var details = vm.FileState(id).Details;
+        await vm.RefreshFilesAsync(id);
+
+        Assert.Equal(1, service.RefreshCalls);
+        Assert.Same(details, vm.FileState(id).Details);
+        Assert.Contains("刷新失败", vm.FileState(id).Error);
+        Assert.False(vm.FileState(id).Loading);
+    }
+
+    [Fact]
+    public async Task Render_AfterRefreshShowsNewCurrentPath()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        var       id      = await harness.CreateUploadAsync(TestTorrentBytes.Create("Files Refresh Render - 01"));
+        var       service = new FakeFileService(id);
+        var       vm      = CreateViewModel(harness, service);
+        await vm.ToggleFilesAsync(id);
+        service.RefreshedDetails = service.Details with
+        {
+            Files = service.Details.Files.Select(file => file with
+            {
+                CurrentPath = $"RefreshedPath/Renamed{file.Index}.mkv"
+            }).ToArray()
+        };
+        await vm.RefreshFilesAsync(id);
+        var html = await RenderAsync(vm, id);
+
+        Assert.Contains("RefreshedPath/Renamed0.mkv", html);
+        Assert.DoesNotContain("OldRoot/renamed.mkv", html);
+    }
+
+    [Fact]
     public async Task SummaryRefresh_RemovesFileStateForDeletedTasks()
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
@@ -390,13 +463,18 @@ public sealed class DownloadTaskFilesTests
 
     private sealed class FakeFileService(Guid taskId, DownloadTaskFilesView? details = null) : IDownloadFileService
     {
-        public int                                          ListCalls   { get; private set; }
-        public int                                          ApplyCalls  { get; private set; }
-        public bool                                         FailList    { get; set; }
-        public bool                                         FailApply   { get; set; }
-        public DownloadFileEditRequest?                     LastRequest { get; private set; }
-        public TaskCompletionSource<DownloadTaskFilesView>? ListGate    { get; init; }
-        public TaskCompletionSource<DownloadFilePreview>?   PreviewGate { get; init; }
+        public int                                          ListCalls    { get; private set; }
+        public int                                          ApplyCalls   { get; private set; }
+        public int                                          RefreshCalls { get; private set; }
+        public bool                                         FailList     { get; set; }
+        public bool                                         FailApply    { get; set; }
+        public bool                                         FailRefresh  { get; set; }
+        public DownloadFileEditRequest?                     LastRequest  { get; private set; }
+        public TaskCompletionSource<DownloadTaskFilesView>? ListGate     { get; init; }
+        public TaskCompletionSource<DownloadFilePreview>?   PreviewGate  { get; init; }
+
+        /// <summary>注入刷新后的详情；未设置时与 Details 相同，用于断言显式刷新走独立入口。</summary>
+        public DownloadTaskFilesView? RefreshedDetails { get; set; }
 
         public DownloadFilePreview Preview { get; } = new("/downloads/OldRoot/renamed.mkv",
                                                           "/downloads/NewRoot/renamed.mkv", "OldRoot", "NewRoot", true,
@@ -431,6 +509,14 @@ public sealed class DownloadTaskFilesTests
             ListCalls++;
             if (FailList) throw new InvalidOperationException("无法读取文件列表");
             return ListGate?.Task ?? Task.FromResult(Details);
+        }
+
+        public Task<DownloadTaskFilesView> RefreshAsync(Guid id, CancellationToken cancellationToken = default)
+        {
+            Assert.Equal(taskId, id);
+            RefreshCalls++;
+            if (FailRefresh) throw new InvalidOperationException("下载器刷新失败");
+            return Task.FromResult(RefreshedDetails ?? Details);
         }
 
         public Task RetryArchiveAsync(Guid id, CancellationToken cancellationToken = default) =>

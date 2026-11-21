@@ -22,7 +22,7 @@
 		<div class="d-flex justify-content-between align-items-start gap-2 mb-2">
 			<div class="small">当前 torrent 根目录：<code class="text-break">@details.CurrentRootPath</code></div>
 			<button type="button" class="btn btn-sm btn-outline-secondary flex-shrink-0" disabled="@(State.Busy || State.Loading)"
-			        @onclick="ReloadAsync">
+			        @onclick="RefreshAsync">
 				刷新文件
 			</button>
 		</div>
@@ -169,6 +169,11 @@
 	private Task ReloadAsync()
 	{
 		return RunAsync(() => ViewModel.LoadFilesAsync(TaskId, CancellationToken));
+	}
+
+	private Task RefreshAsync()
+	{
+		return RunAsync(() => ViewModel.RefreshFilesAsync(TaskId, CancellationToken));
 	}
 
 	private Task PreviewAsync(int index)

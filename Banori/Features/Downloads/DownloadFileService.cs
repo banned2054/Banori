@@ -77,6 +77,22 @@ public sealed class DownloadFileService(
         return await ViewAsync(db, task, cancellationToken);
     }
 
+    public async Task<DownloadTaskFilesView> RefreshAsync(Guid taskId, CancellationToken cancellationToken = default)
+    {
+        using var       lease   = await coordinationGate.EnterAsync(cancellationToken);
+        await using var session = await sessionFactory.CreateAsync(cancellationToken);
+        await using var db      = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var             task    = await LoadAsync(db, taskId, cancellationToken);
+        if (task.Files.Count == 0)
+            throw new InvalidOperationException("文件清单尚未初始化，请先展开文件面板。");
+        await WithMissingTorrentCheckAsync(async () =>
+        {
+            await RefreshPathsUnderGateAsync(db, session, task, cancellationToken);
+            return task;
+        }, session, task.InfoHash, cancellationToken);
+        return await ViewAsync(db, task, cancellationToken);
+    }
+
     public async Task<DownloadFilePreview> PreviewAsync(
         Guid taskId, int index, DownloadFileEditRequest request, CancellationToken cancellationToken = default)
     {
@@ -993,6 +1009,105 @@ public sealed class DownloadFileService(
         return (torrent, isMultiFile);
     }
 
+    private async Task RefreshPathsUnderGateAsync(
+        ApplicationDbContext db, IQbittorrentSession session, DownloadTask task, CancellationToken ct)
+    {
+        if (HasPending(task)) throw new InvalidOperationException("文件操作尚未确认，请等待对账后重试。");
+        if (!TorrentDownloadPolicy.TryLoad(task.TorrentFile, out var torrent, out var isMultiFile))
+            (torrent, isMultiFile) = await RecoverTorrentFileAsync(session, task, ct);
+        var hash = torrent.InfoHashes.V1!.ToHex().ToLowerInvariant();
+        if (!string.Equals(hash, task.InfoHash, StringComparison.OrdinalIgnoreCase))
+            throw new DownloadFileIdentityException("原始种子 InfoHash 与任务不一致，拒绝刷新。");
+
+        var snapshot = await SnapshotAsync(session, task.InfoHash, ct);
+        if (snapshot.IsMoving || !SameRoot(snapshot.SavePath, DownloadRoundLayout.Root(task)))
+            throw new DownloadFileIdentityException("下载器保存目录已变化或仍在移动，拒绝刷新。");
+
+        var remaining =
+            torrent.Files.ToDictionary(file => TorrentDownloadPolicy.GetRelativePath(torrent, file, isMultiFile),
+                                       StringComparer.Ordinal);
+        if (remaining.Count != task.Files.Count)
+            throw new DownloadFileIdentityException("种子文件数量与持久化清单不一致，拒绝刷新。");
+        if (task.Files.Select(file => file.FileIndex).ToHashSet().Count != task.Files.Count)
+            throw new DownloadFileIdentityException("已保存文件内部键重复，拒绝刷新。");
+        foreach (var file in task.Files)
+        {
+            var original = file.OriginalRelativePath.Replace('\\', '/');
+            if (!remaining.Remove(original, out var entry) || file.Size != entry.Length)
+                throw new DownloadFileIdentityException("持久化原始文件身份与种子元数据不一致，拒绝刷新。");
+        }
+
+        var indices = TorrentDownloadPolicy.GetQbittorrentFileIndices(task.TorrentFile, torrent, isMultiFile);
+        if (indices.Count != task.Files.Count)
+            throw new DownloadFileIdentityException("下载器文件 index 映射数量与持久化清单不一致，拒绝刷新。");
+
+        var remote = await session.ListFilesAsync(task.InfoHash, ct);
+        if (remote.Count != task.Files.Count)
+            throw new DownloadFileIdentityException("下载器文件清单不完整或包含未登记文件，拒绝刷新。");
+        var byIndex   = new Dictionary<int, (string Path, long Size)>();
+        var seenPaths = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var observed in remote)
+        {
+            var path = RefreshRelativePath(observed.Path);
+            if (!byIndex.TryAdd(observed.Index, (path, observed.Size)) || !seenPaths.Add(path))
+                throw new DownloadFileIdentityException("下载器返回重复的文件 index 或路径，拒绝刷新。");
+        }
+
+        var updates = new List<(DownloadTaskFile File, string Relative)>();
+        foreach (var file in task.Files)
+        {
+            var original = file.OriginalRelativePath.Replace('\\', '/');
+            if (!indices.TryGetValue(original, out var qbIndex) ||
+                !byIndex.TryGetValue(qbIndex, out var observed) ||
+                observed.Size != file.Size)
+                throw new DownloadFileIdentityException("下载器文件 index/大小与原始种子不一致，拒绝刷新。");
+            updates.Add((file, observed.Path));
+        }
+
+        var finalSnapshot = await SnapshotAsync(session, task.InfoHash, ct);
+        if (finalSnapshot.IsMoving ||
+            !SameRoot(finalSnapshot.SavePath, DownloadRoundLayout.Root(task)))
+            throw new DownloadFileIdentityException("下载器保存目录在读取清单期间发生变化或仍在移动，拒绝刷新。");
+
+        foreach (var (file, relative) in updates)
+        {
+            var oldCurrent = DownloadRoundLayout.CurrentAbsolute(task, file);
+            var published  = DownloadRoundLayout.PublishedAbsolute(task, file);
+            var sameVideo  = EqualPath(oldCurrent, published);
+            if (!SameRelativePath(file.CurrentRelativePath, relative))
+            {
+                file.CurrentRelativePath = relative;
+                file.UpdatedAtUtc         = timeProvider.GetUtcNow();
+            }
+            if (sameVideo)
+            {
+                file.PublishedRelativePath = relative;
+                file.PublishedPath         = Join(DownloadRoundLayout.Root(task), relative);
+                if (!EqualPath(DownloadRoundLayout.PublishedAbsolute(task, file),
+                               DownloadRoundLayout.CurrentAbsolute(task, file)))
+                    throw new DownloadFileIdentityException("刷新后已发布路径与当前路径不一致，拒绝刷新。");
+            }
+        }
+
+        await db.SaveChangesAsync(ct);
+    }
+
+    private static string RefreshRelativePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new DownloadFileIdentityException("下载器返回空文件路径，拒绝刷新。");
+        var normalized = path.Replace('\\', '/');
+        var segments   = normalized.Split('/');
+        if (normalized.StartsWith('/') ||
+            Path.IsPathRooted(normalized) ||
+            normalized.Contains(':') ||
+            segments.Any(segment => segment.Length == 0 ||
+                                    segment is "." or ".." ||
+                                    segment != segment.Trim()))
+            throw new DownloadFileIdentityException("下载器返回非法相对路径或文件名含首尾空白，拒绝刷新。");
+        return normalized;
+    }
+
     private IReadOnlyDictionary<int, TorrentFileSnapshot> MatchRemoteFiles(
         DownloadTask task, IReadOnlyList<TorrentFileSnapshot> remote, bool allowPendingPaths = false)
     {
@@ -1821,6 +1936,9 @@ public sealed class DownloadFileService(
 
     private static bool EqualPath(string? left, string? right) =>
         string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+
+    private static bool SameRelativePath(string? left, string right) =>
+        string.Equals(left?.Replace('\\', '/'), right, StringComparison.Ordinal);
 
     private static bool PathsOverlap(string left, string right) =>
         EqualPath(left, right)                                           ||

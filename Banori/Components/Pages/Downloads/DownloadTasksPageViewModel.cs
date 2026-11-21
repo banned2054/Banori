@@ -395,6 +395,42 @@ public sealed class DownloadTasksPageViewModel(
         }
     }
 
+    /// <summary>刷新文件：实时查询下载器并按原始种子核对新路径，与展开面板的 ListAsync 加载分开。</summary>
+    public async Task RefreshFilesAsync(Guid taskId, CancellationToken cancellationToken = default)
+    {
+        var state = FileState(taskId);
+        if (state.Loading || state.Busy) return;
+        state.Loading = true;
+        state.Error   = null;
+        try
+        {
+            var details = await RequireFileService().RefreshAsync(taskId, cancellationToken);
+            if (IsCurrentFileState(taskId, state))
+            {
+                state.Details = details;
+                // 刷新后来源路径可能变化，旧预览基于旧路径生成，必须失效。
+                foreach (var draft in state.Drafts.Values) draft.InvalidatePreview();
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TorrentMissingException)
+        {
+            if (IsCurrentFileState(taskId, state)) state.Error = "qBittorrent 中已找不到该种子";
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "下载任务 {TaskId} 文件刷新失败。", taskId);
+            if (IsCurrentFileState(taskId, state)) state.Error = exception.Message;
+        }
+        finally
+        {
+            state.Loading = false;
+        }
+    }
+
     public void BeginFileEdit(Guid taskId, int fileIndex)
     {
         var state = FileState(taskId);

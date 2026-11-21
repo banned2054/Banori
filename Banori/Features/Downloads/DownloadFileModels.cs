@@ -50,6 +50,11 @@ public interface IDownloadFileService
 {
     Task<DownloadTaskFilesView> ListAsync(Guid taskId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    ///     显式刷新：实时查询下载器并按原始种子身份核对后同步当前路径。
+    /// </summary>
+    Task<DownloadTaskFilesView> RefreshAsync(Guid taskId, CancellationToken cancellationToken = default);
+
     Task<DownloadFilePreview> PreviewAsync(
         Guid taskId, int index, DownloadFileEditRequest request, CancellationToken cancellationToken = default);
 
