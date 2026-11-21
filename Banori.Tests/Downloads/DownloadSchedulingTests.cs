@@ -343,6 +343,11 @@ public sealed class DownloadSchedulingTests
         var       before  = (await harness.GetTaskAsync(taskId)).LastSyncedAtUtc;
         Assert.NotNull(before);
 
+        // 唤醒计时器按「注册时刻的假时间 + 延迟」排期，且只在 Advance 里触发：Advance 必须等到
+        // worker 注册好针对该任务到期时间的计时器之后再发生。负载下 Advance 若落在首轮结束之前，
+        // 注册时到期时间已成过去（到期查询排除已过期值），假时钟又不再推进，计时器永不触发，
+        // worker 会一直挂起到测试超时——先用 PendingTimerDueAts 同步，再推进假时钟。
+        var dueAt = (await harness.GetTaskAsync(taskId)).NextObservationAtUtc!.Value;
         var pulse = new ReconcilePulse();
         var worker =
             new DownloadReconcileWorker(harness.Provider.GetRequiredService<IServiceScopeFactory>(), pulse,
@@ -353,11 +358,18 @@ public sealed class DownloadSchedulingTests
         await worker.StartAsync(cts.Token);
         try
         {
-            // 校验采样推迟 2 秒：worker 的第一轮不推进该任务。
-            await Task.Delay(200);
+            // 真实超时只作防挂死兜底：等首轮结束、唤醒计时器按该任务到期时间注册完成。
+            var registered = Task.Delay(TimeSpan.FromSeconds(5));
+            while (!harness.Time.PendingTimerDueAts.Any(due => Math.Abs((due - dueAt).TotalMilliseconds) <= 100))
+            {
+                Assert.False(registered.IsCompleted, "worker 未按任务到期时间注册唤醒计时器。");
+                await Task.Delay(25);
+            }
+
+            // 到期前任务不被推进。
             Assert.Equal(before, (await harness.GetTaskAsync(taskId)).LastSyncedAtUtc);
 
-            // 到期后 worker 被唤醒并推进（进度同步写入新的观察时间）。
+            // 到期后 worker 被唤醒并推进（进度同步写入新的观察时间），无需额外 pulse。
             harness.Time.Advance(TimeSpan.FromSeconds(2.5));
             var             deadline = Task.Delay(TimeSpan.FromSeconds(5));
             DateTimeOffset? after    = null;
@@ -965,6 +977,18 @@ internal sealed class StepTimeProvider : TimeProvider
     private readonly object          _lock   = new();
     private readonly List<StepTimer> _timers = [];
     private          DateTimeOffset  _now    = DateTimeOffset.Parse("2026-10-20T08:00:00Z");
+
+    /// <summary>当前未触发计时器的到期时间快照：供测试同步「worker 已注册针对某到期时间的唤醒计时器」。</summary>
+    public IReadOnlyList<DateTimeOffset> PendingTimerDueAts
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _timers.Where(timer => timer.DueAt is { }).Select(timer => timer.DueAt!.Value).ToArray();
+            }
+        }
+    }
 
     public override DateTimeOffset GetUtcNow()
     {
