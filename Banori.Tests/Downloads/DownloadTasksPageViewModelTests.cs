@@ -537,10 +537,87 @@ public sealed class DownloadTasksPageViewModelTests
         await Task.WhenAll(first, second).WaitAsync(Timeout);
 
         var writes = settingStore.SetValues.Where(entry => entry.Key == DownloadTaskFilterStore.StatusGroupsKey)
-                                    .Select(entry => entry.Value).ToArray();
+                                 .Select(entry => entry.Value).ToArray();
         Assert.Multiple(() => Assert.Equal(2, writes.Length),
                         () => Assert.Contains("Failed", writes[0]),
                         () => Assert.Contains("Lost", writes[1]));
+    }
+
+    [Fact]
+    public async Task MissingTorrentTask_LostFilterIncludesIt_AndNoDuplicateCountWhenCompletedAlsoSelected()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        var       missing = DownloadTaskListTestSeed.NewTask("Page Missing", DownloadTaskListTestSeed.At(0));
+        missing.TorrentMissingAtUtc = DownloadTaskListTestSeed.At(1);
+        var ordinary = DownloadTaskListTestSeed.NewTask("Page Ordinary", DownloadTaskListTestSeed.At(2));
+        await DownloadTaskListTestSeed.SeedAsync(harness, [missing, ordinary]);
+        var vm = CreateViewModel(harness);
+        await vm.LoadAsync();
+
+        // 缺种任务保留 Completed，但必须能只勾「丢失」找到；普通完成任务不混入。
+        await vm.SetStatusFilterAsync([DownloadStatusFilterGroup.Lost]);
+        Assert.Multiple(() => Assert.Equal(1, vm.TotalCount),
+                        () => Assert.Equal(missing.Id, Assert.Single(vm.Tasks).Id));
+
+        // 同一任务同时命中 Completed 与 Lost 两个 OR 分支，列表与总数都只能算一次。
+        await vm.SetStatusFilterAsync([DownloadStatusFilterGroup.Completed]);
+        Assert.Equal(2, vm.TotalCount);
+
+        await vm.SetStatusFilterAsync([DownloadStatusFilterGroup.Completed, DownloadStatusFilterGroup.Lost]);
+        Assert.Multiple(() => Assert.Equal(2, vm.TotalCount),
+                        () => Assert.Equal(2, vm.Tasks.Count),
+                        () => Assert.Equal(2, vm.Tasks.Select(task => task.Id).Distinct().Count()),
+                        () => Assert.Contains(vm.Tasks, task => task.Id == missing.Id && task.IsTorrentMissing));
+    }
+
+    [Fact]
+    public async Task PreviewFileAsync_TorrentMissing_UsesFixedMessage()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        var       taskId  = Guid.NewGuid();
+        var fileService = new StubFileService
+        {
+            FilesView = new DownloadTaskFilesView(taskId, "/downloads",
+            [
+                new DownloadFileView(0, "01.mkv", "01.mkv", DownloadFileKind.Anime, "测试", 1, null, null,
+                                     1024, true, null, null, null, null)
+            ]),
+            PreviewException = new TorrentMissingException()
+        };
+        var vm = CreateViewModel(harness, fileService);
+
+        await vm.LoadFilesAsync(taskId);
+        vm.BeginFileEdit(taskId, 0);
+        await vm.PreviewFileAsync(taskId, 0);
+
+        var state = vm.FileState(taskId);
+        Assert.Multiple(() => Assert.Equal("qBittorrent 中已找不到该种子", state.Error),
+                        () => Assert.Null(state.Drafts[0].Preview),
+                        () => Assert.False(state.Busy));
+    }
+
+    [Fact]
+    public async Task RedownloadAsync_CompletedWithMissingTorrent_ResubmitsKeepsHistoryAndRefreshes()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        var       task    = DownloadTaskListTestSeed.NewTask("Page Redownload", DownloadTaskListTestSeed.At(0));
+        task.CompletedAtUtc      = DownloadTaskListTestSeed.At(1);
+        task.TorrentMissingAtUtc = DownloadTaskListTestSeed.At(2);
+        await DownloadTaskListTestSeed.SeedAsync(harness, [task]);
+        var vm = CreateViewModel(harness);
+        await vm.LoadAsync();
+        Assert.True(vm.Tasks.Single().IsTorrentMissing);
+
+        await vm.RedownloadAsync(task.Id).WaitAsync(Timeout);
+
+        Assert.Multiple(() => Assert.False(vm.Busy),
+                        () => Assert.True(vm.Succeeded),
+                        () => Assert.Equal("已重新提交下载，等待下载器确认。", vm.Message),
+                        () => Assert.False(vm.Tasks.Single().IsTorrentMissing));
+        var reloaded = await harness.GetTaskAsync(task.Id);
+        Assert.Multiple(() => Assert.Equal(DownloadTaskStatus.PendingSubmit, reloaded.Status),
+                        () => Assert.Equal(DownloadTaskListTestSeed.At(1), reloaded.CompletedAtUtc),
+                        () => Assert.Null(reloaded.TorrentMissingAtUtc));
     }
 
     private static async Task WaitForFilterAsync(DownloadTasksPageViewModel vm, Func<bool> condition)
@@ -557,6 +634,15 @@ public sealed class DownloadTasksPageViewModelTests
             new DownloadTaskFilterStore(harness.Provider.GetRequiredService<IApplicationSettingStore>()),
             NullLogger<DownloadTasksPageViewModel>.Instance);
 
+    private static DownloadTasksPageViewModel CreateViewModel(
+        DownloadServiceTests.TestHarness harness, IDownloadFileService fileService) =>
+        new(harness.Service, harness.Intake,
+            new DownloadTaskQueries(harness.Provider.GetRequiredService<
+                                        IDbContextFactory<ApplicationDbContext>>()),
+            new DownloadTaskFilterStore(harness.Provider.GetRequiredService<IApplicationSettingStore>()),
+            NullLogger<DownloadTasksPageViewModel>.Instance,
+            fileService);
+
     private static (TaskCompletionSource Started, TaskCompletionSource Release) InstallFindGate(
         FakeQbittorrentSessionFactory factory, string targetName)
     {
@@ -572,5 +658,27 @@ public sealed class DownloadTasksPageViewModelTests
             await release.Task.WaitAsync(Timeout);
         };
         return (started, release);
+    }
+
+    private sealed class StubFileService : IDownloadFileService
+    {
+        public required DownloadTaskFilesView FilesView        { get; init; }
+        public          Exception?            PreviewException { get; set; }
+
+        public Task<DownloadTaskFilesView> ListAsync(Guid taskId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(FilesView);
+
+        public Task<DownloadFilePreview> PreviewAsync(
+            Guid taskId, int index, DownloadFileEditRequest request, CancellationToken cancellationToken = default) =>
+            PreviewException is null
+                ? Task.FromResult(new DownloadFilePreview("原路径", "目标路径", "/downloads", "/downloads", false, null))
+                : Task.FromException<DownloadFilePreview>(PreviewException);
+
+        public Task<DownloadTaskFilesView> ApplyAsync(
+            Guid taskId, int index, DownloadFileEditRequest request, CancellationToken cancellationToken = default) =>
+            Task.FromResult(FilesView);
+
+        public Task RetryArchiveAsync(Guid taskId, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
     }
 }

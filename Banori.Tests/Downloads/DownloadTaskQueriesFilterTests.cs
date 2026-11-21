@@ -335,6 +335,10 @@ public sealed class DownloadTaskQueriesFilterTests
         await DownloadTaskListTestSeed.SeedAsync(harness, rows);
 
         // 期望以生产派生链为准：真实投影出视图后经 GroupOf 归组，SQL 谓词必须与之一致。
+        // 缺种任务（Completed + TorrentMissingAtUtc != null）有意跨「已完成」与「丢失」两个分组：
+        // Status 与 Phase 都保留 Completed，GroupOf(Phase) 只能给出单值，故这类任务不参与此处的
+        // 单值等价性计算；其跨分组归属由 StatusGroups_TorrentMissingTaskBelongsToBoth... 专门固化。
+        // 本用例 seed 不含缺种任务，单值归组断言仍成立。
         var all = await QueryAsync(harness);
         Assert.Equal(rows.Length, all.TotalCount);
         var covered = 0;
@@ -368,6 +372,42 @@ public sealed class DownloadTaskQueriesFilterTests
         Assert.DoesNotContain("S13UM", preparingNames);
         Assert.Contains("S13U", preparingNames);
         Assert.DoesNotContain("S13U", pausedNames);
+    }
+
+    [Fact]
+    public async Task StatusGroups_TorrentMissingTaskBelongsToBothCompletedAndLost_WithoutDuplicate()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        var       missing = DownloadTaskListTestSeed.NewTask("缺种任务", DownloadTaskListTestSeed.At(0));
+        missing.TorrentMissingAtUtc = DownloadTaskListTestSeed.At(1);
+        var completed = DownloadTaskListTestSeed.NewTask("普通完成", DownloadTaskListTestSeed.At(2));
+        await DownloadTaskListTestSeed.SeedAsync(harness, [missing, completed]);
+
+        var lost = await QueryAsync(harness, new DownloadTaskListFilter
+        {
+            StatusGroups = Groups(DownloadStatusFilterGroup.Lost)
+        });
+        var done = await QueryAsync(harness, new DownloadTaskListFilter
+        {
+            StatusGroups = Groups(DownloadStatusFilterGroup.Completed)
+        });
+        var both = await QueryAsync(harness, new DownloadTaskListFilter
+        {
+            StatusGroups = Groups(DownloadStatusFilterGroup.Lost, DownloadStatusFilterGroup.Completed)
+        });
+
+        Assert.Multiple(() => Assert.Equal(["缺种任务"], lost.Items.Select(item => item.NamingSnapshot).ToList()),
+                        // 历史完成语义保留：缺种任务仍在「已完成」中，普通完成任务也仍在。
+                        () => Assert.Equal(["普通完成", "缺种任务"],
+                                           done.Items.Select(item => item.NamingSnapshot)
+                                               .OrderBy(name => name, StringComparer.Ordinal).ToList()),
+                        // 两个分组同时勾选：各命中一次，但结果集不重复。
+                        () => Assert.Equal(2, both.TotalCount),
+                        () => Assert.Equal(2, both.Items.Count),
+                        () => Assert.Equal(2, both.Items.Select(item => item.Id).Distinct().Count()));
+        var view = Assert.Single(lost.Items);
+        Assert.Multiple(() => Assert.True(view.IsTorrentMissing),
+                        () => Assert.Equal(DownloadTaskStatus.Completed, view.Status));
     }
 
     [Fact]
