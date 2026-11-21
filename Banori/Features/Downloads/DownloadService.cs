@@ -1251,7 +1251,6 @@ public sealed class DownloadService(
     {
         // Reconcile 的任务列表可能在其它流程登记替换前读取；门禁内再次取当前状态，旧快照不得提交。
         task = await LoadTaskAsync(task.Id, cancellationToken);
-        if (task.Status is not (DownloadTaskStatus.PendingSubmit or DownloadTaskStatus.Submitting)) return;
 
         // 提交前先按 hash 对账：下载器中已存在的同 hash 种子直接接管——既覆盖“自己上次提交已生效
         // 但未收到确认”，也覆盖“用户或其他工具预先添加的种子”。数据库活动唯一索引保证同 hash
@@ -1261,8 +1260,35 @@ public sealed class DownloadService(
         // 响应丢失或人工重试仍须恢复原状态机，不能按普通接管改名、移动或完成共享候选。
         if (task.IsolationState != DownloadIsolationState.None || task.VerificationIntent is not null)
         {
-            await UpdateTaskAsync(task.Id, task.Status, update => update.Status = DownloadTaskStatus.Downloading,
-                                  cancellationToken);
+            // 按 hash 找到种子即证明 Add 已生效。纯新任务可直接发布保存根；已归档任务重下时必须
+            // 等到校验/归档成功才发布，旧成片路径在下载期间继续保持有效。
+            var preserveOldPieces = task.CompletedAtUtc is not null;
+            if (existing is { } observed && task.PendingSubmitSavePath is { Length: > 0 } planned)
+            {
+                await UpdateTaskAsync(task.Id, task.Status, update =>
+                {
+                    if (preserveOldPieces)
+                    {
+                        if (!MatchesIsolationPath(observed.SavePath, planned))
+                            update.PendingSubmitSavePath = DownloadPathNamePolicy.NormalizePath(observed.SavePath);
+                        return;
+                    }
+
+                    update.SavePath = MatchesIsolationPath(observed.SavePath, planned)
+                        ? planned
+                        : DownloadPathNamePolicy.NormalizePath(observed.SavePath);
+                    update.PendingSubmitSavePath = null;
+                }, cancellationToken);
+                task = await LoadTaskAsync(task.Id, cancellationToken);
+            }
+
+            // 响应丢失后由 hash 对账恢复：保留旧成片的任务须把逐文件引用对齐到下载器原始布局。
+            await UpdateTaskAsync(task.Id, task.Status,
+                                  update => update.Status = DownloadTaskStatus.Downloading,
+                                  cancellationToken,
+                                  preserveOldPieces && existing is not null
+                                      ? (db, _) => StartNewRoundFilesAsync(db, task.Id, cancellationToken)
+                                      : null);
             await ReconcileTrackedAsync(session, await LoadTaskAsync(task.Id, cancellationToken), existing,
                                         cancellationToken);
             return;
@@ -1276,11 +1302,8 @@ public sealed class DownloadService(
 
         switch (task)
         {
-            case { Status: DownloadTaskStatus.Submitting, AttemptCount: >= MaxAutoSubmitAttempts } :
-                await MarkFailedAsync(task.Id, task.Status, "提交", "多次提交后仍未在下载器中发现该任务，请检查下载器后人工重试。",
-                                      cancellationToken);
-                return;
-            // 添加可见性窗口内不重复提交：上次 Add 请求可能仍被下载器处理中（或响应结果未知），
+            // 可见性窗口先于预算判断：最后一次 Add 请求可能已被下载器接受但响应丢失，
+            // 必须让它等满自己的窗口再决定是否耗尽预算，不能在第 1 秒就按预算耗尽转 Failed。
             // hash 对账未命中先等待窗口到期；查询轮次与 pulse 不消耗提交预算。
             case { Status: DownloadTaskStatus.Submitting, LastSubmitAttemptAtUtc: { } attemptedAt } when
                 timeProvider.GetUtcNow() < attemptedAt + timing.AddVisibilityWindow :
@@ -1288,7 +1311,16 @@ public sealed class DownloadService(
                                             timeProvider.GetUtcNow() + timing.PreparationSampleInterval,
                                             cancellationToken);
                 return;
+            case { Status: DownloadTaskStatus.Submitting, AttemptCount: >= MaxAutoSubmitAttempts } :
+                await MarkFailedAsync(task.Id, task.Status, "提交", "多次提交后仍未在下载器中发现该任务，请检查下载器后人工重试。",
+                                      cancellationToken);
+                return;
         }
+
+        // 本次 Add 之前该任务是否已持有待确认提交根占用：结果未知的 Add（响应丢失、暂不可见、
+        // 跨进程恢复或人工重试保留）在发出请求前就写入 PendingSubmitSavePath。后一次同 hash Add
+        // 的明确拒绝只能否定那一次请求，无法否定先前未知请求——它仍可能写入了自己的根。
+        var hadUnconfirmedSubmission = DownloadRoundLayout.PendingAddRoots(task).Count > 0;
 
         // 一个规划流程：已有候选先校验；需要替换旧版时暂存；其余任务直接在正式根下载。
         (string CandidateRoot, string IntentJson)? verificationAdd;
@@ -1299,9 +1331,9 @@ public sealed class DownloadService(
         try
         {
             verificationAdd = await TryPlanVerificationAddAsync(session, task, cancellationToken);
-            replacing = task.ReplacesTaskId is not null || (downloadFileService is not null &&
-                                                            await downloadFileService
-                                                               .HasReplacementAsync(task.Id, cancellationToken));
+            replacing = task.ReplacesTaskId is not null || task.CompletedAtUtc is not null ||
+                        (downloadFileService is not null &&
+                         await downloadFileService.HasReplacementAsync(task.Id, cancellationToken));
             // 纯正片包（无 Seed 附件）可以直接在动画目录下载：后者是当前布局中清白任务的正式根，
             // 归档时 Plan 保留该根并原地改名，省去从全局根迁入的一次 SetLocation。含 Seed 的包、
             // 复用校验与替换暂存仍沿用各自根目录——它们需要媒体目录与做种目录共用同一个父根。
@@ -1317,6 +1349,7 @@ public sealed class DownloadService(
                       (string.IsNullOrWhiteSpace(task.DownloadRootPath) ? task.SavePath :
                           replacing ? DownloadTaskPlacement.TaskRoot(task.DownloadRootPath, task.Id) :
                                       mediaRoot ?? task.DownloadRootPath);
+            // 仅用于本次路径检查与验证；新一轮的成片路径落 PendingSubmitSavePath，Add 确认前不覆盖旧 SavePath。
             task.SavePath = addRoot;
             if (verificationAdd is null                   && !string.IsNullOrWhiteSpace(task.DownloadRootPath) &&
                 !DownloadTaskPlacement.IsTaskScoped(task) && downloadFileService is not null                   &&
@@ -1328,6 +1361,10 @@ public sealed class DownloadService(
             await MarkFailedAsync(task.Id, task.Status, "提交路径", exception.Message, cancellationToken);
             return;
         }
+
+        // 本次目标根此前是否已有未决 Add：同根补发被拒时那一次仍可能生效，占用必须保留；
+        // 目标根是本次新登记的，明确拒绝只撤销这一次的占用，其他根上的先前请求不受影响。
+        var targetRootHadPendingAdd = DownloadRoundLayout.HasPendingAddRoot(task, addRoot);
 
         // 路径决策与提交同一事务落库：.tasks 暂存、候选根与正式根的选择原因可追溯、可诊断。
         var decidedAt = timeProvider.GetUtcNow();
@@ -1342,7 +1379,7 @@ public sealed class DownloadService(
             Reason = verificationAdd is not null
                 ? "发现可复用候选数据，在候选根受控映射并校验后再决定复用或隔离。"
                 : replacing
-                    ? "存在待替换旧版，先在 .tasks 任务目录暂存，完成后统一归档替换。"
+                    ? "存在待替换旧版或本任务旧成片，先在 .tasks 任务目录暂存，完成后统一归档替换。"
                     : "无复用候选且无待替换版本，直接在正式根下载。"
         };
 
@@ -1361,6 +1398,8 @@ public sealed class DownloadService(
         // 请求发出前先落库 Submitting：下载器已接收而应用在保存结果前退出时，重启按 Hash 对账而不是重复提交。
         // 同时保存准备意图：种子将以停止状态添加，文件选择与命名确认完成前不得开始网络下载；
         // 崩溃恢复按“Submitting + IsSystemPaused”识别这是本应用发起的准备暂停，不会误判为人工暂停。
+        // 新根只写 PendingSubmitSavePath：Add 未确认成功前，旧成片路径与逐文件引用保持原样。
+        // 补发规划改根时不能覆盖首条未决 Add 的实际写入根：首条结果收敛前它仍可能被下载器写入。
         await UpdateTaskAsync(task.Id, task.Status, update =>
         {
             update.Status                 =   DownloadTaskStatus.Submitting;
@@ -1369,11 +1408,11 @@ public sealed class DownloadService(
             update.LastSubmitAttemptAtUtc =   timeProvider.GetUtcNow();
             update.IsSystemPaused         =   true;
             update.PreparationStage       =   DownloadPreparationStage.Planned;
-            update.SavePath               =   addRoot;
             update.PathDecision           =   pathDecision.ToJson();
-            if (verificationAdd is null) return;
-            update.SavePath           = verificationAdd.Value.CandidateRoot;
-            update.VerificationIntent = verificationAdd.Value.IntentJson;
+            if (!hadUnconfirmedSubmission)
+                update.PendingSubmitSavePath = verificationAdd?.CandidateRoot ?? addRoot;
+            DownloadRoundLayout.RegisterPendingAdd(update, addRoot);
+            if (verificationAdd is not null) update.VerificationIntent = verificationAdd.Value.IntentJson;
         }, cancellationToken);
 
         string response;
@@ -1393,8 +1432,23 @@ public sealed class DownloadService(
         }
         catch (Exception exception) when (exception is QbittorrentBadRequestException or QbittorrentNotFoundException)
         {
+            // 明确拒绝只否定本轮请求：本轮新登记、此前没有未决 Add 的根被撤销，让其他任务可以使用；
+            // 更早的未决请求（同根或其他根）仍可能生效，其占用必须保留并继续等待收敛。
+            // 本轮若规划过校验意图，它同样只服务这条被否定的请求：残留会把恢复可见的旧根种子
+            // 引入校验恢复分支并按候选根不匹配转入隔离删除。
+            if (hadUnconfirmedSubmission)
+            {
+                logger.LogWarning(exception, "任务 {TaskId} 的补发 Add 被下载器拒绝，先前请求结果未知，继续保留路径占用。",
+                                  task.Id);
+                await DeferObservationAsync(task.Id, DownloadTaskStatus.Submitting,
+                                            timeProvider.GetUtcNow() + timing.AddVisibilityWindow, cancellationToken,
+                                            targetRootHadPendingAdd ? null : addRoot,
+                                            verificationAdd is not null);
+                return;
+            }
+
             await MarkFailedAsync(task.Id, DownloadTaskStatus.Submitting, "提交", $"下载器拒绝了提交：{exception.Message}",
-                                  cancellationToken);
+                                  cancellationToken, true);
             return;
         }
         catch (QbittorrentException exception)
@@ -1427,19 +1481,52 @@ public sealed class DownloadService(
                 return;
             }
 
+            // 按 hash 查无才是真正的明确拒绝，但只否定本轮请求：本次规划的新根此前没有未决 Add，
+            // 撤销这一次的登记即可；同根已有更早未决请求时（响应丢失、跨进程恢复或人工重试保留）
+            // 这次 Fails. 只能说明本次补发被拒——该请求可能仍在下载器中（只是暂时查不到），
+            // 占用必须保留。两种情形都继续等待先前请求收敛，不丢弃其接管机会。
+            // 本轮规划出的校验意图同样随被否定的请求失效，不再指向不会发生的候选校验。
+            if (hadUnconfirmedSubmission)
+            {
+                logger.LogWarning("任务 {TaskId} 的补发 Add 被拒绝且按 hash 查无，先前请求结果未知，继续保留路径占用。",
+                                  task.Id);
+                await DeferObservationAsync(task.Id, DownloadTaskStatus.Submitting,
+                                            timeProvider.GetUtcNow() + timing.AddVisibilityWindow, cancellationToken,
+                                            targetRootHadPendingAdd ? null : addRoot,
+                                            verificationAdd is not null);
+                return;
+            }
+
             await MarkFailedAsync(task.Id, DownloadTaskStatus.Submitting, "提交", $"下载器拒绝该种子：{responseText}",
-                                  cancellationToken);
+                                  cancellationToken, true);
             return;
         }
 
+        // Add 已确认成功：纯新任务立即发布保存根；已归档任务重下时只把逐文件引用切到种子原始文件名，
+        // 保存根仍由 PendingSubmitSavePath 解释，成片根在校验或归档成功前保持不动。
+        // 补发可能规划过新根：本次 Ok. 只证明新根的请求被接受，先前结果未知的请求仍可能在旧根生效，
+        // 因此已有未决根时保留台账（其中已含旧根与本次新根），等 hash 可见或明确收敛后再统一清理。
+        var preserveArchivedPieces = task.CompletedAtUtc is not null;
         await UpdateTaskAsync(task.Id, DownloadTaskStatus.Submitting,
-                              update => { update.Status = DownloadTaskStatus.Downloading; },
+                              update =>
+                              {
+                                  update.Status                = DownloadTaskStatus.Downloading;
+                                  update.PendingSubmitSavePath = addRoot;
+                                  if (!hadUnconfirmedSubmission) DownloadRoundLayout.ClearPendingAdds(update);
+                                  if (preserveArchivedPieces) return;
+                                  update.SavePath              = addRoot;
+                                  update.PendingSubmitSavePath = null;
+                              },
                               cancellationToken,
-                              (db, updated) =>
-                                  notificationEnqueuer.TryEnqueueAsync(db, NotificationEventType.DownloadStarted,
-                                                                       "下载开始",
-                                                                       $"{DescribeTask(updated)}：已提交到下载器开始下载。命名：{updated.NamingSnapshot}",
-                                                                       cancellationToken));
+                              async (db, updated) =>
+                              {
+                                  if (preserveArchivedPieces)
+                                      await StartNewRoundFilesAsync(db, task.Id, cancellationToken);
+                                  await notificationEnqueuer.TryEnqueueAsync(db, NotificationEventType.DownloadStarted,
+                                                                             "下载开始",
+                                                                             $"{DescribeTask(updated)}：已提交到下载器开始下载。命名：{updated.NamingSnapshot}",
+                                                                             cancellationToken);
+                              });
 
         // 准备推进（文件选择 → 命名 → 启动）由下一轮对账按下载器真实状态驱动：种子此刻处于
         // 停止状态，本轮不做文件操作，崩溃或响应丢失都由对账幂等补做。
@@ -1467,7 +1554,17 @@ public sealed class DownloadService(
         if (targets.Count == 0) return null;
 
         var candidates = await downloadFileService.EnumerateReuseCandidatesAsync(session, task.Id, targets, ct);
+        // 用户只删种、磁盘上仍保留成片时，普通枚举会排除本任务，必须补上本任务自己的旧归档证据；
+        // 这些路径同样只是候选，仍由受控映射和 recheck 决定是否真的可复用。
+        if (task.CompletedAtUtc is not null)
+            candidates =
+            [
+                .. candidates,
+                .. await downloadFileService.EnumerateOwnReuseCandidatesAsync(task.Id, targets, ct)
+            ];
         if (candidates.Count == 0) return null;
+        candidates = candidates.GroupBy(candidate => candidate.FileIndex)
+                               .Select(group => group.First()).ToList();
 
         var candidateRoot = DownloadPathNamePolicy.NormalizePath(task.DownloadRootPath ?? task.SavePath);
 
@@ -1479,7 +1576,10 @@ public sealed class DownloadService(
                                                         .ToDictionary(group => group.Key, group => group.First().Size,
                                                                       StringComparer.OrdinalIgnoreCase)))
             throw new TargetPathOccupiedException("校验任务的原始布局存在非候选占用，无法安全添加。");
-        var replacing = await downloadFileService.HasReplacementAsync(task.Id, ct);
+        // 曾完成的任务重下时旧成片仍占用归档目标：非候选文件必须落在任务专属暂存路径，
+        // 未被证实可复用前不得写入正式目标。
+        var replacing = task.CompletedAtUtc is not null ||
+                        await downloadFileService.HasReplacementAsync(task.Id, ct);
 
         var files = new List<DownloadVerificationMapping>();
         foreach (var file in withFiles.Files)
@@ -1557,32 +1657,23 @@ public sealed class DownloadService(
 
         foreach (var other in others)
         {
-            var hasUnsettledLayout = other.PendingSavePath is not null ||
+            var hasUnsettledLayout = other.PendingSavePath is not null       ||
+                                     other.PendingSubmitSavePath is not null ||
                                      other.Files.Any(file => file.PendingRenameFrom is not null ||
                                                              file.PendingRenameTo is not null) ||
                                      other.VerificationIntent is not null                      ||
                                      other.IsolationState != DownloadIsolationState.None;
-            var occupiedPaths = new List<(string Path, long? Size)>();
-            if (other.Files.Count == 0) occupiedPaths.Add((other.SavePath, null));
-            foreach (var file in other.Files)
-            {
-                occupiedPaths.Add((DownloadPathNamePolicy.JoinSavePath(other.SavePath, file.CurrentRelativePath),
-                                   file.Size));
-                foreach (var pending in new[] { file.PendingRenameFrom, file.PendingRenameTo }
-                            .Where(value => value is not null))
-                {
-                    occupiedPaths.Add((DownloadPathNamePolicy.JoinSavePath(other.SavePath, pending!), file.Size));
-                    if (other.PendingSavePath is not null)
-                        occupiedPaths.Add((DownloadPathNamePolicy.JoinSavePath(other.PendingSavePath, pending!),
-                                           file.Size));
-                }
-
-                if (other.PendingSavePath is null) continue;
-                occupiedPaths.Add((DownloadPathNamePolicy.JoinSavePath(other.PendingSavePath, file.CurrentRelativePath),
-                                   file.Size));
-                occupiedPaths.Add((DownloadPathNamePolicy.JoinSavePath(other.PendingSavePath,
-                                                                       file.OriginalRelativePath), file.Size));
-            }
+            var occupiedPaths = other.Files.Count == 0
+                ? new List<(string Path, long? Size)> { (other.SavePath, null) }
+                : other.Files.SelectMany(file => DownloadRoundLayout.OccupiedPaths(other, file)
+                                                                    .Select(path => (Path : path,
+                                                                                Size : (long?)file.Size)))
+                       .ToList();
+            // 待确认提交根可能已被下载器接受但尚未可见：种子以原始文件名落在该根下，
+            // 必须和 PendingSavePath 一样纳入占用检查，不能让第二个不同 hash 任务获准写入同一路径。
+            if (other.Files.Count == 0)
+                foreach (var pendingRoot in DownloadRoundLayout.PendingAddRoots(other))
+                    occupiedPaths.Add((pendingRoot, null));
 
             foreach (var occupied in occupiedPaths)
             foreach (var item in layout)
@@ -1599,6 +1690,9 @@ public sealed class DownloadService(
         }
 
         var managedHashes = others.Select(value => value.InfoHash).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var pendingSubmitHashes = others.Where(value => DownloadRoundLayout.IsPending(value))
+                                        .Select(value => value.InfoHash)
+                                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var other in await session.ListTorrentsAsync(null, ct))
         {
             if (string.Equals(other.Hash, task.InfoHash, StringComparison.OrdinalIgnoreCase)) continue;
@@ -1617,6 +1711,7 @@ public sealed class DownloadService(
                                                              or QbittorrentTorrentCategory.Error
                                                              or QbittorrentTorrentCategory.Unknown)
                                              } &&
+                                             !pendingSubmitHashes.Contains(other.Hash) &&
                                              (!managedHashes.Contains(other.Hash) ||
                                               file.Size <= 0 || file.Progress >= 1 || !file.IsSelectedForDownload) &&
                                              EqualVerificationPath(item.Path, occupied) &&
@@ -1657,21 +1752,31 @@ public sealed class DownloadService(
     /// <summary>
     ///     推迟本任务的下一次观察：等待确认窗口或采样间隔到期。到期时间持久化，重启后仍按此调度；
     ///     到期前的对账轮次跳过本任务，不影响其他任务。
+    ///     revokeAddRoot 用于明确拒绝后只撤销本次新登记、且此前没有更早未决 Add 的根。
+    ///     clearVerificationIntent 用于补发被明确拒绝后作废本次请求持久化的校验意图：该请求已被
+    ///     下载器否定，候选根不会再有本轮校验，残留意图会让旧根种子恢复可见时误走校验恢复分支。
+    ///     SubmitAsync 的规划路径只在任务无意图时可达（入口存在校验意图即走恢复分支并返回），
+    ///     清空不会连带任何更早请求的恢复信息；旧根未决占用由 revokeAddRoot 的口径独立保留。
     /// </summary>
     private Task DeferObservationAsync(
-        Guid taskId, DownloadTaskStatus expectedStatus, DateTimeOffset dueUtc, CancellationToken ct) =>
-        UpdateTaskAsync(taskId, expectedStatus, update => update.NextObservationAtUtc = dueUtc, ct);
+        Guid    taskId,               DownloadTaskStatus expectedStatus, DateTimeOffset dueUtc, CancellationToken ct,
+        string? revokeAddRoot = null, bool               clearVerificationIntent = false) =>
+        UpdateTaskAsync(taskId, expectedStatus,
+                        update =>
+                        {
+                            update.NextObservationAtUtc = dueUtc;
+                            if (revokeAddRoot is not null)
+                                DownloadRoundLayout.RevokePendingAddRoot(update, revokeAddRoot);
+                            if (clearVerificationIntent) update.VerificationIntent = null;
+                        }, ct);
 
     /// <summary>
     ///     添加可见性窗口判断：请求已发出（或响应结果未知）且从未在下载器观察到该种子时，短暂查不到
     ///     只推迟观察，不触发 Lost/隔离；窗口过后仍缺失按原有缺失语义处理。窗口按最近一次 Add 请求计算，
     ///     重试成功后获得全新的窗口，不沿用首次提交时间。
     /// </summary>
-    private bool WithinAddVisibilityWindow(DownloadTask task)
-    {
-        if (task.LastSyncedAtUtc is not null) return false;
-        return LatestAddRequestAt(task) is { } at && timeProvider.GetUtcNow() < at + timing.AddVisibilityWindow;
-    }
+    private bool WithinAddVisibilityWindow(DownloadTask task) =>
+        LatestAddRequestAt(task) is { } at && timeProvider.GetUtcNow() < at + timing.AddVisibilityWindow;
 
     /// <summary>最近一次 Add 请求时间（首次提交或之后的重试/隔离重加）；null 表示从未发起。</summary>
     private static DateTimeOffset? LatestAddRequestAt(DownloadTask task) =>
@@ -2381,7 +2486,7 @@ public sealed class DownloadService(
         }
 
         if (!MatchesIsolationPath(snapshot.SavePath, intent.CandidateRoot)                       ||
-            !MatchesIsolationPath(task.SavePath, intent.CandidateRoot)                           ||
+            !MatchesIsolationPath(DownloadRoundLayout.Root(task), intent.CandidateRoot)          ||
             intent.Files.Count                                             != task.Files.Count   ||
             intent.Files.Select(file => file.FileIndex).Distinct().Count() != intent.Files.Count ||
             intent.Files.Any(mapping => task.Files.All(file => file.FileIndex             != mapping.FileIndex ||
@@ -2772,7 +2877,7 @@ public sealed class DownloadService(
                 (readyToRun && mapping.IsCandidate &&
                  (file.VerificationOutcome != DownloadFileVerificationOutcomes.ReusedVerified ||
                   !EqualVerificationPath(file.VerificationPath ?? string.Empty, mapping.VerificationPath))) ||
-                !EqualVerificationPath(JoinAbsolute(task.SavePath, file.CurrentRelativePath),
+                !EqualVerificationPath(DownloadRoundLayout.CurrentAbsolute(task, file),
                                        mapping.VerificationPath) ||
                 !EqualVerificationPath(JoinAbsolute(intent.CandidateRoot, remote.Path), mapping.VerificationPath))
             {
@@ -2889,6 +2994,8 @@ public sealed class DownloadService(
                 file.VerificationOutcome = DownloadFileVerificationOutcomes.ReusedVerified;
                 file.VerificationPath    = mapping.VerificationPath;
                 file.UpdatedAtUtc        = timeProvider.GetUtcNow();
+                // 只发布已证实的新位置；同包未完成的文件继续沿已发布完整路径指向旧成片。
+                DownloadRoundLayout.PublishFile(tracked, file);
             }
 
             // 包含承接的提前切换（设计第四阶段）：候选数据已在校验目标路径（即归档终名）证实完整，
@@ -2931,6 +3038,9 @@ public sealed class DownloadService(
                                               .ToListAsync(ct);
                 await TryRetireExhaustedOwnersAsync(db, retiredOwnerIds, task.Id, ct);
             }
+
+            // 校验成功：本轮根成为可信布局；逐文件路径只发布已证实的文件，未完成文件仍指向旧成片。
+            DownloadRoundLayout.PublishRoot(tracked);
 
             // 启动意图与证据一起落库。Resume 响应丢失时仍走本状态机，不能落回普通提前命名。
             tracked.VerificationIntent = (intent with { Step = DownloadVerificationStep.ReadyToRun }).ToJson();
@@ -3018,8 +3128,8 @@ public sealed class DownloadService(
             if (!candidateRelatives.ContainsKey(file.FileIndex)) continue;
             if (!indexByPath.TryGetValue(file.OriginalRelativePath, out var qbIndex) ||
                 !remoteByIndex.TryGetValue(qbIndex, out var remote)) return true;
-            if (remote.Progress > 0 && !EqualVerificationPath(JoinAbsolute(task.SavePath, remote.Path),
-                                                              JoinAbsolute(task.SavePath,
+            if (remote.Progress > 0 && !EqualVerificationPath(JoinAbsolute(DownloadRoundLayout.Root(task), remote.Path),
+                                                              JoinAbsolute(DownloadRoundLayout.Root(task),
                                                                            candidateRelatives[file.FileIndex])))
                 return true;
         }
@@ -3040,6 +3150,7 @@ public sealed class DownloadService(
         await using var db = await dbContextFactory.CreateDbContextAsync(ct);
         var tracked = await db.DownloadTasks.Include(value => value.Files)
                               .SingleAsync(value => value.Id == task.Id, ct);
+        DownloadRoundLayout.CapturePublished(tracked, tracked.Files);
         foreach (var mapping in intent.Files.Where(item => item.IsCandidate))
         {
             var file = tracked.Files.FirstOrDefault(item => item.FileIndex == mapping.FileIndex);
@@ -3092,7 +3203,8 @@ public sealed class DownloadService(
             case DownloadIsolationState.Deleting :
                 if (snapshot is null)
                 {
-                    // 删除已生效（或从未存在）：前进到重加。
+                    // 查无从不能证明删除请求已发出：种子表里的旧 Add 仍可能生效，
+                    // 这里只推进状态，绝不释放更早未决 Add 的实际写入路径。
                     await UpdateTaskAsync(task.Id, task.Status,
                                           update => update.IsolationState = DownloadIsolationState.Readding, ct);
                     return;
@@ -3108,8 +3220,14 @@ public sealed class DownloadService(
                 }
 
                 await session.DeleteTorrentAsync(task.InfoHash, false, ct);
+                // 旧种子删除请求已发出：先前 Add 不再由本轮负责，首条隔离重加按新请求处理。
                 await UpdateTaskAsync(task.Id, task.Status,
-                                      update => update.IsolationState = DownloadIsolationState.Readding, ct);
+                                      update =>
+                                      {
+                                          update.IsolationState        = DownloadIsolationState.Readding;
+                                          update.PendingSubmitSavePath = null;
+                                          DownloadRoundLayout.ClearPendingAdds(update);
+                                      }, ct);
                 return;
 
             case DownloadIsolationState.Readding :
@@ -3124,12 +3242,106 @@ public sealed class DownloadService(
                         return;
                     }
 
-                    // 请求登记先落库，再发出重加。
+                    // 本轮之前是否已有未决 Add：预检失败、HTTP 明确拒绝与 Fails. 都只否定本次
+                    // 请求，不能清掉先前结果未知的实际写入根。
+                    var hadUnconfirmedReadd     = DownloadRoundLayout.PendingAddRoots(task).Count > 0;
+                    // 本次目标根此前是否已有未决请求：同根补发被拒时那一次仍可能生效，占用必须保留；
+                    // 目标根是本次新登记时，明确拒绝只撤销这一次的占用，其他根上的先前请求不受影响。
+                    var targetRootHadPendingAdd = DownloadRoundLayout.HasPendingAddRoot(task, targetRoot);
+
+                    // 任务专属暂存同样受提交门禁：不能因为是隔离重加就绕过前置布局检查，
+                    // 否则两个不同 hash 的种子会指向同一个完整文件路径。
+                    var originalRoot = task.SavePath;
+                    task.SavePath = targetRoot;
+                    try
+                    {
+                        if (await InitialLayoutConflictsAsync(session, task, targetRoot, ct) ||
+                            !string.IsNullOrWhiteSpace(task.DownloadRootPath))
+                            await (submissionPathValidator ?? new DownloadSubmissionPathValidator(dbContextFactory))
+                               .ValidateAsync(task, ct);
+                    }
+                    catch (InvalidOperationException exception)
+                    {
+                        // 预检只挡住这次尚未发出的重加；先前 Add 结果未知时继续占用其写入根。
+                        await MarkFailedAsync(task.Id, task.Status, "提交路径", exception.Message, ct,
+                                              !hadUnconfirmedReadd);
+                        return;
+                    }
+                    finally
+                    {
+                        task.SavePath = originalRoot;
+                    }
+
+                    // 每条 Add 发出前先持久化实际提交根：响应未知、人工重试或重启都继续占用该路径；
+                    // 旧成片根留在 SavePath，只有归档成功才发布新位置。
                     var readdAt = timeProvider.GetUtcNow();
                     await UpdateTaskAsync(task.Id, task.Status,
-                                          update => update.LastSubmitAttemptAtUtc = readdAt, ct);
-                    await session.AddTorrentAsync(task.TorrentFile, targetRoot, TagsFor(task), task.NamingSnapshot,
-                                                  true, ct);
+                                          update =>
+                                          {
+                                              update.LastSubmitAttemptAtUtc = readdAt;
+                                              if (!hadUnconfirmedReadd) update.PendingSubmitSavePath = targetRoot;
+                                              DownloadRoundLayout.RegisterPendingAdd(update, targetRoot);
+                                          }, ct);
+                    string response;
+                    try
+                    {
+                        response = await session.AddTorrentAsync(task.TorrentFile, targetRoot, TagsFor(task),
+                                                                 task.NamingSnapshot, true, ct);
+                    }
+                    catch (Exception exception) when (exception is QbittorrentBadRequestException
+                                                                or QbittorrentNotFoundException)
+                    {
+                        // HTTP 400/404 明确拒绝本次请求：只撤销这一次请求所写根，其他根上的先前
+                        // 请求仍可能生效。同根补发被拒同样不能否定更早的那次请求。
+                        if (targetRootHadPendingAdd)
+                        {
+                            logger.LogWarning(exception,
+                                              "任务 {TaskId} 的隔离补发被下载器拒绝，先前请求结果未知，继续保留路径占用。",
+                                              task.Id);
+                            await DeferObservationAsync(task.Id, task.Status,
+                                                        timeProvider.GetUtcNow() + timing.AddVisibilityWindow, ct);
+                            return;
+                        }
+
+                        // 本次是全新请求：撤销该根占用；若其他根仍有未决请求，任务继续等待它们收敛。
+                        await MarkFailedAsync(task.Id, task.Status, "提交",
+                                              $"下载器拒绝重新添加该种子：{exception.Message}", ct,
+                                              !hadUnconfirmedReadd,
+                                              targetRoot);
+                        return;
+                    }
+
+                    if ((response ?? string.Empty).Trim().Contains("fail", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (targetRootHadPendingAdd)
+                        {
+                            // 同根的更早请求可能已被接受但暂时查不到：保留该根占用，按窗口等待。
+                            logger.LogWarning("任务 {TaskId} 的隔离补发被拒绝，先前请求结果未知，继续保留路径占用。",
+                                              task.Id);
+                            await DeferObservationAsync(task.Id, task.Status,
+                                                        timeProvider.GetUtcNow() + timing.AddVisibilityWindow, ct);
+                            return;
+                        }
+
+                        // 本次是全新请求：明确拒绝（"Fails."）即撤销任务专属根占用并终止，
+                        // 不能停在 Readding 无限重加；更早其他根的占用继续保留。
+                        await MarkFailedAsync(task.Id, task.Status, "提交",
+                                              $"下载器拒绝重新添加该种子：{(response ?? string.Empty).Trim()}", ct,
+                                              !hadUnconfirmedReadd,
+                                              targetRoot);
+                    }
+                    else
+                        // Ok. 只证明请求被接受，种子可能暂时查不到：新根继续作为本轮布局根占用，
+                        // 旧根在先前 Add 收敛前仍留在台账，等 hash 可见后由对账统一清理。
+                    {
+                        await UpdateTaskAsync(task.Id, task.Status,
+                                              update =>
+                                              {
+                                                  update.PendingSubmitSavePath = targetRoot;
+                                                  DownloadRoundLayout.RegisterPendingAdd(update, targetRoot);
+                                              }, ct);
+                    }
+
                     return;
                 }
 
@@ -3187,6 +3399,7 @@ public sealed class DownloadService(
                 {
                     var tracked = await db.DownloadTasks.Include(value => value.Files)
                                           .SingleAsync(value => value.Id == task.Id, ct);
+                    DownloadRoundLayout.CapturePublished(tracked, tracked.Files);
                     foreach (var file in tracked.Files)
                     {
                         file.CurrentRelativePath = file.OriginalRelativePath;
@@ -3195,9 +3408,20 @@ public sealed class DownloadService(
                         file.UpdatedAtUtc        = timeProvider.GetUtcNow();
                     }
 
-                    tracked.SavePath         = targetRoot;
-                    tracked.PendingSavePath  = null;
-                    tracked.IsolationState   = DownloadIsolationState.None;
+                    // 有旧成片时任务专属根只是本轮下载器布局：成片根继续指向旧成片，归档成功后才发布。
+                    if (tracked.CompletedAtUtc is not null)
+                    {
+                        tracked.PendingSubmitSavePath = targetRoot;
+                    }
+                    else
+                    {
+                        tracked.SavePath              = targetRoot;
+                        tracked.PendingSubmitSavePath = null;
+                    }
+
+                    tracked.PendingSavePath = null;
+                    tracked.IsolationState  = DownloadIsolationState.None;
+                    DownloadRoundLayout.ClearPendingAdds(tracked);
                     tracked.IsSystemPaused   = true;
                     tracked.PreparationStage = DownloadPreparationStage.Planned;
                     await db.SaveChangesAsync(ct);
@@ -3250,10 +3474,21 @@ public sealed class DownloadService(
                 Root         = stagingRoot ?? DownloadPathNamePolicy.NormalizePath(snapshot.SavePath),
                 DecidedAtUtc = timeProvider.GetUtcNow()
             }.ToJson();
-            if (!staging && !MatchesIsolationPath(snapshot.SavePath, task.SavePath))
-                // 隔离路径让位于种子的真实位置：接管外部种子时它通常不在本应用约定的目录里，
-                // 后续对账与完成改名都以真实位置为准。
-                update.SavePath = DownloadPathNamePolicy.NormalizePath(snapshot.SavePath);
+            // 已归档任务重下的接管只对齐待确认根，旧成片路径继续有效；纯新任务按原有语义发布真实位置。
+            if (task.CompletedAtUtc is not null && DownloadRoundLayout.IsPending(task))
+            {
+                update.PendingSubmitSavePath = DownloadPathNamePolicy.NormalizePath(snapshot.SavePath);
+            }
+            else
+            {
+                if (!staging && !MatchesIsolationPath(snapshot.SavePath, task.SavePath))
+                    // 隔离路径让位于种子的真实位置：接管外部种子时它通常不在本应用约定的目录里，
+                    // 后续对账与完成改名都以真实位置为准。
+                    update.SavePath = DownloadPathNamePolicy.NormalizePath(snapshot.SavePath);
+                update.PendingSubmitSavePath = null;
+            }
+
+            DownloadRoundLayout.ClearPendingAdds(update);
         }, cancellationToken);
 
         if (snapshot.Category == QbittorrentTorrentCategory.Stopped && task.IsSystemPaused)
@@ -3297,6 +3532,11 @@ public sealed class DownloadService(
     private async Task ReconcileTrackedAsync(
         IQbittorrentSession session, DownloadTask task, TorrentSnapshot? snapshot, CancellationToken cancellationToken)
     {
+        // 种子重新可见即证明先前 Add 已生效，台账任务由 qB 自身参与占用检查；清除未确认记录，
+        // 但不能改当前布局根——已归档任务仍要等归档成功才发布成片路径。
+        if (snapshot is not null && DownloadRoundLayout.PendingAddRoots(task).Count > 0)
+            await UpdateTaskAsync(task.Id, task.Status, DownloadRoundLayout.ClearPendingAdds, cancellationToken);
+
         // 路由优先级：启动恢复 → 隔离恢复 → 活跃校验 → 普通缺失/接管/命名/完成处理。
         // 隔离中 hash 暂时消失是正常中间态，绝不标 Lost；校验意图活跃期间不得进入普通
         // 命名、完成判定或现任切换——候选路径上的共享数据未经证实不得写入。
@@ -3339,8 +3579,8 @@ public sealed class DownloadService(
                                                                          DownloadFileVerificationOutcomes
                                                                             .ReuseUnverified
                                                                      } &&
-                                                                     EqualVerificationPath(JoinAbsolute(task.SavePath,
-                                                                             file.CurrentRelativePath),
+                                                                     EqualVerificationPath(DownloadRoundLayout
+                                                                            .CurrentAbsolute(task, file),
                                                                          file.VerificationPath ?? string.Empty)))
             {
                 await EnterIsolationAsync(task, new DownloadVerificationIntent(),
@@ -3365,13 +3605,12 @@ public sealed class DownloadService(
             {
                 update.Status     = DownloadTaskStatus.Lost;
                 update.FailedStep = "对账";
-                update.Error      = "下载器中不存在该任务，可能已被手动删除。";
             }, cancellationToken);
             return;
         }
 
-        // 保存位置变更未确认时，两端路径均可能被下载器返回。
-        if (!MatchesIsolationPath(snapshot.SavePath, task.SavePath) &&
+        // 保存位置变更未确认时，两端路径均可能被下载器返回；新一轮未发布时按待确认根核对。
+        if (!MatchesIsolationPath(snapshot.SavePath, DownloadRoundLayout.Root(task)) &&
             (task.PendingSavePath is null || !MatchesIsolationPath(snapshot.SavePath, task.PendingSavePath)))
         {
             await MarkFailedAsync(task.Id, task.Status, "对账",
@@ -4192,8 +4431,20 @@ public sealed class DownloadService(
         return true;
     }
 
+    /// <summary>Add 已生效：把逐文件引用切到种子原始文件名，与待确认根一起描述下载器真实布局。</summary>
+    private static async Task StartNewRoundFilesAsync(
+        ApplicationDbContext db, Guid taskId, CancellationToken cancellationToken)
+    {
+        var owner = await db.DownloadTasks.AsNoTracking()
+                            .SingleAsync(value => value.Id == taskId, cancellationToken);
+        var files = await db.DownloadTaskFiles.Where(file => file.DownloadTaskId == taskId)
+                            .ToListAsync(cancellationToken);
+        DownloadRoundLayout.StartRound(owner, files);
+    }
+
     private async Task MarkFailedAsync(Guid taskId, DownloadTaskStatus expectedStatus, string step, string error,
-                                       CancellationToken cancellationToken)
+                                       CancellationToken cancellationToken, bool releaseSubmission = false,
+                                       string? revokeAddRoot = null)
     {
         logger.LogWarning("下载任务 {TaskId} 在步骤 {Step} 失败：{Error}", taskId, step, error);
         await UpdateTaskAsync(taskId, expectedStatus, update =>
@@ -4203,6 +4454,17 @@ public sealed class DownloadService(
                                   update.Error                = error.Length > 1000 ? error[..1000] : error;
                                   // 终态任务不再参与到期调度，清掉残留的观察时间。
                                   update.NextObservationAtUtc = null;
+                                  // 明确拒绝才收尾释放占用；响应未知时继续占用，直到接管或人工确认。
+                                  if (releaseSubmission)
+                                  {
+                                      update.PendingSubmitSavePath = null;
+                                      DownloadRoundLayout.ClearPendingAdds(update);
+                                  }
+                                  // 只有本次请求被明确拒绝时撤销该根；其他根上的先前请求仍可能生效。
+                                  else if (revokeAddRoot is not null)
+                                  {
+                                      DownloadRoundLayout.RevokePendingAddRoot(update, revokeAddRoot);
+                                  }
                               }, cancellationToken,
                               (db, task) =>
                                   notificationEnqueuer.TryEnqueueAsync(db, NotificationEventType.DownloadFailed, "下载失败",
