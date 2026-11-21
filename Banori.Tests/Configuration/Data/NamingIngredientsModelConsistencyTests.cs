@@ -60,8 +60,8 @@ public sealed class NamingIngredientsModelConsistencyTests
 
         var migration = assembly.Migrations.Keys.Last();
         // 迁移序列里必须同时能看到文件表与其后的逐集登记表迁移；新增迁移后更新这里的最新迁移名。
-        // 新增 AddDownloadRunRecovery（启动恢复子状态列）后，最新迁移从 AddSourceScopes 顺延。
-        Assert.Contains("AddDownloadRunRecovery", migration);
+        // 新增 AddTorrentMissingCheck（缺种巡检与待确认提交根列）后，最新迁移从 AddDownloadRunRecovery 顺延。
+        Assert.Contains("AddTorrentMissingCheck", migration);
         Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddSourceScopes"));
         Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddDownloadTaskObservedCategory"));
         Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddDownloadExternalStopProvenance"));

@@ -243,12 +243,32 @@ namespace Banori.Data.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTimeOffset?>("MissingCheckPendingAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("MissingCheckConfigKey")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset?>("MissingCleanupConfirmedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("MissingCleanupReplacedById")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("MissingCleanupScopeKey")
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("NamingIngredients")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("NamingSnapshot")
                         .IsRequired()
                         .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset?>("NextMissingCheckAtUtc")
                         .HasColumnType("TEXT");
 
                     b.Property<DateTimeOffset?>("NextObservationAtUtc")
@@ -266,6 +286,10 @@ namespace Banori.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("PendingSavePath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PendingSubmitSavePath")
                         .HasMaxLength(1000)
                         .HasColumnType("TEXT");
 
@@ -327,6 +351,9 @@ namespace Banori.Data.Migrations
                         .IsRequired()
                         .HasColumnType("BLOB");
 
+                    b.Property<DateTimeOffset?>("TorrentMissingAtUtc")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("TorrentUrl")
                         .HasMaxLength(2000)
                         .HasColumnType("TEXT");
@@ -344,6 +371,7 @@ namespace Banori.Data.Migrations
 
                     b.HasIndex("FeedItemId");
 
+                    b.HasIndex("NextMissingCheckAtUtc");
                     b.HasIndex("NextObservationAtUtc");
 
                     b.HasIndex("InfoHash", "ActiveFlag")

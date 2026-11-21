@@ -143,6 +143,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.Property(item => item.MediaDirectory).HasMaxLength(1000);
             entity.Property(item => item.SeedDirectory).HasMaxLength(1000);
             entity.Property(item => item.PendingSavePath).HasMaxLength(1000);
+            entity.Property(item => item.PendingSubmitSavePath).HasMaxLength(1000);
             entity.Property(item => item.SiteSource).HasMaxLength(50);
             entity.Property(item => item.NamingSnapshot).HasMaxLength(200).IsRequired();
             entity.Property(item => item.NamingIngredients);
@@ -161,6 +162,11 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.Property(item => item.LastObservedCategory).HasConversion<string>().HasMaxLength(32);
             // worker 按最早到期任务唤醒时扫描；仅索引时间列，活动状态过滤在查询中表达。
             entity.HasIndex(item => item.NextObservationAtUtc);
+            // 缺种巡检独立到期列：与下载观察调度互不复用，null 的存量任务由巡检分批覆盖。
+            entity.HasIndex(item => item.NextMissingCheckAtUtc);
+            entity.Property(item => item.MissingCheckConfigKey).HasMaxLength(64);
+            entity.Property(item => item.MissingCleanupScopeKey).HasMaxLength(128);
+            entity.Property(item => item.MissingCleanupReplacedById);
             entity.Property(item => item.PendingLayoutRequestCount).HasDefaultValue(0);
             entity.Property(item => item.SelectionRequestCount).HasDefaultValue(0);
             entity.Property(item => item.FailedStep).HasMaxLength(50);

@@ -248,6 +248,23 @@ namespace Banori.Data.Migrations.MySql
                         .HasMaxLength(1000)
                         .HasColumnType("varchar(1000)");
 
+                    b.Property<DateTimeOffset?>("MissingCheckPendingAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("MissingCheckConfigKey")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<DateTimeOffset?>("MissingCleanupConfirmedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid?>("MissingCleanupReplacedById")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("MissingCleanupScopeKey")
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
                     b.Property<string>("NamingIngredients")
                         .HasColumnType("longtext");
 
@@ -255,6 +272,9 @@ namespace Banori.Data.Migrations.MySql
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("varchar(200)");
+
+                    b.Property<DateTimeOffset?>("NextMissingCheckAtUtc")
+                        .HasColumnType("datetime(6)");
 
                     b.Property<DateTimeOffset?>("NextObservationAtUtc")
                         .HasColumnType("datetime(6)");
@@ -271,6 +291,10 @@ namespace Banori.Data.Migrations.MySql
                         .HasColumnType("datetime(6)");
 
                     b.Property<string>("PendingSavePath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
+                    b.Property<string>("PendingSubmitSavePath")
                         .HasMaxLength(1000)
                         .HasColumnType("varchar(1000)");
 
@@ -332,6 +356,9 @@ namespace Banori.Data.Migrations.MySql
                         .IsRequired()
                         .HasColumnType("longblob");
 
+                    b.Property<DateTimeOffset?>("TorrentMissingAtUtc")
+                        .HasColumnType("datetime(6)");
+
                     b.Property<string>("TorrentUrl")
                         .HasMaxLength(2000)
                         .HasColumnType("varchar(2000)");
@@ -349,6 +376,7 @@ namespace Banori.Data.Migrations.MySql
 
                     b.HasIndex("FeedItemId");
 
+                    b.HasIndex("NextMissingCheckAtUtc");
                     b.HasIndex("NextObservationAtUtc");
 
                     b.HasIndex("InfoHash", "ActiveFlag")

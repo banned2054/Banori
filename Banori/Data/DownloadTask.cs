@@ -40,6 +40,9 @@ public sealed class DownloadTask
     /// <summary>已发起但尚未确认完成的下载器保存位置变更。</summary>
     public string? PendingSavePath { get; set; }
 
+    /// <summary>新一轮提交计划使用的保存根；Add 成功确认前不覆盖旧成片所在的 SavePath。</summary>
+    public string? PendingSubmitSavePath { get; set; }
+
     public ICollection<DownloadTaskFile> Files { get; set; } = [];
 
     /// <summary>来源站点标签（mikan/anibt/u2/byrbt/tjupt 等）：提交时作为下载器 tag 与命名 {source} 令牌；未知来源为空。</summary>
@@ -141,6 +144,30 @@ public sealed class DownloadTask
     public DateTimeOffset? SubmittedAtUtc  { get; set; }
     public DateTimeOffset? CompletedAtUtc  { get; set; }
     public DateTimeOffset? LastSyncedAtUtc { get; set; }
+
+    /// <summary>
+    ///     种子缺失确认时间：连续两次成功查无且 qB 配置未变时写入；种子重新出现或人工重新下载后清除。
+    ///     Status 保持 Completed，历史完成语义不受影响。
+    /// </summary>
+    public DateTimeOffset? TorrentMissingAtUtc { get; set; }
+
+    /// <summary>缺种巡检：下一次允许复查本任务下载器种子状态的最早时间；null 表示存量尚未排期。</summary>
+    public DateTimeOffset? NextMissingCheckAtUtc { get; set; }
+
+    /// <summary>首次成功查无留下的待复核证据时间；第二次成功查无且配置一致时据此确认缺失。</summary>
+    public DateTimeOffset? MissingCheckPendingAtUtc { get; set; }
+
+    /// <summary>首次成功查无时记录的 qB 配置指纹；复查时不一致按新的第一次查无处理。</summary>
+    public string? MissingCheckConfigKey { get; set; }
+
+    /// <summary>Replaced 墓碑的下载器资源清理确认时间；非空表示已收敛并退出清理轮询。</summary>
+    public DateTimeOffset? MissingCleanupConfirmedAtUtc { get; set; }
+
+    /// <summary>清理确认时的下载器配置指纹；变化时重新确认，不能按任务 Id 永久跳过。</summary>
+    public string? MissingCleanupScopeKey { get; set; }
+
+    /// <summary>清理确认时的承接任务：换承接者后旧确认不再有效。</summary>
+    public Guid? MissingCleanupReplacedById { get; set; }
 
     /// <summary>失败步骤：取源 / 提交 / 认证 / 对账 / 改名 / 下载器。</summary>
     public string? FailedStep { get; set; }
