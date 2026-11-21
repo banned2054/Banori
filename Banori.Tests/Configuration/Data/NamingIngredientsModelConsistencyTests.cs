@@ -59,11 +59,12 @@ public sealed class NamingIngredientsModelConsistencyTests
         Assert.True(categoryProperty.IsNullable);
 
         var migration = assembly.Migrations.Keys.Last();
-        // 迁移序列里必须同时能看到文件表与其后的逐集登记表迁移；新增迁移后更新这里的最新迁移名。
-        // 新增 PublishedDownloadLayout（已发布成片布局列）后，最新迁移从 AddTorrentMissingCheck 顺延。
-        Assert.Contains("PublishedDownloadLayout", migration);
-        // 缺种巡检与待确认提交根列所在迁移仍须在序列中。
+        // 迁移序列末尾是未确认 Add 根台账；新增迁移后更新这里的最新迁移名。
+        Assert.Contains("UnconfirmedAddPaths", migration);
+        // 顺延不得丢失历史迁移：缺种巡检与启动恢复列所在迁移仍须在序列中。
         Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddTorrentMissingCheck"));
+        // 启动恢复列所在的迁移仍须在序列中。
+        Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddDownloadRunRecovery"));
         Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddSourceScopes"));
         Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddDownloadTaskObservedCategory"));
         Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddDownloadExternalStopProvenance"));

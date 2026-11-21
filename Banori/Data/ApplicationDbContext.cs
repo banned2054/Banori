@@ -144,6 +144,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.Property(item => item.SeedDirectory).HasMaxLength(1000);
             entity.Property(item => item.PendingSavePath).HasMaxLength(1000);
             entity.Property(item => item.PendingSubmitSavePath).HasMaxLength(1000);
+            entity.Property(item => item.UnconfirmedAddSavePaths);
             entity.Property(item => item.SiteSource).HasMaxLength(50);
             entity.Property(item => item.NamingSnapshot).HasMaxLength(200).IsRequired();
             entity.Property(item => item.NamingIngredients);

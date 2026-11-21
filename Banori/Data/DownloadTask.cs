@@ -43,6 +43,12 @@ public sealed class DownloadTask
     /// <summary>新一轮提交计划使用的保存根；Add 成功确认前不覆盖旧成片所在的 SavePath。</summary>
     public string? PendingSubmitSavePath { get; set; }
 
+    /// <summary>
+    ///     已发出但结果尚未确认的 Add 保存根 JSON 数组。补发改根时旧根仍可能生效，
+    ///     两处都必须在查询重新可见前持续占用；明确拒绝或接管成功后才收敛。
+    /// </summary>
+    public string? UnconfirmedAddSavePaths { get; set; }
+
     public ICollection<DownloadTaskFile> Files { get; set; } = [];
 
     /// <summary>来源站点标签（mikan/anibt/u2/byrbt/tjupt 等）：提交时作为下载器 tag 与命名 {source} 令牌；未知来源为空。</summary>

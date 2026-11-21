@@ -366,6 +366,9 @@ namespace Banori.Data.Migrations.MySql
                     b.Property<long?>("TotalSize")
                         .HasColumnType("bigint");
 
+                    b.Property<string>("UnconfirmedAddSavePaths")
+                        .HasColumnType("longtext");
+
                     b.Property<string>("VerificationIntent")
                         .HasColumnType("longtext");
 

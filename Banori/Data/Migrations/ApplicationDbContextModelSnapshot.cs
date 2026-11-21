@@ -361,6 +361,9 @@ namespace Banori.Data.Migrations
                     b.Property<long?>("TotalSize")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("UnconfirmedAddSavePaths")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("VerificationIntent")
                         .HasColumnType("TEXT");
 
