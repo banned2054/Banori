@@ -194,6 +194,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             entity.HasKey(item => item.Id);
             entity.Property(item => item.OriginalRelativePath).IsRequired();
             entity.Property(item => item.CurrentRelativePath).IsRequired();
+            entity.Property(item => item.PublishedPath).HasMaxLength(1000);
             entity.Property(item => item.Kind).HasConversion<string>().HasMaxLength(32);
             entity.Property(item => item.EpisodeNumberOverride).HasPrecision(18, 4);
             entity.Property(item => item.EpisodeEndOverride).HasPrecision(18, 4);

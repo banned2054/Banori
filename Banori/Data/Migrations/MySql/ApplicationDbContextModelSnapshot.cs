@@ -442,6 +442,13 @@ namespace Banori.Data.Migrations.MySql
                     b.Property<string>("PendingRenameTo")
                         .HasColumnType("longtext");
 
+                    b.Property<string>("PublishedPath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
+                    b.Property<string>("PublishedRelativePath")
+                        .HasColumnType("longtext");
+
                     b.Property<string>("SelectionReason")
                         .HasMaxLength(1000)
                         .HasColumnType("varchar(1000)");

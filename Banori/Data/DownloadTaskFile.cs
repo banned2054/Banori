@@ -16,6 +16,15 @@ public sealed class DownloadTaskFile
     public string CurrentRelativePath  { get; set; } = string.Empty;
     public long   Size                 { get; set; }
 
+    /// <summary>已发布成片布局的相对路径；新一轮只推进当前路径，确认新位置后才发布。</summary>
+    public string? PublishedRelativePath { get; set; }
+
+    /// <summary>
+    ///     已发布成片布局的完整路径：部分复用期间新文件与旧成片可能不在同一根，逐文件保留旧位置。
+    ///     null 表示沿任务成片根与已发布相对路径回退（存量行与尚未开始新一轮的文件）。
+    /// </summary>
+    public string? PublishedPath { get; set; }
+
     public DownloadFileKind Kind                      { get; set; }
     public decimal?         EpisodeNumberOverride     { get; set; }
     public decimal?         EpisodeEndOverride        { get; set; }

@@ -437,6 +437,13 @@ namespace Banori.Data.Migrations
                     b.Property<string>("PendingRenameTo")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("PublishedPath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PublishedRelativePath")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("SelectionReason")
                         .HasMaxLength(1000)
                         .HasColumnType("TEXT");
