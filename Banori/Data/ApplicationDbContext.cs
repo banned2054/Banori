@@ -179,9 +179,8 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             // 活动行取 1、终态行取 NULL，唯一索引对 NULL 不去重，与 SQLite 部分索引语义完全一致。
             // 反引号标识符 SQLite 同样接受，表达式字符串可保持一致。
             entity.Property<int?>("ActiveFlag")
-                  .HasComputedColumnSql(
-                                        "CASE WHEN `Status` IN ('PendingSubmit', 'Submitting', 'Downloading', 'Paused') " +
-                                        "THEN 1 ELSE NULL END", true);
+                  .HasComputedColumnSql("CASE WHEN `Status` IN ('PendingSubmit', 'Submitting', " +
+                                        "'Downloading', 'Paused') THEN 1 ELSE NULL END", true);
             entity.HasIndex("InfoHash", "ActiveFlag").IsUnique();
             entity.HasOne(item => item.FeedItem).WithMany()
                   .HasForeignKey(item => item.FeedItemId).OnDelete(DeleteBehavior.Cascade);

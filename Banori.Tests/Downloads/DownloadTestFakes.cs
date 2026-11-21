@@ -13,7 +13,8 @@ namespace Banori.Tests.Downloads;
 /// <summary>内存应用设置存储，行为与 EfApplicationSettingStore 的读写语义一致（不含加密）。</summary>
 public sealed class MemoryApplicationSettingStore : IApplicationSettingStore
 {
-    public Dictionary<string, (string Value, bool IsProtected)> Values { get; } = new();
+    private readonly Dictionary<string, int>                              _setCounts = new();
+    public           Dictionary<string, (string Value, bool IsProtected)> Values { get; } = new();
 
     /// <summary>设置后每次读取抛出该异常，模拟设置存储故障。</summary>
     public Exception? ThrowOnGet { get; set; }
@@ -29,8 +30,6 @@ public sealed class MemoryApplicationSettingStore : IApplicationSettingStore
 
     /// <summary>设置后该键的第 Call 次写入（1 起始）先等待 Gate，模拟写入在途与乱序完成。</summary>
     public Dictionary<string, (int Call, Task Gate)> SetGates { get; } = new();
-
-    private readonly Dictionary<string, int> _setCounts = new();
 
     /// <summary>设置后读取以该前缀开头的键时抛出异常，模拟仅部分功能（如通知）的设置故障。</summary>
     public string? ThrowOnGetKeyPrefix { get; set; }

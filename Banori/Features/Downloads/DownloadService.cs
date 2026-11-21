@@ -1322,8 +1322,7 @@ public sealed partial class DownloadService(
                     !DownloadTaskLookups.IsTakeoverEligibleIncumbent(guard.Status, guard.ReplacedByTaskId,
                                                                      guard.Version,
                                                                      DownloadTaskLookups.EpisodeFileVersion(aniParser,
-                                                                         task, video,
-                                                                         episode, taskFiles),
+                                                                         task, video, episode, taskFiles),
                                                                      guard.Group, guard.Language,
                                                                      group, language))
                     continue;

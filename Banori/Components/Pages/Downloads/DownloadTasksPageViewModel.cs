@@ -19,15 +19,6 @@ public sealed class DownloadTasksPageViewModel(
     // 状态筛选默认全部勾选：全不勾选表示一个状态都不显示，不再用空集合表达“不筛选”。
     private readonly HashSet<DownloadStatusFilterGroup> _statusFilter = DownloadStatusFilter.CreateAllGroups();
 
-    // 已保存的筛选只在页面首次加载时读取，之后由勾选维护，定时刷新不回读；并发加载共用同一次读取。
-    private Task? _statusFilterLoadTask;
-
-    // 勾选串行写入同一设置项：保存链条的尾部保证较早的选择不会晚于较新的选择落库。
-    private Task _statusFilterSave = Task.CompletedTask;
-
-    // 用户在读取已保存筛选期间改过勾选：读取结果作废，不能把新选择覆盖成旧值。
-    private bool _statusFilterTouched;
-
     private Guid[] _bulkConfirmationIds = [];
     private long   _bulkRequestId;
 
@@ -36,12 +27,23 @@ public sealed class DownloadTasksPageViewModel(
     /// <summary>面板勾选项：是否连下载器中的种子一起删除。</summary>
     private bool _deleteFromDownloader;
 
-    private long                     _deleteRequestId;
-    private long                     _loadRequestId;
-    private int                      _pageNumber = 1;
+    private long _deleteRequestId;
+    private long _loadRequestId;
+    private int  _pageNumber = 1;
+
     private CancellationTokenSource? _searchDebounceCts;
-    private string                   _searchText = string.Empty;
-    private bool                     _settingDeleteOptions;
+
+    private string _searchText = string.Empty;
+    private bool   _settingDeleteOptions;
+
+    // 已保存的筛选只在页面首次加载时读取，之后由勾选维护，定时刷新不回读；并发加载共用同一次读取。
+    private Task? _statusFilterLoadTask;
+
+    // 勾选串行写入同一设置项：保存链条的尾部保证较早的选择不会晚于较新的选择落库。
+    private Task _statusFilterSave = Task.CompletedTask;
+
+    // 用户在读取已保存筛选期间改过勾选：读取结果作废，不能把新选择覆盖成旧值。
+    private bool _statusFilterTouched;
 
     public IReadOnlyList<DownloadTaskView> Tasks { get; private set; } = [];
 
@@ -75,8 +77,8 @@ public sealed class DownloadTasksPageViewModel(
 
     /// <summary>是否有生效中的筛选，用于展示清除入口与空态文案。</summary>
     public bool HasActiveFilters => _searchText.Trim().Length > 0 ||
-                                    StatusFilterActive        ||
-                                    _languageFilter.Count     > 0;
+                                    StatusFilterActive            ||
+                                    _languageFilter.Count > 0;
 
     /// <summary>分页状态：页码为查询层钳制后的实际值，TotalCount 是筛选后的完整总数而不只当前页。</summary>
     public int PageNumber { get; private set; } = 1;
@@ -275,7 +277,7 @@ public sealed class DownloadTasksPageViewModel(
     public async Task ClearFiltersAsync()
     {
         var resetStatus = StatusFilterActive;
-        _searchText = string.Empty;
+        _searchText          = string.Empty;
         _statusFilterTouched = true;
         _statusFilter.Clear();
         _statusFilter.UnionWith(DownloadStatusFilter.Choices);
@@ -664,9 +666,9 @@ public sealed class DownloadTasksPageViewModel(
         var deleteFromDownloader = DeleteFromDownloader;
         var deleteFiles          = deleteFromDownloader && DeleteFiles;
         DeleteTarget = null;
-        await RunOperationAsync(taskId,
-                                () => downloadService.DeleteAsync(taskId, deleteFromDownloader, deleteFiles,
-                                                                  cancellationToken), "任务已删除。", cancellationToken);
+        await RunOperationAsync(taskId, () => downloadService
+                                   .DeleteAsync(taskId, deleteFromDownloader, deleteFiles, cancellationToken),
+                                "任务已删除。", cancellationToken);
         // 单删成功后同步收敛选择集，批量计数不再包含已删任务；选择集不随刷新重建，靠这里保持准确。
         if (Succeeded) _selectedIds.Remove(taskId);
     }
@@ -685,8 +687,8 @@ public sealed class DownloadTasksPageViewModel(
                 NoteFailure("种子文件超过 10 MB，已拒绝。");
                 return;
             default :
-                await RunCoreAsync(() => intakeService.CreateFromUploadAsync(buffer.ToArray(), null,
-                                                                             UploadSubjectId, cancellationToken),
+                await RunCoreAsync(() => intakeService.CreateFromUploadAsync(buffer.ToArray(), null, UploadSubjectId,
+                                                                             cancellationToken),
                                    "上传种子已登记，等待提交下载器。", cancellationToken,
                                    exception => logger.LogWarning(exception, "上传种子登记失败。"));
                 break;

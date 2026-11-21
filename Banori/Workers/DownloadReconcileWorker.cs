@@ -166,13 +166,13 @@ public sealed class DownloadReconcileWorker(
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var times = await db.DownloadTasks.AsNoTracking()
                             .Where(task => task.NextObservationAtUtc != null &&
-                                           (task.Status          == DownloadTaskStatus.PendingSubmit ||
-                                            task.Status          == DownloadTaskStatus.Submitting    ||
-                                            task.Status          == DownloadTaskStatus.Downloading   ||
-                                            task.Status          == DownloadTaskStatus.Paused        ||
+                                           (task.Status == DownloadTaskStatus.PendingSubmit                           ||
+                                            task.Status == DownloadTaskStatus.Submitting                              ||
+                                            task.Status == DownloadTaskStatus.Downloading                             ||
+                                            task.Status == DownloadTaskStatus.Paused                                  ||
                                             // 完成后的做种恢复观察：等待确认做种是否已恢复时唤醒 worker。
                                             (task.Status == DownloadTaskStatus.Completed && task.RunRecovery != null) ||
-                                            task.PendingSavePath != null                             ||
+                                            task.PendingSavePath != null                                              ||
                                             task.Files.Any(file => file.PendingRenameTo != null)))
                             .Select(task => task.NextObservationAtUtc!.Value)
                             .ToListAsync(cancellationToken);

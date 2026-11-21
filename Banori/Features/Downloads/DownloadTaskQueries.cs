@@ -239,7 +239,7 @@ public sealed class DownloadTaskQueries(
                               .ThenBy(group => group.Key, StringComparer.Ordinal)
                               .Select(group => group.Key)
                               .ToList();
-        if (parsed.Any(language => string.IsNullOrWhiteSpace(language))) languages.Add(string.Empty);
+        if (parsed.Any(string.IsNullOrWhiteSpace)) languages.Add(string.Empty);
         return languages;
     }
 
