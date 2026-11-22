@@ -48,7 +48,7 @@
 		<div class="row g-2 align-items-center">
 			<div class="col-auto">
 				<InputFile id="torrent-file-upload" class="visually-hidden" accept=".torrent" disabled="@_vm.Busy" OnChange="UploadTorrentAsync"/>
-				<label for="torrent-file-upload" class="btn btn-primary mb-0 @(_vm.Busy ? "disabled" : string.Empty)">
+				<label for="torrent-file-upload" class="btn btn-outline-primary mb-0 @(_vm.Busy ? "disabled" : string.Empty)">
 					<span class="bi bi-cloud-arrow-up me-1" aria-hidden="true"></span>选择并上传 .torrent
 				</label>
 			</div>
