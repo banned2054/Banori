@@ -501,7 +501,8 @@ public sealed class DownloadTasksPageViewModel(
         state.Message = null;
         try
         {
-            var details = await RequireFileService().ApplyAsync(taskId, fileIndex, request, cancellationToken);
+            var details = await RequireFileService().ApplyAsync(taskId, fileIndex, request, cancellationToken,
+                                                                draft.Preview?.FileTemplate);
             if (!IsCurrentFileState(taskId, state)) return;
             state.Details = details;
             state.Drafts.Remove(fileIndex);

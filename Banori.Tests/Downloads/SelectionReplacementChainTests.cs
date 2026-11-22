@@ -32,6 +32,7 @@ public sealed partial class DownloadServiceTests
     public async Task SelectionWinner_CrossGroupAndLanguage_RegistersReplacementAndArchivesAfterCompletion()
     {
         using var harness          = await CreateHarnessAsync(enableFileArchive : true);
+        await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
         var       selectionService = CreateRealSelectionService(harness);
         var       key              = new SelectionGroupKey(42, "SingleEpisode", 12, "mikan");
         await harness.SaveSelectionRulesAsync(NekoRules());
@@ -288,6 +289,7 @@ public sealed partial class DownloadServiceTests
     public async Task Retry_FailedSelectionWinnerTask_RebuildsReplacementAndContinues()
     {
         using var harness = await CreateHarnessAsync(enableFileArchive : true);
+        await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
         await harness.SaveSelectionRulesAsync(NekoRules());
         var (oldTaskId, oldFileId, newTaskId, newFileId) =
             await CreateCrossGroupReplacementStateAsync(harness);
@@ -369,6 +371,7 @@ public sealed partial class DownloadServiceTests
     public async Task Retry_SharedOldFileReference_StillBlocksAside()
     {
         using var harness = await CreateHarnessAsync(enableFileArchive : true);
+        await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
         await harness.SaveSelectionRulesAsync(NekoRules());
         var (oldTaskId, oldFileId, newTaskId, _) =
             await CreateCrossGroupReplacementStateAsync(harness);
@@ -425,6 +428,7 @@ public sealed partial class DownloadServiceTests
     public async Task Retry_SubmittedTaskStoppedInFormalRoot_RestoresStagingBeforePreparing()
     {
         using var harness = await CreateHarnessAsync(enableFileArchive : true);
+        await harness.SaveFileNamingTemplateAsync("{title} E{episode}");
         await harness.SaveSelectionRulesAsync(NekoRules());
         var (oldTaskId, oldFileId, newTaskId, newFileId) =
             await CreateCrossGroupReplacementStateAsync(harness);

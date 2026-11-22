@@ -35,7 +35,7 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(expectedName, registered.NamingSnapshot);
         var ingredients = TorrentNamingIngredients.FromJson(registered.NamingIngredients)!;
         Assert.Equal("01-E06", ingredients.EpisodeText);
-        Assert.Equal("{title} E{episode}", ingredients.FileTemplate);
+        Assert.Null(ingredients.FileTemplate); // 文件模板是全局实时规则，不随任务快照保存。
         if (entryPoint != "subscription") Assert.Null(registered.Episode);
 
         // 登记后配置变更不能覆盖快照；真实完成链仍用合集名，文件继续逐集命名。
@@ -171,8 +171,8 @@ public sealed partial class DownloadServiceTests
         var taskId = await harness.CreateDownloadAsync(itemId);
         var task   = await harness.GetTaskAsync(taskId);
         Assert.Equal("合集 测试作品 E01-E02", task.NamingSnapshot);
-        Assert.Equal(originalTemplate ?? ReleaseNamePreviewPolicy.DefaultFileTemplate,
-                     TorrentNamingIngredients.FromJson(task.NamingIngredients)!.FileTemplate);
+        // 文件模板不随任务落库；旧订阅条目即使带 FileTemplate，创建任务时也会清除。
+        Assert.Null(TorrentNamingIngredients.FromJson(task.NamingIngredients)!.FileTemplate);
     }
 
     private static async Task<Guid> RegisterCollectionAsync(

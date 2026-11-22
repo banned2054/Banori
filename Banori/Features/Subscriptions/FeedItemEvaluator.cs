@@ -189,10 +189,9 @@ public sealed class FeedItemEvaluator(
         // 命名模板的 {source} 令牌取订阅 RSS 地址判定的来源站点（mikan/anibt），未知来源不渲染。
         var siteSource       = feedSite;
         var namingTemplate   = await namingTemplateStore.GetAsync(cancellationToken);
-        var fileTemplate     = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
         // 预览与命名要素同源生成，且分别快照 AniParser 与 Bangumi 字段。
         var ingredients =
-            NamingIngredientsComposer.Compose(namingTemplate, fileTemplate, parsed,
+            NamingIngredientsComposer.Compose(namingTemplate, parsed,
                                               ReleaseNamePreviewPolicy.FormatEpisodeText(correction.Episode),
                                               preference, siteSource, subject.Id, subject.Name, subject.NameCn,
                                               subject.Platform, subject.AirDate);

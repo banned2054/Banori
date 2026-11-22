@@ -116,7 +116,7 @@ else
 						<InputText id="downloader-file-naming-template" class="form-control" placeholder="@_vm.DefaultFileNamingTemplate" @bind-Value="_vm.Downloader.FileNamingTemplate"/>
 						<ValidationMessage For="() => _vm.Downloader.FileNamingTemplate"/>
 						<div class="form-text">
-							只控制下载完成后视频、字幕文件的名称，不影响种子名或保存目录。可用与种子模板相同的 AniParser、Bangumi 和站点变量；模板中书写的 / 作为子目录分隔符（如 [{bgm.date:yyyy.MM}]{bgm.nameCn}/S{ani.episode:ee}），令牌取值里的 / 会被转成空格、不会意外建目录；{ani.episode} 对每个文件按其实际解析集数重新渲染，也支持 {ani.episode:ee} 等格式说明符。留空恢复默认。
+							只控制下载完成后视频、字幕文件的名称，不影响种子名或保存目录。修改后立即对所有任务的预览、应用和归档改名生效（按各任务自身要素重新渲染），不会写回任务已保存的命名快照。可用与种子模板相同的 AniParser、Bangumi 和站点变量；模板中书写的 / 作为子目录分隔符（如 [{bgm.date:yyyy.MM}]{bgm.nameCn}/S{ani.episode:ee}），令牌取值里的 / 会被转成空格、不会意外建目录；{ani.episode} 对每个文件按其实际解析集数重新渲染，也支持 {ani.episode:ee} 等格式说明符。留空恢复默认。
 						</div>
 					</div>
 

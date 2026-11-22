@@ -531,7 +531,8 @@ public sealed class DownloadTaskFilesTests
         }
 
         public Task<DownloadTaskFilesView> ApplyAsync(Guid              id, int index, DownloadFileEditRequest request,
-                                                      CancellationToken cancellationToken = default)
+                                                      CancellationToken cancellationToken = default,
+                                                      string?           expectedFileTemplate = null)
         {
             Assert.Equal(taskId, id);
             ApplyCalls++;

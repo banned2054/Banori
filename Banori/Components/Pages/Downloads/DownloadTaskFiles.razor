@@ -137,6 +137,14 @@
 										{
 											<div class="text-warning-emphasis mt-1">@preview.Warning</div>
 										}
+										@if (preview.OtherRenames is { Count: > 0 } others)
+										{
+											<div class="text-warning-emphasis fw-semibold mt-1">本次修改会同时重命名同种子内其他 @others.Count 个文件：</div>
+											@foreach (var other in others)
+											{
+												<div class="ms-3">文件 @other.Index：<code class="text-break">@other.CurrentPath</code> → <code class="text-break">@other.TargetPath</code></div>
+											}
+										}
 									</div>
 								}
 							</div>

@@ -738,7 +738,7 @@ public sealed partial class DownloadServiceTests
             Assert.IsType<TorrentNamingIngredients>(TorrentNamingIngredients.FromJson(registered.NamingIngredients));
         Assert.Equal("12", ingredients.EpisodeText);
         Assert.Equal("{title}", ingredients.Template);
-        Assert.Equal("{title} E{episode}", ingredients.FileTemplate);
+        Assert.Null(ingredients.FileTemplate);
         await using var db = await harness.CreateDbContextAsync();
         var originals = await db.DownloadTaskFiles.AsNoTracking().Where(file => file.DownloadTaskId == taskId)
                                 .OrderBy(file => file.FileIndex).ToListAsync();
@@ -2615,7 +2615,7 @@ public sealed partial class DownloadServiceTests
     [Fact]
     public async Task CreateUpload_UsesSeparateFileTemplateAndSnapshotsBangumiAndAniParserValues()
     {
-        using var    harness      = await CreateHarnessAsync();
+        using var    harness      = await CreateHarnessAsync(enableFileArchive : true);
         const string seedTemplate = "Seed {bgm.id} {bgm.nameCn} E{ani.episode}";
         const string fileTemplate = "{ani.title} E{ani.episode} - {bgm.name}";
         await harness.SaveNamingTemplateAsync(seedTemplate);
@@ -2631,7 +2631,7 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(42, ingredients.BangumiId);
         Assert.False(string.IsNullOrWhiteSpace(ingredients.AniTitle));
         Assert.Equal(seedTemplate, ingredients.Template);
-        Assert.Equal(fileTemplate, ingredients.FileTemplate);
+        Assert.Null(ingredients.FileTemplate); // 文件模板是全局实时规则，不随任务落库。
 
         var hash = TestTorrentBytes.InfoHashOf(title);
         harness.Store.Files[hash] = [title];
@@ -2641,7 +2641,8 @@ public sealed partial class DownloadServiceTests
 
         Assert.Equal("Seed 42 测试作品 E12", Assert.Single(harness.Store.RenameCalls).Name);
         Assert.Equal(DownloadTaskStatus.Completed, (await harness.GetTaskAsync(taskId)).Status);
-        var expectedFile = new ReleaseNamePreviewPolicy().Create(ingredients, true) + ".mp4";
+        var rendered = ingredients with { FileTemplate = fileTemplate };
+        var expectedFile = new ReleaseNamePreviewPolicy().Create(rendered, true) + ".mp4";
         Assert.NotEqual(task.NamingSnapshot                                         + ".mp4", expectedFile);
         var renameFile = Assert.Single(harness.Store.RenameFileCalls);
         Assert.Equal(title, renameFile.OldPath);
@@ -2701,7 +2702,7 @@ public sealed partial class DownloadServiceTests
         Assert.Equal("测试作品", ingredients.BangumiNameCn);
         Assert.Equal(string.Empty, ingredients.EpisodeText);
         Assert.Equal(ReleaseNamePreviewPolicy.DefaultTemplate, ingredients.Template);
-        Assert.False(string.IsNullOrWhiteSpace(ingredients.FileTemplate));
+        Assert.Null(ingredients.FileTemplate);
     }
 
     [Fact]

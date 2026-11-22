@@ -724,6 +724,30 @@ public sealed class DownloadFileServiceTests
     }
 
     [Fact]
+    public async Task PendingRecovery_UsesRegisteredTargetsEvenIfFileTemplateChanged()
+    {
+        await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
+        await h.Service.ArchiveCompletedAsync(h.Task.Id);
+        h.Store.DeferLocation = true;
+        await h.Service.ApplyAsync(h.Task.Id, 0, new DownloadFileEditRequest(DownloadFileKind.Seed));
+        await h.Update(task => task.Status = DownloadTaskStatus.Completed);
+        var pending = await h.Load();
+        var loggedTarget = pending.Files.Single().PendingRenameTo;
+        Assert.NotNull(loggedTarget);
+
+        // 文件操作登记后修改全局模板：已登记目标必须按日志收尾，不因模板变化被判为“计划已改变”。
+        await h.Templates.SaveFileTemplateAsync("changed-{episode}");
+        h.Store.CompleteMoves();
+        using (await h.Gate.EnterAsync())
+        await using (var session = await h.Sessions.CreateAsync())
+        {
+            Assert.True(await h.Service.RecoverPendingUnderGateAsync(session, h.Task.Id));
+        }
+
+        Assert.Equal(loggedTarget, (await h.Load()).Files.Single().CurrentRelativePath);
+    }
+
+    [Fact]
     public async Task RemoteSuccessDatabaseFailure_RecoversFromDurableJournalWithoutDuplicateRename()
     {
         await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv");
@@ -1429,7 +1453,7 @@ public sealed class DownloadFileServiceTests
     }
 
     [Fact]
-    public async Task UnparsedLegacyFile_ManualEpisodeBuildsAndPersistsBoundSubjectTemplate()
+    public async Task UnparsedLegacyFile_ManualEpisodeBuildsFromBoundSubjectAndCurrentFileTemplate()
     {
         await using var h = await Harness.Create("unidentified.mkv");
         await h.Templates.SaveAsync("{bgm.nameCn}");
@@ -1450,15 +1474,16 @@ public sealed class DownloadFileServiceTests
                                               new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 2.5m));
         Assert.Equal("中文作品 E02.5.mkv", view.Files.Single().CurrentPath);
         var snapshot = TorrentNamingIngredients.FromJson((await h.Load()).NamingIngredients)!;
-        Assert.Equal("{bgm.nameCn} E{episode}", snapshot.FileTemplate);
+        Assert.Null(snapshot.FileTemplate);
         Assert.Equal("中文作品", snapshot.BangumiNameCn);
+        // 文件名模板取设置当前值：要素快照保留绑定作品，模板改动立即生效。
         await h.Templates.SaveFileTemplateAsync("changed-{episode}");
         await h.Service.ApplyAsync(h.Task.Id, 0, new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 3.5m));
-        Assert.Equal("中文作品 E03.5.mkv", (await h.Load()).Files.Single().CurrentRelativePath);
+        Assert.Equal("changed-03.5.mkv", (await h.Load()).Files.Single().CurrentRelativePath);
     }
 
     [Fact]
-    public async Task UnparsedIntakeEmptyEpisodeSnapshot_ManualEpisodeUsesSavedTemplate()
+    public async Task UnparsedIntakeEmptyEpisodeSnapshot_ManualEpisodeUsesCurrentFileTemplate()
     {
         await using var h = await Harness.Create("unidentified.mkv");
         await h.Update(task =>
@@ -1471,7 +1496,61 @@ public sealed class DownloadFileServiceTests
         await h.Templates.SaveFileTemplateAsync("changed-{episode}");
         var view = await h.Service.ApplyAsync(h.Task.Id, 0,
                                               new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 4.5m));
-        Assert.Equal("中文作品 E04.5.mkv", view.Files.Single().CurrentPath);
+        Assert.Equal("changed-04.5.mkv", view.Files.Single().CurrentPath);
+    }
+
+    [Fact]
+    public async Task Preview_UsesCurrentFileTemplateOverSnapshot_AndKeepsTaskIngredientsUnchanged()
+    {
+        await using var h = await Harness.Create("episode.mkv");
+        var before = (await h.Load()).NamingIngredients;
+        await h.Templates.SaveFileTemplateAsync("new-{episode}");
+        var preview = await h.Service.PreviewAsync(h.Task.Id, 0,
+                                                   new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 7m));
+        Assert.Contains("new-07", preview.TargetPath);
+        Assert.DoesNotContain("E07", preview.TargetPath);
+        Assert.Equal(before, (await h.Load()).NamingIngredients);
+    }
+
+    [Fact]
+    public async Task Apply_UsesCurrentFileTemplateWithoutWritingItBackToTaskSnapshot()
+    {
+        await using var h = await Harness.Create("episode.mkv");
+        var before = (await h.Load()).NamingIngredients;
+        await h.Templates.SaveFileTemplateAsync("new-{episode}");
+        await h.Service.ApplyAsync(h.Task.Id, 0,
+                                   new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 7m));
+        var persisted = await h.Load();
+        Assert.Equal(before, persisted.NamingIngredients);
+        Assert.Equal("new-07.mkv", persisted.Files.Single().CurrentRelativePath);
+    }
+
+    [Fact]
+    public async Task Apply_RejectsWhenFileTemplateChangedAfterPreview()
+    {
+        await using var h = await Harness.Create("episode.mkv");
+        var preview = await h.Service.PreviewAsync(h.Task.Id, 0,
+                                                   new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 7m));
+        Assert.Equal("E{episode}", preview.FileTemplate);
+        await h.Templates.SaveFileTemplateAsync("changed-{episode}");
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Service.ApplyAsync(h.Task.Id, 0,
+                                 new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 7m),
+                                 expectedFileTemplate : preview.FileTemplate));
+    }
+
+    [Fact]
+    public async Task Preview_ReportsOtherSelectedFilesRenamedByTemplateChange()
+    {
+        await using var h = await Harness.Create("【喵萌奶茶屋】[Test Anime][01][1080p][简日双语].mkv",
+                                                 "【喵萌奶茶屋】[Test Anime][02][1080p][简日双语].mkv");
+        await h.Templates.SaveFileTemplateAsync("new-{episode}");
+        var preview = await h.Service.PreviewAsync(h.Task.Id, 0,
+                                                   new DownloadFileEditRequest(DownloadFileKind.Anime, Episode : 1m));
+        Assert.NotNull(preview.OtherRenames);
+        var other = Assert.Single(preview.OtherRenames);
+        Assert.Equal(1, other.Index);
+        Assert.EndsWith("new-02.mkv", other.TargetPath);
     }
 
     [Fact]
@@ -1905,6 +1984,8 @@ public sealed class DownloadFileServiceTests
             var parser = new AniParser();
             h.Directories = new DownloadDirectorySettingsStore(h.Settings);
             h.Templates   = new NamingTemplateStore(h.Settings);
+            // 文件名模板取自当前设置：与下方任务快照的 FileTemplate 保持一致，模拟任务登记时的设置。
+            await h.Templates.SaveFileTemplateAsync("E{episode}");
             h.Service = new DownloadFileService(h.Factory, h.Gate, h.Sessions, h.Directories, h.Templates,
                                                 new DownloadFileClassificationPolicy(parser), parser,
                                                 new ReleaseNamePreviewPolicy(),

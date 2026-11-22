@@ -493,9 +493,8 @@ public sealed class DownloadIntakeService(
         string? primaryTitle, TorrentFileAnalysis fileAnalysis, string? fallbackTitle, string? siteSource, string lastResort,
         ParseResult? primaryParsed, SubjectBinding subject, CancellationToken cancellationToken)
     {
-        var template     = await namingTemplateStore.GetAsync(cancellationToken);
-        var fileTemplate = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
-        var metadata     = await subjectCache.GetCachedAsync(subject.SubjectId, cancellationToken);
+        var template = await namingTemplateStore.GetAsync(cancellationToken);
+        var metadata = await subjectCache.GetCachedAsync(subject.SubjectId, cancellationToken);
         var bgmName      = metadata?.Name   ?? subject.DisplayName;
         var bgmNameCn    = metadata?.NameCn ?? string.Empty;
 
@@ -505,7 +504,7 @@ public sealed class DownloadIntakeService(
             var group  = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
             var ingredients =
                 NamingIngredientsComposer.Compose(await namingTemplateStore.GetCollectionTemplateAsync(cancellationToken),
-                                                  fileTemplate, parsed, collection.EpisodeText, group, siteSource,
+                                                  parsed, collection.EpisodeText, group, siteSource,
                                                   subject.SubjectId, bgmName, bgmNameCn,
                                                   metadata?.Platform ?? string.Empty, metadata?.AirDate);
             return (namingPolicy.Create(ingredients), ingredients.ToJson(), null);
@@ -529,14 +528,14 @@ public sealed class DownloadIntakeService(
             var seedTemplate = parsed.StartEpisode is { } start && parsed.EndEpisode > start
                 ? await namingTemplateStore.GetCollectionTemplateAsync(cancellationToken)
                 : template;
-            var ingredients = NamingIngredientsComposer.Compose(seedTemplate, fileTemplate, parsed, episodeText, group,
+            var ingredients = NamingIngredientsComposer.Compose(seedTemplate, parsed, episodeText, group,
                                                                 siteSource, subject.SubjectId, bgmName, bgmNameCn,
                                                                 metadata?.Platform ?? string.Empty, metadata?.AirDate);
             return (namingPolicy.Create(ingredients), ingredients.ToJson(), parsed);
         }
 
         var fallbackIngredients = new TorrentNamingIngredients(template, subject.DisplayName, string.Empty, 1,
-                                                               null, siteSource, FileTemplate : fileTemplate,
+                                                               null, siteSource,
                                                                BangumiId : subject.SubjectId, BangumiName : bgmName,
                                                                BangumiNameCn : bgmNameCn,
                                                                BangumiPlatform : metadata?.Platform,
@@ -1372,19 +1371,19 @@ public sealed class DownloadIntakeService(
         var fileAnalysis = AnalyzeTorrentFiles(infoHash, torrent, isMultiFile, config);
         if (CollectionNaming(fileAnalysis, item.SubjectId) is { } collection)
         {
-            var ingredients  = TorrentNamingIngredients.FromJson(namingIngredients)!;
-            var fileTemplate = ingredients.FileTemplate ?? ingredients.Template;
+            var ingredients = TorrentNamingIngredients.FromJson(namingIngredients)!;
             ingredients = ingredients with
             {
-                Template = await namingTemplateStore.GetCollectionTemplateAsync(cancellationToken),
-                EpisodeText = collection.EpisodeText,
-                FileTemplate = string.IsNullOrWhiteSpace(fileTemplate)
-                    ? ReleaseNamePreviewPolicy.DefaultFileTemplate
-                    : fileTemplate
+                Template    = await namingTemplateStore.GetCollectionTemplateAsync(cancellationToken),
+                EpisodeText = collection.EpisodeText
             };
             namingSnapshot    = namingPolicy.Create(ingredients);
             namingIngredients = ingredients.ToJson();
         }
+        // 文件名模板是全局实时规则，不随任务落库；订阅评估快照可能带旧字段，写入任务前一并清除。
+        if (TorrentNamingIngredients.FromJson(namingIngredients) is { } taskIngredients &&
+            taskIngredients.FileTemplate is not null)
+            namingIngredients = (taskIngredients with { FileTemplate = null }).ToJson();
 
         var settings          = await qbittorrentSettings.GetAsync(cancellationToken);
         var directorySettings = await GetDirectoriesAsync(cancellationToken);

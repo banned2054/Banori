@@ -38,7 +38,14 @@ public sealed record DownloadFilePreview(
     string  CurrentRootPath,
     string  TargetRootPath,
     bool    RequiresRootRename,
-    string? Warning);
+    string? Warning,
+    string  FileTemplate                         = "",
+    IReadOnlyList<OtherFileRename>? OtherRenames = null);
+
+/// <summary>
+///     本次编辑除当前行外，因命名模板或布局变化会一并改名的已选文件。仅供预览提示，不代替占用校验。
+/// </summary>
+public sealed record OtherFileRename(int Index, string CurrentPath, string TargetPath);
 
 /// <summary>
 ///     复用候选：某归档目标路径上已有同路径同大小的受管或外部种子文件，不要求存在替换关系。
@@ -58,8 +65,13 @@ public interface IDownloadFileService
     Task<DownloadFilePreview> PreviewAsync(
         Guid taskId, int index, DownloadFileEditRequest request, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    ///     expectedFileTemplate 为预览时记录的模板；应用前若当前模板已变化则拒绝，避免预览与实际改名不一致。
+    ///     null 表示调用方不要求一致性校验。
+    /// </summary>
     Task<DownloadTaskFilesView> ApplyAsync(
-        Guid taskId, int index, DownloadFileEditRequest request, CancellationToken cancellationToken = default);
+        Guid taskId, int index, DownloadFileEditRequest request,
+        CancellationToken cancellationToken = default, string? expectedFileTemplate = null);
 
     /// <summary>
     ///     重新核对受阻归档，按同一检查和迁移链重试，不跳过外部占用或文件身份校验。

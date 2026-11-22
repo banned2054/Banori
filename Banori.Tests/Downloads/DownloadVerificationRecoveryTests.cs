@@ -502,6 +502,43 @@ public sealed partial class DownloadVerificationTests
         Assert.Equal(temporary, harness.Store.Torrents[task.InfoHash].SavePath);
     }
 
+    [Fact]
+    public async Task Archive_FileTemplateChanged_StillCompletesFromRegisteredJournal()
+    {
+        using var harness = await VerificationHarness.CreateAsync();
+        var       taskId  = await harness.CreateUploadAsync(SingleFileTorrent());
+        var       task    = await harness.GetTaskAsync(taskId);
+        await harness.ReconcileAsync();
+        var temporary = TaskRootOf(harness, taskId);
+        harness.Store.Torrents[task.InfoHash] = harness.Store.Torrents[task.InfoHash] with { SavePath = temporary };
+        await using (var db = await harness.CreateDbContextAsync())
+        {
+            var tracked = await db.DownloadTasks.SingleAsync(t => t.Id == taskId);
+            tracked.SavePath = temporary;
+            await db.SaveChangesAsync();
+        }
+
+        await harness.ReconcileAsync();
+        harness.Store.DeferLocation = true;
+        CompleteTorrent(harness, task.InfoHash);
+        await harness.ReconcileAsync();
+        var logged = await harness.GetTaskAsync(taskId);
+        Assert.NotNull(logged.PendingSavePath);
+        Assert.NotEqual(temporary, logged.PendingSavePath); // 确认是跨根归档，会进入已登记目标的结构校验。
+
+        // 跨根归档已在日志中登记目标；此时改全局文件模板不影响既有操作，只影响下一份计划。
+        await harness.SaveFileNamingTemplateAsync("changed-{episode}");
+        harness.Store.PendingLocations.Clear();
+        harness.Store.Torrents[task.InfoHash] = harness.Store.Torrents[task.InfoHash] with { IsMoving = false };
+        await harness.ReconcileAsync();
+        harness.Store.CompleteMoves();
+        await harness.ReconcileAsync();
+
+        var done = await harness.GetTaskAsync(taskId);
+        Assert.NotEqual(DownloadTaskStatus.Failed, done.Status);
+        Assert.Null(done.PendingSavePath);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

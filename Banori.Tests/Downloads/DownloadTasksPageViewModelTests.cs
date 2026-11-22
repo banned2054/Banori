@@ -678,7 +678,8 @@ public sealed class DownloadTasksPageViewModelTests
                 : Task.FromException<DownloadFilePreview>(PreviewException);
 
         public Task<DownloadTaskFilesView> ApplyAsync(
-            Guid taskId, int index, DownloadFileEditRequest request, CancellationToken cancellationToken = default) =>
+            Guid taskId, int index, DownloadFileEditRequest request,
+            CancellationToken cancellationToken = default, string? expectedFileTemplate = null) =>
             Task.FromResult(FilesView);
 
         public Task RetryArchiveAsync(Guid taskId, CancellationToken cancellationToken = default) =>
