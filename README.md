@@ -12,7 +12,7 @@
 <br>
 
 <div>
-    <a href="https://github.com/banned2054/Banori/releases/tag/v0.4.0"><img alt="Version 0.4.0" src="https://img.shields.io/badge/version-0.4.0-blue"></a>
+    <a href="https://github.com/banned2054/Banori/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/banned2054/Banori?sort=semver&label=version&color=blue"></a>
     <a href="https://dotnet.microsoft.com/"><img alt=".NET 11" src="https://img.shields.io/badge/.NET-11.0-512BD4"></a>
     <a href="https://learn.microsoft.com/aspnet/core/blazor/"><img alt="Blazor" src="https://img.shields.io/badge/Blazor-Interactive_Server-7B2CBF"></a>
     <a href="https://learn.microsoft.com/ef/core/"><img alt="EF Core" src="https://img.shields.io/badge/EF_Core-11-2EA44F"></a>
@@ -80,13 +80,13 @@ docker compose pull
 docker compose up -d
 ```
 
-数据库结构会在启动时自动更新，无需手动迁移。0.4.0 会新增缺种巡检、已发布成片布局与未确认提交根台账字段；不要让新旧实例同时写入同一数据库。回退时恢复升级前的数据库和配套配置、密钥，不能只切换回旧镜像。具体变化与验收情况见 [v0.4.0 发布说明](Docs/RELEASE_NOTES_v0.4.0.md)；历史版本见 [更新日志](Docs/CHANGELOG.md)。
+数据库结构会在启动时自动更新，无需手动迁移。0.4.1 无数据库结构迁移；不要让新旧实例同时写入同一数据库。回退时恢复升级前的数据库和配套配置、密钥，不能只切换回旧镜像。各版本的具体变化与验收情况见 [更新日志](Docs/CHANGELOG.md)。
 
-GitHub Actions 在发布 GitHub Release 或手动运行 `Publish container image` 工作流时构建并推送镜像；普通分支 push 或单独推送标签不会触发发布。Release 按 Git 标签名生成同名版本镜像（本项目使用 `v*`，例如 `v0.4.0`），并按 [metadata-action 的默认标签规则](https://github.com/docker/metadata-action#latest-tag) 同时更新 `latest`；在默认分支手动运行也会更新 `latest`。工作流还会生成 `sha-` 前缀的提交标签。例如：
+GitHub Actions 在发布 GitHub Release 或手动运行 `Publish container image` 工作流时构建并推送镜像；普通分支 push 或单独推送标签不会触发发布。Release 按 Git 标签名生成同名版本镜像（本项目使用 `v*`，例如 `v0.4.1`），并按 [metadata-action 的默认标签规则](https://github.com/docker/metadata-action#latest-tag) 同时更新 `latest`；在默认分支手动运行也会更新 `latest`。工作流还会生成 `sha-` 前缀的提交标签。例如：
 
 ```text
 ghcr.io/banned2054/banori:latest
-ghcr.io/banned2054/banori:v0.4.0
+ghcr.io/banned2054/banori:v0.4.1
 ```
 
 ### 数据持久化
