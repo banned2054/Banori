@@ -1721,10 +1721,24 @@ public sealed partial class DownloadService(
         candidates = candidates.GroupBy(candidate => candidate.FileIndex)
                                .Select(group => group.First()).ToList();
 
-        var candidateRoot = DownloadPathNamePolicy.NormalizePath(task.DownloadRootPath ?? task.SavePath);
-
         var withFiles = await LoadTaskWithFilesAsync(task.Id, ct);
         if (withFiles is null) return null;
+
+        var hasReplacement = await downloadFileService.HasReplacementAsync(task.Id, ct);
+        // 与 SubmitAsync 同一口径：无 Seed、非替换的纯正片任务以媒体目录为正式根。复用校验必须
+        // 使用这个根，否则 addRoot 会被 CandidateRoot 拉回全局下载根，文件相对路径带上媒体目录前缀。
+        var mediaRoot = task.ReplacesTaskId is null                       &&
+                        task.CompletedAtUtc is null                       &&
+                        !hasReplacement                                   &&
+                        !string.IsNullOrWhiteSpace(task.DownloadRootPath) &&
+                        !string.IsNullOrWhiteSpace(task.MediaDirectory)   &&
+                        withFiles.Files.Count > 0                         &&
+                        withFiles.Files.All(file => file.Kind != DownloadFileKind.Seed)
+            ? DownloadPathNamePolicy.JoinSavePath(task.DownloadRootPath!, task.MediaDirectory!)
+            : null;
+        var candidateRoot = mediaRoot ??
+                            DownloadPathNamePolicy.NormalizePath(task.DownloadRootPath ?? task.SavePath);
+
         if (await InitialLayoutConflictsAsync(session, withFiles, candidateRoot, ct,
                                               candidates.GroupBy(item => item.AbsolutePath,
                                                                  StringComparer.OrdinalIgnoreCase)
@@ -1733,8 +1747,7 @@ public sealed partial class DownloadService(
             throw new TargetPathOccupiedException("校验任务的原始布局存在非候选占用，无法安全添加。");
         // 曾完成的任务重下时旧成片仍占用归档目标：非候选文件必须落在任务专属暂存路径，
         // 未被证实可复用前不得写入正式目标。
-        var replacing = task.CompletedAtUtc is not null ||
-                        await downloadFileService.HasReplacementAsync(task.Id, ct);
+        var replacing = task.CompletedAtUtc is not null || hasReplacement;
 
         var files = new List<DownloadVerificationMapping>();
         foreach (var file in withFiles.Files)

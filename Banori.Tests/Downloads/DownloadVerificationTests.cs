@@ -201,7 +201,8 @@ public sealed partial class DownloadVerificationTests
         var       task    = await harness.GetTaskAsync(taskId);
         var       target  = await ArchivalTargetAsync(harness, taskId);
         var (externalHash, externalFile) = SeedExternalOccupant(harness, target, 1024);
-        var candidateRoot = DownloadRoot;
+        var candidateRoot = DownloadRoot; // 尚未发布的成片根。
+        var addRoot       = MediaRoot;    // 无 Seed 任务的校验添加根。
 
         // 意图先于添加请求落库（持久化意图先于远端请求约束）。
         harness.Factory.SessionConfigurator = session =>
@@ -217,7 +218,7 @@ public sealed partial class DownloadVerificationTests
 
         await harness.ReconcileAsync(); // 提交：候选根停止添加，意图已先行落库。
         var add = Assert.Single(harness.Store.AddCalls);
-        Assert.Equal(candidateRoot, add.SavePath);
+        Assert.Equal(addRoot, add.SavePath);
 
         // 校验阶段进入 Checking：观察到 Checking 后才允许读取结果（fake 显式推进）。
         harness.Store.RecheckBehavior = FakeRecheckBehavior.EnterChecking;
@@ -226,6 +227,10 @@ public sealed partial class DownloadVerificationTests
         var mapping = await harness.GetTaskAsync(taskId);
         var intent  = DownloadVerificationIntent.FromJson(mapping.VerificationIntent);
         Assert.NotNull(intent);
+        Assert.Equal(addRoot, intent.CandidateRoot);
+        // 无 Seed 任务的校验根已在媒体目录：相对路径不能再带 Media/Anime 前缀。
+        Assert.All(harness.Store.RenameFileCalls,
+                   call => Assert.DoesNotContain("Media/Anime/", call.NewPath, StringComparison.Ordinal));
         // 请求发出后立即观察：快速校验可能在下一个采样间隔前就结束，不能等空闲对账的第一采。
         Assert.Equal(DownloadVerificationStep.Observing, intent.Step);
         Assert.Equal(1, intent.IssuedCount);
@@ -257,7 +262,7 @@ public sealed partial class DownloadVerificationTests
         {
             var file = await db.DownloadTaskFiles.AsNoTracking().SingleAsync(value => value.DownloadTaskId == taskId);
             Assert.Equal(DownloadFileVerificationOutcomes.ReusedVerified, file.VerificationOutcome);
-            Assert.StartsWith(candidateRoot, file.VerificationPath, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(DownloadPathNamePolicy.NormalizePath(target), file.VerificationPath);
         }
 
         await harness.ReconcileAsync(); // 完成轮：候选已在最终路径——无需迁移、无需 .replaced、无归档待核对。

@@ -443,7 +443,7 @@ public sealed class DownloadSchedulingTests
 
         var decision = DecisionOf(await harness.GetTaskAsync(taskId));
         Assert.Equal(DownloadPathDecisionKinds.ReuseVerification, decision.Kind);
-        Assert.Equal(DownloadRoot, decision.Root);
+        Assert.Equal(MediaRoot, decision.Root);
         Assert.Contains("候选", decision.Reason);
     }
 
