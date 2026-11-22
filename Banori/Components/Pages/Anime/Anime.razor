@@ -6,7 +6,9 @@
 @using Banori.Features.Downloads
 @implements IDisposable
 
-@inject AnimeQueries Queries
+@inject AnimeQueries                  Queries
+@inject AnimeSortStore                SortStore
+@inject ILogger<AnimePageViewModel>   Logger
 
 <PageTitle>动画 - Banori</PageTitle>
 
@@ -127,7 +129,7 @@ else
 
 	protected override void OnInitialized()
 	{
-		_vm = new AnimePageViewModel(Queries);
+		_vm = new AnimePageViewModel(Queries, SortStore, Logger);
 	}
 
 	protected override Task OnInitializedAsync() => RunAsync(_vm.LoadAsync);
@@ -151,7 +153,7 @@ else
 
 	private async Task SelectSortAsync(AnimeSortField field)
 	{
-		_vm.SetSort(field);
+		await _vm.SetSortAsync(field);
 		await _sortTrigger.FocusAsync();
 	}
 
