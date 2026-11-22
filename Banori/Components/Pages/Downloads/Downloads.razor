@@ -170,7 +170,9 @@ else
 			}
 			@foreach (var task in _vm.Tasks)
 			{
-				<tr @key="task.Id">
+				<tr @key="task.Id" class="@(IsSelected(task.Id) ? "table-active" : null)"
+				    @onclick="() => SelectTask(task)"
+				    @oncontextmenu="e => OpenContextMenu(e, task)" @oncontextmenu:preventDefault="@(!_vm.BatchMode)">
 					@if (_vm.BatchMode)
 					{
 						<td>
@@ -267,38 +269,7 @@ else
 					<td class="text-end">
 						@if (!_vm.BatchMode)
 						{
-							@switch (task.Status)
-							{
-								// 启动未恢复的人工入口：不重新校验、不隔离、不重新下载。
-								case DownloadTaskStatus.Downloading when task.RunState == DownloadRunStates.FailedRetryable :
-									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ResumeRunAsync(task.Id)">继续下载</button>
-									break;
-								case DownloadTaskStatus.Downloading :
-									<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => PauseAsync(task.Id)">暂停</button>
-									break;
-								case DownloadTaskStatus.Paused when task.Phase == DownloadDisplayPhase.VerificationUnconfirmed :
-									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ReverifyAsync(task.Id)">重新校验</button>
-									break;
-								case DownloadTaskStatus.Paused when task.IsUserPaused :
-									<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => ResumeAsync(task.Id)">恢复</button>
-									break;
-								case DownloadTaskStatus.Completed when task.IsTorrentMissing :
-									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RedownloadAsync(task.Id)">重新下载</button>
-									break;
-								case DownloadTaskStatus.Completed when task.RunState is DownloadRunStates.FailedRetryable or DownloadRunStates.DownloaderStopped :
-									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ResumeRunAsync(task.Id)"> 恢复做种 </button>
-									break;
-								case DownloadTaskStatus.Failed or DownloadTaskStatus.Lost :
-									<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RetryAsync(task.Id)">重试</button>
-									break;
-							}
-
-							@if (task.ArchiveReviewReason is not null && task.Status == DownloadTaskStatus.Completed)
-							{
-								<button class="btn btn-sm btn-outline-warning ms-1" disabled="@_vm.Busy" @onclick="() => RetryArchiveAsync(task.Id)">重新核对归档</button>
-							}
-
-							<button class="btn btn-sm btn-outline-danger ms-1" disabled="@_vm.Busy" @onclick="() => OpenDeletePanelAsync(task)">删除</button>
+							<div class="d-flex justify-content-end gap-1">@TaskActions(task)</div>
 						}
 					</td>
 				</tr>
@@ -315,12 +286,47 @@ else
 			</tbody>
 		</table>
 	</div>
+	@if (_vm.TotalPages > 1)
+	{
+		<div class="d-flex justify-content-center align-items-center gap-2 mt-3">
+			<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(!_vm.HasPreviousPage)"
+			        @onclick="() => _vm.GoToPageAsync(_vm.PageNumber - 1)">
+				上一页
+			</button>
+			<span class="small text-body-secondary">第 @_vm.PageNumber / @_vm.TotalPages 页</span>
+			<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(!_vm.HasNextPage)"
+			        @onclick="() => _vm.GoToPageAsync(_vm.PageNumber + 1)">
+				下一页
+			</button>
+			<span class="small text-body-secondary">共 @_vm.TotalCount 个任务 · 本页 @_vm.Tasks.Count 个</span>
+		</div>
+	}
 }
 
 @if (!string.IsNullOrEmpty(_vm.Message))
 {
 	<div class="alert @(_vm.Succeeded ? "alert-success" : "alert-danger") mt-3" role="status">
 		@_vm.Message
+	</div>
+}
+
+@if (_contextMenuOpen && SelectedTask is { } contextTask)
+{
+	<div style="position: fixed; inset: 0; z-index: 1079;"
+	     @onclick="CloseContextMenu" @oncontextmenu="CloseContextMenu" @oncontextmenu:preventDefault="true"></div>
+	<div @ref="_contextMenuRef" tabindex="-1" class="dropdown-menu d-block show shadow"
+	     @onclick="CloseContextMenu" @onkeydown="OnContextMenuKeyDown"
+	     style="position: fixed; left: @(_contextMenuX)px; top: @(_contextMenuY)px; z-index: 1080; min-width: 11rem;">
+		<div class="dropdown-header text-truncate">@DownloadStatusTitle(contextTask)</div>
+		<div class="d-grid gap-1 px-2 py-1">
+			@TaskActions(contextTask)
+			<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy"
+			        @onclick="() => ToggleFilesAsync(contextTask.Id)">
+				@(_vm.FileState(contextTask.Id).Expanded ? "收起文件" : "展开文件")
+			</button>
+			<button type="button" class="btn btn-sm btn-outline-danger" disabled="@_vm.Busy"
+			        @onclick="() => OpenDeletePanelAsync(contextTask)">删除</button>
+		</div>
 	</div>
 }
 
@@ -438,6 +444,49 @@ else
 	private          Task?                      _refreshLoop;
 	private          bool                       _statusPanelOpen;
 	private          bool                       _languagePanelOpen;
+	private          Guid?                      _selectedTaskId;
+	private          bool                       _contextMenuOpen;
+	private          double                     _contextMenuX;
+	private          double                     _contextMenuY;
+	private          ElementReference           _contextMenuRef;
+	private          bool                       _focusContextMenu;
+
+	private DownloadTaskView? SelectedTask =>
+		_selectedTaskId is { } id ? _vm.Tasks.FirstOrDefault(task => task.Id == id) : null;
+
+	/// <summary>行内操作列与右键菜单共用同一组按钮，避免两处状态判断走偏。</summary>
+	private RenderFragment<DownloadTaskView> TaskActions => task => @<text>
+		@switch (task.Status)
+		{
+			// 启动未恢复的人工入口：不重新校验、不隔离、不重新下载。
+			case DownloadTaskStatus.Downloading when task.RunState == DownloadRunStates.FailedRetryable:
+				<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ResumeRunAsync(task.Id)">继续下载</button>
+				break;
+			case DownloadTaskStatus.Downloading:
+				<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => PauseAsync(task.Id)">暂停</button>
+				break;
+			case DownloadTaskStatus.Paused when task.Phase == DownloadDisplayPhase.VerificationUnconfirmed:
+				<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ReverifyAsync(task.Id)">重新校验</button>
+				break;
+			case DownloadTaskStatus.Paused when task.IsUserPaused:
+				<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => ResumeAsync(task.Id)">恢复</button>
+				break;
+			case DownloadTaskStatus.Completed when task.IsTorrentMissing:
+				<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RedownloadAsync(task.Id)">重新下载</button>
+				break;
+			case DownloadTaskStatus.Completed when task.RunState is DownloadRunStates.FailedRetryable or DownloadRunStates.DownloaderStopped:
+				<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ResumeRunAsync(task.Id)">恢复做种</button>
+				break;
+			case DownloadTaskStatus.Failed or DownloadTaskStatus.Lost:
+				<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RetryAsync(task.Id)">重试</button>
+				break;
+		}
+
+		@if (task.ArchiveReviewReason is not null && task.Status == DownloadTaskStatus.Completed)
+		{
+			<button class="btn btn-sm btn-outline-warning" disabled="@_vm.Busy" @onclick="() => RetryArchiveAsync(task.Id)">重新核对归档</button>
+		}
+	</text>;
 
 	protected override void OnInitialized()
 	{
@@ -490,6 +539,51 @@ else
 		catch (ObjectDisposedException)
 		{
 		}
+	}
+
+	private bool IsSelected(Guid taskId)
+	{
+		return !_vm.BatchMode && _selectedTaskId == taskId;
+	}
+
+	private void SelectTask(DownloadTaskView task)
+	{
+		if (_vm.BatchMode) return;
+
+		_selectedTaskId  = task.Id;
+		_contextMenuOpen = false;
+	}
+
+	private void OpenContextMenu(MouseEventArgs e, DownloadTaskView task)
+	{
+		if (_vm.BatchMode) return;
+
+		_selectedTaskId   = task.Id;
+		_contextMenuOpen  = true;
+		_contextMenuX     = e.ClientX;
+		_contextMenuY     = e.ClientY;
+		_focusContextMenu = true;
+	}
+
+	private void CloseContextMenu()
+	{
+		_contextMenuOpen = false;
+	}
+
+	private void OnContextMenuKeyDown(KeyboardEventArgs e)
+	{
+		if (e.Key == "Escape")
+		{
+			CloseContextMenu();
+		}
+	}
+
+	protected override async Task OnAfterRenderAsync(bool firstRender)
+	{
+		if (!_focusContextMenu) return;
+
+		_focusContextMenu = false;
+		await _contextMenuRef.FocusAsync();
 	}
 
 	private Task ToggleFilesAsync(Guid taskId)
