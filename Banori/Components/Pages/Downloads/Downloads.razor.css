@@ -2,6 +2,11 @@
     --downloads-pane-height: 300px;
 }
 
+.downloads-top-bar {
+    flex: 0 0 auto;
+    margin-bottom: 0.75rem;
+}
+
 .downloads-workspace {
     display: flex;
     flex-direction: column;
@@ -12,6 +17,7 @@
 
 .downloads-toolbar {
     flex: 0 0 auto;
+    margin-bottom: 0.75rem;
 }
 
 .downloads-message {
@@ -32,6 +38,26 @@
 
 .downloads-table thead th {
     white-space: nowrap;
+}
+
+.downloads-sort-header {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.downloads-sort-header:hover {
+    color: var(--bs-primary);
+}
+
+.downloads-sort-header.is-active {
+    color: var(--bs-primary);
 }
 
 .downloads-table .downloads-anime-title {
@@ -70,16 +96,22 @@
 }
 
 .downloads-table .downloads-progress-cell {
-    min-width: 7.5rem;
-    width: 7.5rem;
+    min-width: 8.5rem;
+    width: 8.5rem;
 }
 
-.downloads-table .downloads-progress-cell .progress {
-    margin-bottom: 0.15rem;
+.downloads-table .downloads-progress-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
 }
 
-.downloads-table .downloads-progress-cell .small {
-    display: block;
+.downloads-table .downloads-progress-wrap .progress {
+    min-width: 3.5rem;
+}
+
+.downloads-table .downloads-progress-wrap .small {
+    flex: none;
     white-space: nowrap;
 }
 
@@ -136,7 +168,7 @@
 
 @media (min-width: 641px) {
     .downloads-page {
-        height: calc(100dvh - 4.6rem);
+        height: calc(100dvh - 5.6rem);
         display: flex;
         flex-direction: column;
         min-height: 0;

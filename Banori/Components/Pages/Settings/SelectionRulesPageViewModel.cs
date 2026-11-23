@@ -166,11 +166,15 @@ public sealed class SelectionRulesPageViewModel(
         Move(Draft.GroupOrder, index, offset);
     }
 
+    public IEnumerable<EnumLanguage> AvailableLanguages =>
+        SelectionRuleDisplay.LanguageChoices.Where(language => !Draft.LanguageOrder.Contains(language));
+
     public void AddLanguage()
     {
         if (Draft.NewLanguage is not { } language) return;
 
-        Draft.LanguageOrder.Add(language);
+        if (!Draft.LanguageOrder.Contains(language)) Draft.LanguageOrder.Add(language);
+
         Draft.NewLanguage = null;
     }
 

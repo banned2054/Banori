@@ -1,3 +1,5 @@
+using Banned.AniParser.Models.Enums;
+using Banori.Core.Rules.Selection;
 using Banori.Core.Torrents;
 using Banori.Data;
 using Banori.Features.Settings;
@@ -12,7 +14,8 @@ namespace Banori.Features.Downloads;
 /// <summary>下载任务列表的只读投影查询：筛选与计数在 SQL 端完成后分页，展示不依赖登记编排与下载执行的客户端。</summary>
 public sealed class DownloadTaskQueries(
     IDbContextFactory<ApplicationDbContext> dbContextFactory,
-    ManageQbittorrentSettings?              qbittorrentSettings = null)
+    ManageQbittorrentSettings?              qbittorrentSettings   = null,
+    ManageSelectionRuleSettings?            selectionRuleSettings = null)
 {
     /// <summary>LIKE 转义符：用户输入中的 %、_ 与反斜杠按字面匹配，不当作通配符。</summary>
     private const string LikeEscape = "\\";
@@ -47,13 +50,40 @@ public sealed class DownloadTaskQueries(
         var settings = qbittorrentSettings is null ? null : await qbittorrentSettings.GetAsync(cancellationToken);
         var downloaderReady = settings is { Enabled: true, IsConfigured: true };
 
-        // SQLite 不支持 DateTimeOffset 的 ORDER BY 与比较，无法纯 SQL 分页：取匹配行的轻量键集
-        // （Id + 创建时间）内存稳定排序后切出当页，再按 Id 取回整行。筛选与计数始终在 SQL 端完成。
-        var keys = await query.Select(task => new { task.Id, task.CreatedAtUtc })
-                              .ToListAsync(cancellationToken);
-        var pageIds = keys.OrderByDescending(key => key.CreatedAtUtc)
-                          .ThenByDescending(key => key.Id)
-                          .Skip((page - 1) * pageSize)
+        // SQLite 不支持 DateTimeOffset 的 ORDER BY 与比较，且默认排序需结合择优规则，
+        // 取匹配行的轻量键集在内存中按多列优先级稳定排序后切出当页，再按 Id 取回整行。筛选与计数始终在 SQL 端完成。
+        var selectionRules = selectionRuleSettings is null
+            ? null
+            : await selectionRuleSettings.GetAsync(cancellationToken);
+        var rawKeys = await query.Select(task => new
+                                  {
+                                      task.Id,
+                                      SubjectName = task.Subject == null
+                                          ? null
+                                          : string.IsNullOrWhiteSpace(task.Subject.NameCn)
+                                              ? task.Subject.Name
+                                              : task.Subject.NameCn,
+                                      task.NamingSnapshot,
+                                      FeedTitle = task.FeedItem == null ? null : task.FeedItem.Title,
+                                      task.Episode,
+                                      task.NamingIngredients,
+                                      task.Version,
+                                      task.CreatedAtUtc
+                                  })
+                                  .ToListAsync(cancellationToken);
+        var keys = rawKeys.Select(row => BuildSortKey(row.Id,
+                                                      row.SubjectName,
+                                                      row.NamingSnapshot,
+                                                      row.FeedTitle,
+                                                      row.Episode,
+                                                      row.NamingIngredients,
+                                                      row.Version,
+                                                      row.CreatedAtUtc,
+                                                      selectionRules))
+                          .ToList();
+        var comparer = new SortKeyComparer(filter.SortColumn, filter.SortDescending, selectionRules);
+        keys.Sort(comparer);
+        var pageIds = keys.Skip((page - 1) * pageSize)
                           .Take(pageSize)
                           .Select(key => key.Id)
                           .ToArray();
@@ -334,5 +364,193 @@ public sealed class DownloadTaskQueries(
             HasPendingFileMoves = task.PendingSavePath is not null ||
                                   task.Files.Any(file => file.PendingRenameTo is not null)
         };
+    }
+
+    public static bool DefaultSortDescending(DownloadTaskSortColumn column) => column switch
+    {
+        DownloadTaskSortColumn.Version   => true,
+        DownloadTaskSortColumn.CreatedAt => true,
+        _                                => false
+    };
+
+    private static SortKey BuildSortKey(
+        Guid                 id,
+        string?              subjectName,
+        string?              namingSnapshot,
+        string?              feedTitle,
+        decimal?             episode,
+        string?              namingIngredients,
+        int                  version,
+        DateTimeOffset       createdAtUtc,
+        SelectionRuleConfig? rules)
+    {
+        var animeName = !string.IsNullOrWhiteSpace(subjectName)    ? subjectName :
+                        !string.IsNullOrWhiteSpace(namingSnapshot) ? namingSnapshot :
+                        !string.IsNullOrWhiteSpace(feedTitle)      ? feedTitle : string.Empty;
+
+        var ingredients = TorrentNamingIngredients.FromJson(namingIngredients);
+        var rawGroup    = ingredients?.Group;
+        var rawLanguage = ingredients?.Language;
+        var group = string.IsNullOrWhiteSpace(rawGroup) ||
+                    string.Equals(rawGroup, rawLanguage, StringComparison.OrdinalIgnoreCase)
+            ? null
+            : rawGroup;
+        var language = string.IsNullOrWhiteSpace(rawLanguage) ? null : rawLanguage;
+
+        var groupRank    = group is null ? int.MaxValue : FindGroupRank(group, rules);
+        var languageRank = language is null ? int.MaxValue : FindLanguageRank(language, rules);
+        return new SortKey(id, animeName, episode, group, groupRank, language, languageRank, version, createdAtUtc);
+    }
+
+    private static int FindGroupRank(string group, SelectionRuleConfig? rules)
+    {
+        if (rules is null) return int.MaxValue;
+
+        if (rules.Mode == SelectionMode.Independent)
+        {
+            for (var index = 0; index < rules.GroupOrder.Count; index++)
+                if (string.Equals(rules.GroupOrder[index], group, StringComparison.OrdinalIgnoreCase))
+                    return index;
+
+            return int.MaxValue;
+        }
+
+        var rank = 0;
+        foreach (var entry in rules.CombinedEntries)
+        {
+            if (entry.Group is null) continue;
+            if (string.Equals(entry.Group, group, StringComparison.OrdinalIgnoreCase)) return rank;
+            rank++;
+        }
+
+        return int.MaxValue;
+    }
+
+    private static int FindLanguageRank(string languageText, SelectionRuleConfig? rules)
+    {
+        if (rules is null || !Enum.TryParse<EnumLanguage>(languageText, ignoreCase: true, out var language))
+            return int.MaxValue;
+
+        if (rules.Mode == SelectionMode.Independent)
+        {
+            for (var index = 0; index < rules.LanguageOrder.Count; index++)
+                if (LanguageComposition.Matches(rules.LanguageOrder[index], language, rules.LanguageMatch))
+                    return index;
+
+            return int.MaxValue;
+        }
+
+        var rank = 0;
+        foreach (var entry in rules.CombinedEntries)
+        {
+            if (entry.Language is null) continue;
+            if (LanguageComposition.Matches(entry.Language.Value, language, rules.LanguageMatch)) return rank;
+            rank++;
+        }
+
+        return int.MaxValue;
+    }
+
+    private sealed record SortKey(
+        Guid           Id,
+        string         AnimeName,
+        decimal?       Episode,
+        string?        Group,
+        int            GroupRank,
+        string?        Language,
+        int            LanguageRank,
+        int            Version,
+        DateTimeOffset CreatedAtUtc);
+
+    private sealed class SortKeyComparer : IComparer<SortKey>
+    {
+        private static readonly DownloadTaskSortColumn[] DefaultOrder =
+        [
+            DownloadTaskSortColumn.AnimeName,
+            DownloadTaskSortColumn.Episode,
+            DownloadTaskSortColumn.SubtitleGroup,
+            DownloadTaskSortColumn.Language,
+            DownloadTaskSortColumn.Version,
+            DownloadTaskSortColumn.CreatedAt
+        ];
+
+        private readonly (DownloadTaskSortColumn Column, bool Descending)[] _steps;
+
+        public SortKeyComparer(
+            DownloadTaskSortColumn primaryColumn, bool? primaryDescending, SelectionRuleConfig? _)
+        {
+            var steps = new List<(DownloadTaskSortColumn, bool)>(DefaultOrder.Length)
+            {
+                (primaryColumn, primaryDescending ?? DefaultSortDescending(primaryColumn))
+            };
+            foreach (var column in DefaultOrder)
+                if (column != primaryColumn)
+                    steps.Add((column, DefaultSortDescending(column)));
+
+            _steps = [.. steps];
+        }
+
+        public int Compare(SortKey? left, SortKey? right)
+        {
+            if (ReferenceEquals(left, right)) return 0;
+            if (left is null) return -1;
+            if (right is null) return 1;
+
+            foreach (var (column, descending) in _steps)
+            {
+                var cmp = CompareColumn(left, right, column, descending);
+                if (cmp != 0) return cmp;
+            }
+
+            return right.Id.CompareTo(left.Id);
+        }
+
+        private static int CompareColumn(
+            SortKey left, SortKey right, DownloadTaskSortColumn column, bool descending)
+        {
+            var cmp = column switch
+            {
+                DownloadTaskSortColumn.AnimeName => CompareNullableString(left.AnimeName, right.AnimeName, descending),
+                DownloadTaskSortColumn.Episode   => CompareNullableDecimal(left.Episode, right.Episode, descending),
+                DownloadTaskSortColumn.SubtitleGroup =>
+                    CompareRankedText(left.Group, left.GroupRank, right.Group, right.GroupRank, descending),
+                DownloadTaskSortColumn.Language =>
+                    CompareRankedText(left.Language, left.LanguageRank, right.Language, right.LanguageRank, descending),
+                DownloadTaskSortColumn.Version   => Flip(left.Version.CompareTo(right.Version), descending),
+                DownloadTaskSortColumn.CreatedAt => Flip(left.CreatedAtUtc.CompareTo(right.CreatedAtUtc), descending),
+                _                                => 0
+            };
+            return cmp;
+        }
+
+        private static int CompareNullableString(string left, string right, bool descending)
+        {
+            if (left.Length == 0 && right.Length == 0) return 0;
+            if (left.Length == 0) return 1;
+            if (right.Length == 0) return -1;
+            return Flip(StringComparer.OrdinalIgnoreCase.Compare(left, right), descending);
+        }
+
+        private static int CompareNullableDecimal(decimal? left, decimal? right, bool descending)
+        {
+            if (left is null && right is null) return 0;
+            if (left is null) return 1;
+            if (right is null) return -1;
+            return Flip(left.Value.CompareTo(right.Value), descending);
+        }
+
+        private static int CompareRankedText(
+            string? leftText, int leftRank, string? rightText, int rightRank, bool descending)
+        {
+            if (leftText is null && rightText is null) return 0;
+            if (leftText is null) return 1;
+            if (rightText is null) return -1;
+
+            var rankCmp = leftRank.CompareTo(rightRank);
+            var cmp     = rankCmp != 0 ? rankCmp : StringComparer.OrdinalIgnoreCase.Compare(leftText, rightText);
+            return Flip(cmp, descending);
+        }
+
+        private static int Flip(int cmp, bool descending) => descending ? -cmp : cmp;
     }
 }

@@ -10,12 +10,8 @@
 
 <PageTitle>通知投递 - Banori</PageTitle>
 
-<div class="d-flex justify-content-between align-items-start mb-3">
-	<div>
-		<h1 class="mb-1">通知投递</h1>
-		<div class="text-body-secondary">按渠道独立记录发送结果；失败自动退避重试，重试用尽后可在此人工重试。远端已接收而响应丢失时可能重复投递。</div>
-	</div>
-	<button class="btn btn-outline-secondary" disabled="@(!_vm.Loaded || _vm.Retrying)" @onclick="RefreshAsync">刷新</button>
+<div class="d-flex justify-content-end align-items-center mb-3">
+	<button class="btn btn-outline-secondary flex-shrink-0" disabled="@(!_vm.Loaded || _vm.Retrying)" @onclick="RefreshAsync">刷新</button>
 </div>
 
 @if (!_vm.Loaded)

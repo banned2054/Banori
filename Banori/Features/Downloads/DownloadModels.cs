@@ -1232,6 +1232,17 @@ public static class DownloadStatusFilter
 }
 
 /// <summary>下载任务列表查询条件：搜索关键词、状态分组多选与字幕语言多选；条件之间 AND，同组多选内 OR。</summary>
+/// <summary>下载任务列表支持排序的列；来源、状态、进度与完成时间不参与排序。</summary>
+public enum DownloadTaskSortColumn
+{
+    AnimeName,
+    Episode,
+    SubtitleGroup,
+    Language,
+    Version,
+    CreatedAt
+}
+
 public sealed record DownloadTaskListFilter
 {
     /// <summary>默认每页行数；查询层钳制到 1..200。</summary>
@@ -1249,6 +1260,12 @@ public sealed record DownloadTaskListFilter
 
     /// <summary>字幕语言多选（空字符串哨兵 = 无语言任务）；空集合表示全部语言。</summary>
     public IReadOnlySet<string> Languages { get; init; } = new HashSet<string>();
+
+    /// <summary>主排序列；默认为动画名。</summary>
+    public DownloadTaskSortColumn SortColumn { get; init; } = DownloadTaskSortColumn.AnimeName;
+
+    /// <summary>主排序列是否降序；为 null 时使用该列的默认排序方向。</summary>
+    public bool? SortDescending { get; init; }
 
     /// <summary>1 起始页码；超出有效范围时由查询层钳制并在结果中返回实际页码。</summary>
     public int Page { get; init; } = 1;

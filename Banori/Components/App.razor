@@ -7,16 +7,19 @@
 	<base href="/"/>
 	<ResourcePreloader/>
 	<script>
-		// 首屏渲染前设定主题，避免深色下闪白；存储键与 MainLayout.razor.js 保持一致
+		// 首屏渲染前设定主题与侧边栏折叠状态，避免闪白或宽度跳动；存储键与 MainLayout.razor.js 保持一致
 		(() => {
-			let stored = null;
+			let storedTheme = null;
+			let storedSidebar = null;
 			try {
-				stored = localStorage.getItem('theme');
+				storedTheme = localStorage.getItem('theme');
+				storedSidebar = localStorage.getItem('sidebarCollapsed');
 			} catch {
-				// 存储不可用（如隐私模式限制）时按未存储处理，跟随系统
+				// 存储不可用（如隐私模式限制）时按未存储处理，主题跟随系统、侧边栏默认展开
 			}
 			document.documentElement.dataset.bsTheme =
-				stored ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+				storedTheme ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+			document.documentElement.dataset.sidebarCollapsed = storedSidebar === 'true' ? 'true' : 'false';
 		})();
 	</script>
 	<link rel="stylesheet" href="@Assets["lib/bootstrap/dist/css/bootstrap.min.css"]"/>

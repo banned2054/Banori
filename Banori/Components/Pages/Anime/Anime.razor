@@ -12,40 +12,6 @@
 
 <PageTitle>动画 - Banori</PageTitle>
 
-<div class="anime-header">
-	<div>
-		<h1>动画</h1>
-		<p class="text-body-secondary">按 Bangumi Subject 汇总下载任务；点击封面或标题展开单集列表，每集仅显示当前任务，被替换的旧版本不显示。</p>
-	</div>
-	<div class="anime-sort">
-		<button type="button" class="btn btn-sm btn-outline-secondary anime-sort-trigger"
-		        popovertarget="anime-sort-menu" @ref="_sortTrigger" title="排序"
-		        aria-label="@SortTriggerLabel">
-			<span class="bi bi-arrow-down-up" aria-hidden="true"></span>
-			<span>@SortText(_vm.SortField)</span>
-			<span aria-hidden="true">@(_vm.Descending ? "↓" : "↑")</span>
-		</button>
-		<div id="anime-sort-menu" popover="auto" class="anime-sort-menu" aria-label="排序方式">
-			@foreach (var field in SortFields)
-			{
-				var active = field == _vm.SortField;
-				<button type="button" class="anime-sort-option @(active ? "is-active" : null)"
-				        popovertarget="anime-sort-menu" popovertargetaction="hide"
-				        aria-current="@(active ? "true" : null)"
-				        autofocus="@(field == SortFields[0] ? "" : null)"
-				        @onclick="() => SelectSortAsync(field)">
-					<span>@SortText(field)</span>
-					@if (active)
-					{
-						<span class="visually-hidden">（@(_vm.Descending ? "降序" : "升序")）</span>
-						<span aria-hidden="true">@(_vm.Descending ? "↓" : "↑")</span>
-					}
-				</button>
-			}
-		</div>
-	</div>
-</div>
-
 @if (!_vm.Loaded)
 {
 	<p>正在加载…</p>
@@ -56,6 +22,37 @@ else if (_vm.Animes.Count == 0)
 }
 else
 {
+	<div class="anime-header mb-3">
+		<span class="anime-count text-body-secondary small">共 @(_vm.Animes.Count) 部</span>
+		<div class="anime-sort">
+			<button type="button" class="btn btn-sm btn-outline-secondary anime-sort-trigger"
+			        popovertarget="anime-sort-menu" @ref="_sortTrigger" title="排序"
+			        aria-label="@SortTriggerLabel">
+				<span class="bi bi-arrow-down-up" aria-hidden="true"></span>
+				<span>@SortText(_vm.SortField)</span>
+				<span aria-hidden="true">@(_vm.Descending ? "↓" : "↑")</span>
+			</button>
+			<div id="anime-sort-menu" popover="auto" class="anime-sort-menu" aria-label="排序方式">
+				@foreach (var field in SortFields)
+				{
+					var active = field == _vm.SortField;
+					<button type="button" class="anime-sort-option @(active ? "is-active" : null)"
+					        popovertarget="anime-sort-menu" popovertargetaction="hide"
+					        aria-current="@(active ? "true" : null)"
+					        autofocus="@(field == SortFields[0] ? "" : null)"
+					        @onclick="() => SelectSortAsync(field)">
+						<span>@SortText(field)</span>
+						@if (active)
+						{
+							<span class="visually-hidden">（@(_vm.Descending ? "降序" : "升序")）</span>
+							<span aria-hidden="true">@(_vm.Descending ? "↓" : "↑")</span>
+						}
+					</button>
+				}
+			</div>
+		</div>
+	</div>
+
 	var expandedIndex = -1;
 	var sorted        = _vm.SortedAnimes;
 	<div class="anime-grid">

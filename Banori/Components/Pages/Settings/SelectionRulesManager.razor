@@ -103,15 +103,22 @@ else
 									</li>
 								}
 							</ol>
+							@{
+								var availableLanguages = _vm.AvailableLanguages.ToArray();
+							}
 							<div class="input-group input-group-sm mt-2">
-								<InputSelect class="form-select" @bind-Value="_vm.Draft.NewLanguage">
-									<option value="">选择语言…</option>
-									@foreach (var language in SelectionRuleDisplay.LanguageChoices)
+								<InputSelect class="form-select" disabled="@(availableLanguages.Length == 0)" @bind-Value="_vm.Draft.NewLanguage">
+									<option value="">@(availableLanguages.Length == 0 ? "已添加全部语言" : "选择语言…")</option>
+									@foreach (var language in availableLanguages)
 									{
 										<option value="@language">@SelectionRuleDisplay.LanguageText(language)</option>
 									}
 								</InputSelect>
-								<button type="button" class="btn btn-outline-primary" @onclick="() => _vm.AddLanguage()">添加</button>
+								<button type="button" class="btn btn-outline-primary"
+								        disabled="@(availableLanguages.Length == 0 || _vm.Draft.NewLanguage is null)"
+								        @onclick="() => _vm.AddLanguage()">
+									添加
+								</button>
 							</div>
 						</div>
 					</div>

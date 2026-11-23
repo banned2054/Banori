@@ -1,99 +1,92 @@
-@implements IDisposable
-
-@inject NavigationManager NavigationManager
-
 <div class="top-row ps-3 navbar navbar-dark">
 	<div class="container-fluid">
-		<a class="navbar-brand" href="">Banori</a>
+		<a class="navbar-brand" href="" title="Banori">
+			<span class="brand-full">Banori</span>
+			<span class="brand-compact" aria-hidden="true">B</span>
+		</a>
 	</div>
 </div>
 
 <input type="checkbox" title="Navigation menu" class="navbar-toggler"/>
 
-<div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
-	<nav class="nav flex-column">
+<div class="nav-scrollable">
+	<nav class="nav flex-column" onclick="document.querySelector('.navbar-toggler').click()">
 		<div class="nav-item px-3">
-			<NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-				<span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> 总览
+			<NavLink class="nav-link" href="" Match="NavLinkMatch.All" title="总览">
+				<span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span>
+				<span class="nav-label">总览</span>
 			</NavLink>
 		</div>
 
 		<AuthorizeView>
 			<Authorized>
 				<div class="nav-item px-3">
-					<NavLink class="nav-link" href="anime">
-						<span class="bi bi-film-fill-nav-menu" aria-hidden="true"></span> 动画
+					<NavLink class="nav-link" href="anime" title="动画">
+						<span class="bi bi-film-fill-nav-menu" aria-hidden="true"></span>
+						<span class="nav-label">动画</span>
 					</NavLink>
 				</div>
 				<div class="nav-item px-3">
-					<NavLink class="nav-link" href="downloads">
-						<span class="bi bi-download-nav-menu" aria-hidden="true"></span> 下载任务
+					<NavLink class="nav-link" href="downloads" title="下载任务">
+						<span class="bi bi-download-nav-menu" aria-hidden="true"></span>
+						<span class="nav-label">下载任务</span>
 					</NavLink>
 				</div>
 				<div class="nav-item px-3">
-					<NavLink class="nav-link" href="subscriptions">
-						<span class="bi bi-list-nested-nav-menu" aria-hidden="true"></span> 订阅
+					<NavLink class="nav-link" href="subscriptions" title="订阅">
+						<span class="bi bi-list-nested-nav-menu" aria-hidden="true"></span>
+						<span class="nav-label">订阅</span>
 					</NavLink>
 				</div>
 				<div class="nav-item px-3">
-					<NavLink class="nav-link" href="notifications">
-						<span class="bi bi-bell-fill-nav-menu" aria-hidden="true"></span> 通知
+					<NavLink class="nav-link" href="notifications" title="通知">
+						<span class="bi bi-bell-fill-nav-menu" aria-hidden="true"></span>
+						<span class="nav-label">通知</span>
 					</NavLink>
 				</div>
 				<div class="nav-item px-3">
-					<NavLink class="nav-link" href="settings">
-						<span class="bi bi-gear-fill-nav-menu" aria-hidden="true"></span> 设置
+					<NavLink class="nav-link" href="settings" title="设置">
+						<span class="bi bi-gear-fill-nav-menu" aria-hidden="true"></span>
+						<span class="nav-label">设置</span>
 					</NavLink>
 				</div>
 			</Authorized>
-		</AuthorizeView>
-
-		<AuthorizeView>
-			<Authorized>
-				<div class="nav-item px-3">
-					<NavLink class="nav-link" href="Account/Manage">
-						<span class="bi bi-person-fill-nav-menu" aria-hidden="true"></span> 用户
-					</NavLink>
-				</div>
-				<div class="nav-item px-3">
-					<form action="Account/Logout" method="post">
-						<AntiforgeryToken/>
-						<input type="hidden" name="ReturnUrl" value="@currentUrl"/>
-						<button type="submit" class="nav-link">
-							<span class="bi bi-arrow-bar-left-nav-menu" aria-hidden="true"></span> 退出
-						</button>
-					</form>
-				</div>
-			</Authorized>
-			<NotAuthorized>
-				<div class="nav-item px-3">
-					<NavLink class="nav-link" href="Account/Login">
-						<span class="bi bi-person-badge-nav-menu" aria-hidden="true"></span> 登录
-					</NavLink>
-				</div>
-			</NotAuthorized>
 		</AuthorizeView>
 	</nav>
+
+	<div class="nav-footer">
+		<div class="nav-footer-item px-3">
+			<button type="button" class="nav-footer-btn" data-theme-toggle
+			        title="切换深浅色模式" aria-label="切换深浅色模式" aria-pressed="false">
+				<svg class="nav-footer-icon theme-icon-sun" xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+				     fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+					<path d="M8 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6m0 1a4 4 0 1 0 0-8 4 4 0 0 0 0 8M8 0a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 0m0 13a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 13m8-5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2a.5.5 0 0 1 .5.5M3 8a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2A.5.5 0 0 1 3 8m10.657-5.657a.5.5 0 0 1 0 .707l-1.414 1.415a.5.5 0 1 1-.707-.708l1.414-1.414a.5.5 0 0 1 .707 0m-9.193 9.193a.5.5 0 0 1 0 .707L3.05 13.657a.5.5 0 0 1-.707-.707l1.414-1.414a.5.5 0 0 1 .707 0m9.193 2.121a.5.5 0 0 1-.707 0l-1.414-1.414a.5.5 0 0 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .707M4.464 4.465a.5.5 0 0 1-.707 0L2.343 3.05a.5.5 0 1 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .708"/>
+				</svg>
+				<svg class="nav-footer-icon theme-icon-moon" xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+				     fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+					<path d="M6 .278a.77.77 0 0 1 .08.858 7.2 7.2 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277q.792-.001 1.533-.16a.79.79 0 0 1 .81.316.73.73 0 0 1-.031.893A8.35 8.35 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.75.75 0 0 1 6 .278"/>
+					<path d="M10.794 3.148a.217.217 0 0 1 .412 0l.387 1.162c.173.518.579.924 1.097 1.097l1.162.387a.217.217 0 0 1 0 .412l-1.162.387a1.7 1.7 0 0 0-1.097 1.097l-.387 1.162a.217.217 0 0 1-.412 0l-.387-1.162a1.7 1.7 0 0 0-1.097-1.097l-1.162-.387a.217.217 0 0 1 0-.412l1.162-.387a1.7 1.7 0 0 0 1.097-1.097zM13.863.099a.145.145 0 0 1 .274 0l.258.774c.115.346.386.617.732.732l.774.258a.145.145 0 0 1 0 .274l-.774.258a1.16 1.16 0 0 0-.732.732l-.258.774a.145.145 0 0 1-.274 0l-.258-.774a1.16 1.16 0 0 0-.732-.732l-.774-.258a.145.145 0 0 1 0-.274l.774-.258c.346-.115.617-.386.732-.732z"/>
+				</svg>
+				<span class="nav-label theme-label-light">浅色模式</span>
+				<span class="nav-label theme-label-dark">深色模式</span>
+			</button>
+		</div>
+
+		<div class="nav-footer-item sidebar-collapse-item px-3">
+			<button type="button" class="nav-footer-btn" data-sidebar-toggle
+			        title="收起侧边栏" aria-label="收起侧边栏" aria-expanded="true">
+				<svg class="nav-footer-icon sidebar-icon-collapse" xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+				     fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+					<path fill-rule="evenodd" d="M8.354 1.646a.5.5 0 0 1 0 .708L2.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0"/>
+					<path fill-rule="evenodd" d="M12.354 1.646a.5.5 0 0 1 0 .708L6.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0"/>
+				</svg>
+				<svg class="nav-footer-icon sidebar-icon-expand" xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+				     fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+					<path fill-rule="evenodd" d="M3.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L9.293 8 3.646 2.354a.5.5 0 0 1 0-.708"/>
+					<path fill-rule="evenodd" d="M7.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L13.293 8 7.646 2.354a.5.5 0 0 1 0-.708"/>
+				</svg>
+				<span class="nav-label">收起</span>
+			</button>
+		</div>
+	</div>
 </div>
-
-@code {
-	private string? currentUrl;
-
-	protected override void OnInitialized()
-	{
-		currentUrl                        =  NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
-		NavigationManager.LocationChanged += OnLocationChanged;
-	}
-
-	private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
-	{
-		currentUrl = NavigationManager.ToBaseRelativePath(e.Location);
-		StateHasChanged();
-	}
-
-	public void Dispose()
-	{
-		NavigationManager.LocationChanged -= OnLocationChanged;
-	}
-
-}
