@@ -1,4 +1,5 @@
 using Banori.Core.Rules;
+using Banori.Core.Torrents;
 using Banori.Features.Downloads;
 using Banori.Features.Notifications;
 using Banori.Features.Proxies;
@@ -7,7 +8,7 @@ using System.ComponentModel.DataAnnotations;
 
 namespace Banori.Components.Pages.Settings;
 
-/// <summary>设置页状态：下载器与通知渠道设置草稿及保存操作。随页面组件创建和释放。</summary>
+/// <summary>设置页状态：下载器、目录命名与通知渠道设置草稿及保存操作。随页面组件创建和释放。</summary>
 public sealed class SettingsPageViewModel(
     ManageQbittorrentSettings      qbittorrentSettings,
     NamingTemplateStore            namingTemplateStore,
@@ -17,11 +18,43 @@ public sealed class SettingsPageViewModel(
     ProxyService                   proxyService,
     ILogger<SettingsPageViewModel> logger)
 {
+    private static readonly ReleaseNamePreviewPolicy PreviewPolicy = new();
+
+    private static readonly TorrentNamingIngredients SampleSingleIngredients = new(
+        Template: null,
+        Title: "葬送的芙莉莲",
+        EpisodeText: "05",
+        Version: 2,
+        Group: "LoliHouse",
+        Source: "Mikan",
+        Language: "简日",
+        Resolution: "1080P",
+        AniMediaType: "TV",
+        AniTitle: "Sousou no Frieren",
+        AniGroup: "LoliHouse",
+        AniGroupType: "Fansub",
+        AniSubtitleType: "内封",
+        AniSource: "WebRip",
+        AniWebSource: "Baha",
+        AniResolution: "1080P",
+        AniVideoCodec: "HEVC",
+        AniAudioCodec: "AAC",
+        AniColorBitDepth: 10,
+        BangumiId: 400602,
+        BangumiName: "葬送のフリーレン",
+        BangumiNameCn: "葬送的芙莉莲",
+        BangumiPlatform: "TV",
+        BangumiDate: "2023-09-29");
+
+    private static readonly TorrentNamingIngredients SampleCollectionIngredients =
+        SampleSingleIngredients with { EpisodeText = "01-E02,04-E06", Version = 1 };
+
     private readonly List<ProxyView> _proxies = [];
 
     private string? _hookToken;
 
     public QbittorrentSettingsDraft Downloader { get; } = new();
+    public NamingSettingsDraft      Naming     { get; } = new();
     public TelegramSettingsDraft    Telegram   { get; } = new();
     public GotifySettingsDraft      Gotify     { get; } = new();
 
@@ -44,21 +77,62 @@ public sealed class SettingsPageViewModel(
     public string? TestMessage   { get; private set; }
     public bool    TestSucceeded { get; private set; }
 
+    public void ClearMessages()
+    {
+        StatusMessage = null;
+        TestMessage   = null;
+    }
+
+    /// <summary>按当前普通种子模板实时渲染单集样例。</summary>
+    public string PreviewTorrentName() =>
+        PreviewPolicy.Create(SampleSingleIngredients with { Template = Naming.NamingTemplate });
+
+    /// <summary>按当前合集模板实时渲染缺集合集样例；留空时沿用普通种子模板。</summary>
+    public string PreviewCollectionName()
+    {
+        var template = string.IsNullOrWhiteSpace(Naming.CollectionNamingTemplate)
+            ? Naming.NamingTemplate
+            : Naming.CollectionNamingTemplate;
+        return PreviewPolicy.Create(SampleCollectionIngredients with { Template = template });
+    }
+
+    /// <summary>按当前媒体目录与文件模板实时渲染相对路径样例。</summary>
+    public string PreviewFilePath()
+    {
+        string mediaDirectory;
+        try
+        {
+            mediaDirectory = DownloadDirectorySettingsStore.Normalize(Naming.MediaDirectory, Naming.SeedDirectory)
+                                                           .MediaDirectory;
+        }
+        catch (ArgumentException)
+        {
+            mediaDirectory = string.IsNullOrWhiteSpace(Naming.MediaDirectory)
+                ? DownloadDirectorySettings.DefaultMediaDirectory
+                : Naming.MediaDirectory.Trim().Replace('\\', '/').Trim('/');
+        }
+
+        var fileName = PreviewPolicy.Create(SampleSingleIngredients with { FileTemplate = Naming.FileNamingTemplate },
+                                            fileName: true);
+        return $"{mediaDirectory}/{fileName}.mkv";
+    }
+
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
         var downloader = await qbittorrentSettings.GetAsync(cancellationToken);
-        Downloader.BaseUrl            = downloader.BaseUrl;
-        Downloader.Username           = downloader.Username;
-        Downloader.SavePath           = downloader.SavePath;
-        Downloader.Enabled            = downloader.Enabled;
-        Downloader.ProxyId            = downloader.ProxyId?.ToString();
-        Downloader.NamingTemplate     = await namingTemplateStore.GetAsync(cancellationToken);
-        Downloader.FileNamingTemplate = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
-        Downloader.CollectionNamingTemplate =
+        Downloader.BaseUrl  = downloader.BaseUrl;
+        Downloader.Username = downloader.Username;
+        Downloader.SavePath = downloader.SavePath;
+        Downloader.Enabled  = downloader.Enabled;
+        Downloader.ProxyId  = downloader.ProxyId?.ToString();
+
+        Naming.NamingTemplate     = await namingTemplateStore.GetAsync(cancellationToken);
+        Naming.FileNamingTemplate = await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
+        Naming.CollectionNamingTemplate =
             await namingTemplateStore.GetConfiguredCollectionTemplateAsync(cancellationToken);
         var directories = await directorySettingsStore.GetAsync(cancellationToken);
-        Downloader.MediaDirectory = directories.MediaDirectory;
-        Downloader.SeedDirectory  = directories.SeedDirectory;
+        Naming.MediaDirectory = directories.MediaDirectory;
+        Naming.SeedDirectory  = directories.SeedDirectory;
 
         var hookBaseUrl = await qbittorrentSettings.GetHookBaseUrlAsync(cancellationToken);
         Downloader.HookBaseUrl = hookBaseUrl;
@@ -88,9 +162,6 @@ public sealed class SettingsPageViewModel(
     public Task SaveDownloaderAsync(CancellationToken cancellationToken = default) =>
         SaveAsync(async token =>
         {
-            // 先校验目录，错误输入不得先覆盖其它下载器设置。
-            var directories =
-                DownloadDirectorySettingsStore.Normalize(Downloader.MediaDirectory, Downloader.SeedDirectory);
             await qbittorrentSettings.SaveAsync(new QbittorrentSettings(Downloader.BaseUrl  ?? string.Empty,
                                                                         Downloader.Username ?? string.Empty,
                                                                         Downloader.SavePath ?? string.Empty,
@@ -101,14 +172,21 @@ public sealed class SettingsPageViewModel(
                                                     : Downloader.Password,
                                                 token);
             await qbittorrentSettings.SaveHookBaseUrlAsync(Downloader.HookBaseUrl, token);
-            HookCommands = BuildHookCommands(await qbittorrentSettings.GetHookBaseUrlAsync(token), _hookToken);
-            await namingTemplateStore.SaveAsync(Downloader.NamingTemplate, token);
-            await namingTemplateStore.SaveFileTemplateAsync(Downloader.FileNamingTemplate, token);
-            await namingTemplateStore.SaveCollectionTemplateAsync(Downloader.CollectionNamingTemplate, token);
+            HookCommands        = BuildHookCommands(await qbittorrentSettings.GetHookBaseUrlAsync(token), _hookToken);
+            Downloader.Password = null;
+        }, cancellationToken);
+
+    public Task SaveNamingAsync(CancellationToken cancellationToken = default) =>
+        SaveAsync(async token =>
+        {
+            // 先校验目录，错误输入不得先覆盖命名模板。
+            var directories = DownloadDirectorySettingsStore.Normalize(Naming.MediaDirectory, Naming.SeedDirectory);
+            await namingTemplateStore.SaveAsync(Naming.NamingTemplate, token);
+            await namingTemplateStore.SaveFileTemplateAsync(Naming.FileNamingTemplate, token);
+            await namingTemplateStore.SaveCollectionTemplateAsync(Naming.CollectionNamingTemplate, token);
             await directorySettingsStore.SaveAsync(directories.MediaDirectory, directories.SeedDirectory, token);
-            Downloader.MediaDirectory = directories.MediaDirectory;
-            Downloader.SeedDirectory  = directories.SeedDirectory;
-            Downloader.Password       = null;
+            Naming.MediaDirectory = directories.MediaDirectory;
+            Naming.SeedDirectory  = directories.SeedDirectory;
         }, cancellationToken);
 
     public Task SaveTelegramAsync(CancellationToken cancellationToken = default) =>
@@ -289,27 +367,31 @@ public sealed class QbittorrentSettingsDraft
     /// <summary>钩子回调的对外可达基础地址；空表示未配置。</summary>
     public string? HookBaseUrl { get; set; }
 
-    /// <summary>qB 种子名称模板；留空表示恢复默认模板。</summary>
-    [StringLength(200, ErrorMessage = "种子名称模板不能超过 200 个字符。")]
-    public string? NamingTemplate { get; set; }
+    public bool Enabled { get; set; }
 
-    /// <summary>种子内文件名称模板；留空表示恢复默认模板。</summary>
-    [StringLength(200, ErrorMessage = "文件名称模板不能超过 200 个字符。")]
-    public string? FileNamingTemplate { get; set; }
+    internal Guid? ParseProxyId() => Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null;
+}
 
-    /// <summary>合集种子名称模板；留空沿用普通种子模板。</summary>
-    [StringLength(200, ErrorMessage = "合集种子名称模板不能超过 200 个字符。")]
-    public string? CollectionNamingTemplate { get; set; }
-
+/// <summary>下载目录与命名模板的编辑模型。</summary>
+public sealed class NamingSettingsDraft
+{
     [StringLength(500, ErrorMessage = "媒体目录不能超过 500 个字符。")]
     public string? MediaDirectory { get; set; }
 
     [StringLength(500, ErrorMessage = "做种目录不能超过 500 个字符。")]
     public string? SeedDirectory { get; set; }
 
-    public bool Enabled { get; set; }
+    /// <summary>qB 种子名称模板；留空表示恢复默认模板。</summary>
+    [StringLength(200, ErrorMessage = "种子名称模板不能超过 200 个字符。")]
+    public string? NamingTemplate { get; set; }
 
-    internal Guid? ParseProxyId() => Guid.TryParse(ProxyId, out var proxyId) ? proxyId : null;
+    /// <summary>合集种子名称模板；留空沿用普通种子模板。</summary>
+    [StringLength(200, ErrorMessage = "合集种子名称模板不能超过 200 个字符。")]
+    public string? CollectionNamingTemplate { get; set; }
+
+    /// <summary>种子内文件名称模板；留空表示恢复默认模板。</summary>
+    [StringLength(200, ErrorMessage = "文件名称模板不能超过 200 个字符。")]
+    public string? FileNamingTemplate { get; set; }
 }
 
 /// <summary>Telegram 通知渠道的编辑模型。Bot Token 留空表示沿用已保存值。</summary>

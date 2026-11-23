@@ -1,3 +1,41 @@
-.settings-card {
-    max-width: 42rem;
+.settings-tabs {
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+}
+
+.settings-tabs::-webkit-scrollbar {
+    display: none;
+}
+
+.settings-card,
+.settings-alert {
+    width: 100%;
+    max-width: 56rem;
+}
+
+.settings-notifications-grid {
+    max-width: 72rem;
+}
+
+.naming-preview {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.375rem 0.625rem;
+    border: 1px solid var(--bs-border-color-translucent);
+    border-radius: var(--bs-border-radius-sm);
+    background-color: var(--bs-tertiary-bg);
+    font-size: 0.875rem;
+}
+
+.naming-preview-label {
+    color: var(--bs-secondary-color);
+    font-size: 0.75rem;
+    flex-shrink: 0;
+}
+
+.token-chip {
+    font-size: 0.75rem;
+    padding: 0.15rem 0.45rem;
 }

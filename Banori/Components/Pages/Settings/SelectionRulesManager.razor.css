@@ -1,0 +1,8 @@
+.rules-card {
+    width: 100%;
+    max-width: 56rem;
+}
+
+.rule-item-label {
+    min-width: 0;
+}

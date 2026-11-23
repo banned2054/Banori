@@ -51,8 +51,10 @@
 					</div>
 				</div>
 				<div class="form-text mb-3">SOCKS4 协议本身没有标准认证，账号密码仅对 HTTP 与 SOCKS5 生效。</div>
-				<button type="submit" class="btn btn-primary" disabled="@_vm.Saving">@(_vm.Saving ? "正在保存…" : "保存")</button>
-				<button type="button" class="btn btn-outline-secondary ms-2" @onclick="_vm.CancelEdit">取消</button>
+				<div class="d-flex flex-wrap gap-2">
+					<button type="submit" class="btn btn-primary" disabled="@_vm.Saving">@(_vm.Saving ? "正在保存…" : "保存")</button>
+					<button type="button" class="btn btn-outline-secondary" @onclick="_vm.CancelEdit">取消</button>
+				</div>
 			</EditForm>
 			<hr class="my-4"/>
 		}

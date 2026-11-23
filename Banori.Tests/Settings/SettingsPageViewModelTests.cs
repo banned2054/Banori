@@ -16,15 +16,18 @@ public sealed class SettingsPageViewModelTests
     public enum Card
     {
         Downloader,
+        Naming,
         Telegram,
         Gotify
     }
 
     [Theory]
     [InlineData(Card.Downloader, false)]
+    [InlineData(Card.Naming, false)]
     [InlineData(Card.Telegram, false)]
     [InlineData(Card.Gotify, false)]
     [InlineData(Card.Downloader, true)]
+    [InlineData(Card.Naming, true)]
     [InlineData(Card.Telegram, true)]
     [InlineData(Card.Gotify, true)]
     public async Task Save_OnlyPersistsOwnCardAndClearsOwnSecret(Card card, bool invalidOtherDrafts)
@@ -47,21 +50,17 @@ public sealed class SettingsPageViewModelTests
     }
 
     [Theory]
-    [InlineData(Card.Downloader, "下载器地址", false)]
-    [InlineData(Card.Telegram, "Chat ID", false)]
-    [InlineData(Card.Gotify, "Gotify 地址", false)]
-    [InlineData(Card.Downloader, "相对目录", true)]
-    public async Task Save_WithInvalidOwnDraft_ReportsFailureWithoutChangingSettingsOrDrafts(
-        Card card, string error, bool invalidDirectory)
+    [InlineData(Card.Downloader, "下载器地址")]
+    [InlineData(Card.Naming, "相对目录")]
+    [InlineData(Card.Telegram, "Chat ID")]
+    [InlineData(Card.Gotify, "Gotify 地址")]
+    public async Task Save_WithInvalidOwnDraft_ReportsFailureWithoutChangingSettingsOrDrafts(Card card, string error)
     {
         var (vm, store) = await CreateAsync();
         await SaveAsync(vm, card);
         Assert.True(vm.SaveSucceeded);
-        SetSecret(vm, card, "retry-secret");
-        if (invalidDirectory)
-            vm.Downloader.MediaDirectory = "../outside";
-        else
-            InvalidateDraft(vm, card);
+        if (card != Card.Naming) SetSecret(vm, card, "retry-secret");
+        InvalidateDraft(vm, card);
         var saved  = store.Values.OrderBy(pair => pair.Key).ToArray();
         var drafts = Enum.GetValues<Card>().Select(other => SnapshotDraft(vm, other)).ToArray();
 
@@ -103,6 +102,26 @@ public sealed class SettingsPageViewModelTests
         Assert.Equal(drafts, Enum.GetValues<Card>().Select(other => SnapshotDraft(vm, other)).ToArray());
     }
 
+    [Fact]
+    public async Task NamingPreview_RendersTemplatesAndHandlesInvalidDirectoryGracefully()
+    {
+        var (vm, _) = await CreateAsync();
+        vm.Naming.NamingTemplate           = "[{ani.group}] {bgm.nameCn} E{ani.episode:ee}";
+        vm.Naming.CollectionNamingTemplate = "[{ani.group}] {bgm.nameCn} {episode:Eee-Eee}";
+        vm.Naming.FileNamingTemplate       = "{bgm.nameCn}/S01E{ani.episode:ee}";
+        vm.Naming.MediaDirectory           = "Media/Anime";
+
+        Assert.Equal("[LoliHouse] 葬送的芙莉莲 E05", vm.PreviewTorrentName());
+        Assert.Equal("[LoliHouse] 葬送的芙莉莲 E01-E02,E04-E06", vm.PreviewCollectionName());
+        Assert.Equal("Media/Anime/葬送的芙莉莲/S01E05.mkv", vm.PreviewFilePath());
+
+        vm.Naming.CollectionNamingTemplate = " ";
+        Assert.Equal("[LoliHouse] 葬送的芙莉莲 E01-E02,04-E06", vm.PreviewCollectionName());
+
+        vm.Naming.MediaDirectory = "../invalid";
+        Assert.EndsWith("/葬送的芙莉莲/S01E05.mkv", vm.PreviewFilePath());
+    }
+
     private static async Task<(SettingsPageViewModel ViewModel, MemoryApplicationSettingStore Store)> CreateAsync()
     {
         var store = new MemoryApplicationSettingStore();
@@ -128,32 +147,33 @@ public sealed class SettingsPageViewModelTests
         var vm = new SettingsPageViewModel(downloader, naming, directories, telegram, gotify,
                                            ProxyServiceTestFactory.CreateEphemeral(),
                                            NullLogger<SettingsPageViewModel>.Instance);
-        // 不调用 LoadAsync：ephemeral 代理库没有表，直接构造与已保存值不同的三张卡片草稿。
-        vm.Downloader.BaseUrl                  = "http://draft-qb.test";
-        vm.Downloader.Username                 = "draft-user";
-        vm.Downloader.Password                 = "draft-password";
-        vm.Downloader.SavePath                 = "/draft";
-        vm.Downloader.Enabled                  = true;
-        vm.Downloader.HookBaseUrl              = "http://draft-banori.test";
-        vm.Downloader.NamingTemplate           = "draft-torrent-template";
-        vm.Downloader.FileNamingTemplate       = "draft-file-template";
-        vm.Downloader.CollectionNamingTemplate = "draft-collection-template";
-        vm.Downloader.MediaDirectory           = "DraftMedia";
-        vm.Downloader.SeedDirectory            = "DraftSeed";
-        vm.Telegram.ChatId                     = "draft-chat";
-        vm.Telegram.BotToken                   = "draft-bot-token";
-        vm.Telegram.Enabled                    = true;
-        vm.Telegram.NotifyDownloadStarted      = false;
-        vm.Gotify.BaseUrl                      = "http://draft-gotify.test";
-        vm.Gotify.AppToken                     = "draft-app-token";
-        vm.Gotify.Enabled                      = true;
-        vm.Gotify.NotifyDownloadFailed         = false;
+        // 不调用 LoadAsync：ephemeral 代理库没有表，直接构造与已保存值不同的四张卡片草稿。
+        vm.Downloader.BaseUrl            = "http://draft-qb.test";
+        vm.Downloader.Username           = "draft-user";
+        vm.Downloader.Password           = "draft-password";
+        vm.Downloader.SavePath           = "/draft";
+        vm.Downloader.Enabled            = true;
+        vm.Downloader.HookBaseUrl        = "http://draft-banori.test";
+        vm.Naming.NamingTemplate         = "draft-torrent-template";
+        vm.Naming.FileNamingTemplate     = "draft-file-template";
+        vm.Naming.CollectionNamingTemplate = "draft-collection-template";
+        vm.Naming.MediaDirectory         = "DraftMedia";
+        vm.Naming.SeedDirectory          = "DraftSeed";
+        vm.Telegram.ChatId               = "draft-chat";
+        vm.Telegram.BotToken             = "draft-bot-token";
+        vm.Telegram.Enabled              = true;
+        vm.Telegram.NotifyDownloadStarted = false;
+        vm.Gotify.BaseUrl                = "http://draft-gotify.test";
+        vm.Gotify.AppToken               = "draft-app-token";
+        vm.Gotify.Enabled                = true;
+        vm.Gotify.NotifyDownloadFailed   = false;
         return (vm, store);
     }
 
     private static Task SaveAsync(SettingsPageViewModel vm, Card card) => card switch
     {
         Card.Downloader => vm.SaveDownloaderAsync(),
+        Card.Naming     => vm.SaveNamingAsync(),
         Card.Telegram   => vm.SaveTelegramAsync(),
         Card.Gotify     => vm.SaveGotifyAsync(),
         _               => throw new ArgumentOutOfRangeException(nameof(card))
@@ -165,6 +185,9 @@ public sealed class SettingsPageViewModelTests
         {
             case Card.Downloader :
                 vm.Downloader.BaseUrl = "not-a-url";
+                break;
+            case Card.Naming :
+                vm.Naming.MediaDirectory = "../outside";
                 break;
             case Card.Telegram :
                 vm.Telegram.ChatId = " ";
@@ -207,10 +230,9 @@ public sealed class SettingsPageViewModelTests
     {
         Card.Downloader => (vm.Downloader.BaseUrl, vm.Downloader.Username,
                             clearedSecret ? null : vm.Downloader.Password, vm.Downloader.SavePath,
-                            vm.Downloader.Enabled, vm.Downloader.ProxyId, vm.Downloader.HookBaseUrl,
-                            vm.Downloader.NamingTemplate, vm.Downloader.FileNamingTemplate,
-                            vm.Downloader.CollectionNamingTemplate,
-                            vm.Downloader.MediaDirectory, vm.Downloader.SeedDirectory),
+                            vm.Downloader.Enabled, vm.Downloader.ProxyId, vm.Downloader.HookBaseUrl),
+        Card.Naming => (vm.Naming.NamingTemplate, vm.Naming.FileNamingTemplate,
+                        vm.Naming.CollectionNamingTemplate, vm.Naming.MediaDirectory, vm.Naming.SeedDirectory),
         Card.Telegram => (vm.Telegram.ChatId, clearedSecret ? null : vm.Telegram.BotToken,
                           vm.Telegram.Enabled, vm.Telegram.ProxyId,
                           vm.Telegram.NotifyDownloadStarted, vm.Telegram.NotifyDownloadFailed),
@@ -230,10 +252,13 @@ public sealed class SettingsPageViewModelTests
             [ManageQbittorrentSettings.PasswordKey]    = ("draft-password", true),
             [ManageQbittorrentSettings.SavePathKey]    = ("/draft", false),
             [ManageQbittorrentSettings.ProxyIdKey]     = (string.Empty, false),
-            [ManageQbittorrentSettings.HookBaseUrlKey] = ("http://draft-banori.test", false),
-            [NamingTemplateStore.Key]                  = ("draft-torrent-template", false),
-            [NamingTemplateStore.FileKey]              = ("draft-file-template", false),
-            [NamingTemplateStore.CollectionKey]        = ("draft-collection-template", false),
+            [ManageQbittorrentSettings.HookBaseUrlKey] = ("http://draft-banori.test", false)
+        },
+        Card.Naming => new Dictionary<string, (string Value, bool IsProtected)>
+        {
+            [NamingTemplateStore.Key]           = ("draft-torrent-template", false),
+            [NamingTemplateStore.FileKey]       = ("draft-file-template", false),
+            [NamingTemplateStore.CollectionKey] = ("draft-collection-template", false),
             [DownloadDirectorySettingsStore.Key] =
                 (JsonSerializer.Serialize(new DownloadDirectorySettings("DraftMedia", "DraftSeed")), false)
         },

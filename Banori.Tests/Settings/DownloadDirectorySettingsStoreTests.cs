@@ -74,20 +74,20 @@ public sealed class DownloadDirectorySettingsStoreTests
                                       ProxyServiceTestFactory.CreateEphemeral(),
                                       NullLogger<SettingsPageViewModel>.Instance)
             {
-                Downloader =
+                Naming =
                 {
                     MediaDirectory = "Library\\Anime",
                     SeedDirectory  = "Seeding"
                 }
             };
-        await vm.SaveDownloaderAsync();
+        await vm.SaveNamingAsync();
         Assert.True(vm.SaveSucceeded);
-        Assert.Equal("Library/Anime", vm.Downloader.MediaDirectory);
+        Assert.Equal("Library/Anime", vm.Naming.MediaDirectory);
         Assert.Equal(new DownloadDirectorySettings("Library/Anime", "Seeding"), await directories.GetAsync());
 
         var savedValues = settings.Values.ToArray();
-        vm.Downloader.MediaDirectory = "../outside";
-        await vm.SaveDownloaderAsync();
+        vm.Naming.MediaDirectory = "../outside";
+        await vm.SaveNamingAsync();
         Assert.False(vm.SaveSucceeded);
         Assert.Equal(savedValues, settings.Values.ToArray());
         Assert.Contains("相对目录", vm.StatusMessage);
