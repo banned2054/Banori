@@ -1,3 +1,4 @@
+using Banori.Core.Torrents;
 using Banori.Data;
 using Banori.Features.Downloads;
 using Microsoft.EntityFrameworkCore;
@@ -297,6 +298,94 @@ public sealed class DownloadTaskViewTests
         Assert.Null(finalRoot.PathDecisionNote);
         // 完成后的暂存早已解决，展示过期理由只会误导。
         Assert.Null(completed.PathDecisionNote);
+    }
+
+    /// <summary>集数展示口径：单集、小数集、连续合集与多段缺集的列表/提示/详情文案一致。</summary>
+    [Theory]
+    [InlineData(8d, null, "E08", null, "E08")]
+    [InlineData(12.5, null, "E12.5", null, "E12.5")]
+    [InlineData(8d, "08", "E08", null, "E08")]
+    [InlineData(null, "01-E12", "E01-E12", null, "E01-E12")]
+    [InlineData(null, "01-E06,08-E12", "E01-E12*", "实际包含：E01-E06, E08-E12", "E01-E06, E08-E12")]
+    [InlineData(null, "01,03-E05,08", "E01-E08*", "实际包含：E01, E03-E05, E08", "E01, E03-E05, E08")]
+    [InlineData(null, null, "—", null, "—")]
+    public void Episode_FormatsDisplayTooltipAndDetail(
+        double? episode, string? episodeText, string display, string? tooltip, string detail)
+    {
+        var task = CreateTask(DownloadTaskStatus.Downloading) with
+        {
+            Episode     = episode is { } value ? (decimal)value : null,
+            EpisodeText = episodeText
+        };
+
+        Assert.Equal(display, task.EpisodeDisplay);
+        Assert.Equal(tooltip, task.EpisodeTooltip);
+        Assert.Equal(detail, task.EpisodeDetailText);
+    }
+
+    /// <summary>原始集数已有 E/e 前缀或两端同为单集时，仍按同一口径标准化。</summary>
+    [Theory]
+    [InlineData("E08", "E08")]
+    [InlineData("e08", "E08")]
+    [InlineData("E12.5", "E12.5")]
+    [InlineData("100", "E100")]
+    [InlineData("01-12", "E01-E12")]
+    [InlineData("E01-e12", "E01-E12")]
+    [InlineData("01-E01", "E01")]
+    public void Episode_NormalizesPrefixesAndRangeEnds(string episodeText, string display)
+    {
+        var task = CreateTask(DownloadTaskStatus.Downloading) with { EpisodeText = episodeText };
+
+        Assert.Equal(display, task.EpisodeDisplay);
+        Assert.Null(task.EpisodeTooltip);
+        Assert.Equal(display, task.EpisodeDetailText);
+    }
+
+    /// <summary>ToView 投影：命名要素里的原始集数文本必须进入视图，供列表与详情共用格式化。</summary>
+    [Fact]
+    public async Task ListAsync_ProjectsEpisodeTextFromNamingIngredients()
+    {
+        var directory = Directory.CreateTempSubdirectory("Banori.EpisodeText.ViewProjection.");
+        try
+        {
+            var services = new ServiceCollection();
+            services.AddDbContextFactory<ApplicationDbContext>(options =>
+                options.UseSqlite($"Data Source={Path.Combine(directory.FullName, "episode.db")};Pooling=False"));
+            await using var provider = services.BuildServiceProvider();
+            var factory = provider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
+            var taskId  = Guid.NewGuid();
+
+            await using (var db = await factory.CreateDbContextAsync())
+            {
+                await db.Database.EnsureCreatedAsync();
+                db.DownloadTasks.Add(new DownloadTask
+                {
+                    Id                = taskId,
+                    InfoHash          = new string('e', 40),
+                    TorrentFile       = [],
+                    SavePath          = "/downloads",
+                    NamingSnapshot    = "staging",
+                    NamingIngredients = new TorrentNamingIngredients(
+                        null, "动画", "01-E06,08-E12", 1, null, null).ToJson(),
+                    Status            = DownloadTaskStatus.Downloading,
+                    CreatedAtUtc      = DateTimeOffset.UtcNow
+                });
+                await db.SaveChangesAsync();
+            }
+
+            var view = Assert.Single(
+                (await new DownloadTaskQueries(factory).ListAsync(new DownloadTaskListFilter())).Items,
+                item => item.Id == taskId);
+
+            Assert.Equal("01-E06,08-E12", view.EpisodeText);
+            Assert.Equal("E01-E12*", view.EpisodeDisplay);
+            Assert.Equal("实际包含：E01-E06, E08-E12", view.EpisodeTooltip);
+            Assert.Equal("E01-E06, E08-E12", view.EpisodeDetailText);
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
     }
 
     /// <summary>ToView 投影：校验意图、路径决策、观察时间与归档移动标志必须进入视图，派生阶段才有依据。</summary>

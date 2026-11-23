@@ -1,3 +1,4 @@
+using Banori.Core.Rules;
 using Banori.Integrations.Qbittorrent;
 using System.Text.Json;
 
@@ -611,6 +612,7 @@ public sealed record DownloadTaskView
     public          int?               SubjectId        { get; init; }
     public          string?            SubjectName      { get; init; }
     public          decimal?           Episode          { get; init; }
+    public          string?            EpisodeText      { get; init; }
     public          int                Version          { get; init; }
     public          string?            SubtitleGroup    { get; init; }
     public          string?            SubtitleLanguage { get; init; }
@@ -636,6 +638,51 @@ public sealed record DownloadTaskView
 
     public bool ShowPendingReplacement => ReplacesNaming is not null &&
                                           Status is not (DownloadTaskStatus.Completed or DownloadTaskStatus.Replaced);
+
+    /// <summary>列表集数文本：单段直接展示，多段以首末集加 * 表示存在缺集。</summary>
+    public string EpisodeDisplay => EpisodeParts.Display;
+
+    /// <summary>多段缺集的实际集数提示；单段与无集数为空。</summary>
+    public string? EpisodeTooltip => EpisodeParts.Tooltip;
+
+    /// <summary>详情面板集数：多段时展示完整区间，不折叠为提示。</summary>
+    public string EpisodeDetailText => EpisodeParts.Detail;
+
+    /// <summary>集数优先取命名要素文本，回退单集格式化；三处展示共用同一解析结果。</summary>
+    private (string Display, string? Tooltip, string Detail) EpisodeParts
+    {
+        get
+        {
+            var source = EpisodeText;
+            if (string.IsNullOrWhiteSpace(source))
+                source = Episode is { } episode ? ReleaseNamePreviewPolicy.FormatEpisodeText(episode) : null;
+            if (string.IsNullOrWhiteSpace(source)) return ("—", null, "—");
+
+            var segments = source.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                                 .Select(NormalizeEpisodeSegment).ToArray();
+            if (segments.Length == 0) return ("—", null, "—");
+            if (segments.Length == 1) return (segments[0], null, segments[0]);
+
+            var first   = segments[0].Split('-')[0];
+            var last    = segments[^1].Split('-')[^1];
+            var detail  = string.Join(", ", segments);
+            var display = first == last ? $"{first}*" : $"{first}-{last}*";
+            return (display, $"实际包含：{detail}", detail);
+        }
+    }
+
+    private static string NormalizeEpisodeSegment(string segment)
+    {
+        var parts = segment.Split('-', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 2) return "E" + TrimEpisodePrefix(segment);
+
+        var start = TrimEpisodePrefix(parts[0]);
+        var end   = TrimEpisodePrefix(parts[1]);
+        return start == end ? "E" + start : $"E{start}-E{end}";
+    }
+
+    private static string TrimEpisodePrefix(string token) =>
+        token.StartsWith('E') || token.StartsWith('e') ? token[1..] : token;
 
     /// <summary>准备阶段解释（含复用校验的等待位置）；存量任务为 None。</summary>
     public DownloadPreparationStage PreparationStage { get; init; }

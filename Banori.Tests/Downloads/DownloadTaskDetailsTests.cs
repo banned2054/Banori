@@ -51,6 +51,18 @@ public sealed class DownloadTaskDetailsTests
         Assert.Contains("重试", html);
     }
 
+    /// <summary>详情面板集数走 EpisodeDetailText：合集与缺集展示完整区间，不折叠为列表的星号。</summary>
+    [Fact]
+    public async Task Render_ShowsFullEpisodeRangeForCollectionsAndGaps()
+    {
+        var continuous = await RenderAsync(CreateTask() with { Episode = null, EpisodeText = "01-E12" });
+        Assert.Contains("E01-E12", continuous);
+
+        var gapped = await RenderAsync(CreateTask() with { Episode = null, EpisodeText = "01-E06,08-E12" });
+        Assert.Contains("E01-E06, E08-E12", gapped);
+        Assert.DoesNotContain("E01-E12*", gapped);
+    }
+
     [Fact]
     public async Task Render_FailedTaskWithoutErrorStillOffersRetry()
     {

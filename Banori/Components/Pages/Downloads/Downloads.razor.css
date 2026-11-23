@@ -30,6 +30,65 @@
     margin-bottom: 0;
 }
 
+.downloads-table thead th {
+    white-space: nowrap;
+}
+
+.downloads-table .downloads-anime-title {
+    display: block;
+    min-width: 10rem;
+    max-width: clamp(11rem, 22vw, 24rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.downloads-table .downloads-group-title {
+    display: block;
+    max-width: 9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.downloads-table .downloads-episode-cell,
+.downloads-table .downloads-version-cell,
+.downloads-table .downloads-language-cell,
+.downloads-table .downloads-site-cell,
+.downloads-table .downloads-status-cell,
+.downloads-table .downloads-created-cell,
+.downloads-table .downloads-completed-cell {
+    white-space: nowrap;
+}
+
+.downloads-table .downloads-episode-cell,
+.downloads-table .downloads-version-cell,
+.downloads-table .downloads-progress-cell,
+.downloads-table .downloads-created-cell,
+.downloads-table .downloads-completed-cell {
+    font-variant-numeric: tabular-nums;
+}
+
+.downloads-table .downloads-progress-cell {
+    min-width: 7.5rem;
+    width: 7.5rem;
+}
+
+.downloads-table .downloads-progress-cell .progress {
+    margin-bottom: 0.15rem;
+}
+
+.downloads-table .downloads-progress-cell .small {
+    display: block;
+    white-space: nowrap;
+}
+
+.downloads-episode-gapped {
+    cursor: help;
+    text-decoration: underline dotted var(--bs-secondary-color);
+    text-underline-offset: 0.15rem;
+}
+
 .downloads-splitter {
     flex: 0 0 6px;
     cursor: row-resize;
@@ -129,7 +188,7 @@
     }
 
     .downloads-list-pane {
-        overflow: visible;
+        overflow-x: auto;
     }
 
     .downloads-splitter {

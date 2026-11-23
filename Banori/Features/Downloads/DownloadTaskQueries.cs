@@ -279,6 +279,7 @@ public sealed class DownloadTaskQueries(
             SubjectName = task.Subject is null                 ? null :
                 string.IsNullOrWhiteSpace(task.Subject.NameCn) ? task.Subject.Name : task.Subject.NameCn,
             Episode          = task.Episode,
+            EpisodeText      = ingredients?.EpisodeText,
             Version          = task.Version,
             SubtitleGroup    = ingredients?.Group,
             SubtitleLanguage = ingredients?.Language,

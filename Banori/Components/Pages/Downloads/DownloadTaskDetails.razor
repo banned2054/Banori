@@ -353,8 +353,7 @@
 		}
 	}
 
-	private string EpisodeText =>
-		Task.Episode is { } episode ? $"第 {episode.ToString("0.##", CultureInfo.InvariantCulture)} 集" : "—";
+	private string EpisodeText => Task.EpisodeDetailText;
 
 	private string SubtitleGroupText =>
 		string.IsNullOrWhiteSpace(Task.SubtitleGroup) ||

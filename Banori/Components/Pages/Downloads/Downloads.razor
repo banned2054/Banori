@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @attribute [Authorize]
 @using Banori.Features.Downloads
+@using System.Globalization
 @implements IAsyncDisposable
 
 @inject DownloadService                     DownloadService
@@ -149,7 +150,7 @@
 			}
 			else
 			{
-				<table class="table align-middle">
+				<table class="table table-sm align-middle downloads-table">
 					<thead>
 					<tr>
 						@if (_vm.BatchMode)
@@ -159,17 +160,23 @@
 								       checked="@_vm.AllSelected" @onchange="_vm.ToggleSelectAll"/>
 							</th>
 						}
-						<th>任务</th>
+						<th>动画名</th>
+						<th>集数</th>
+						<th>版本</th>
+						<th>字幕组</th>
+						<th>语言</th>
+						<th>来源</th>
 						<th>状态</th>
-						<th style="min-width: 140px;">进度</th>
-						<th>时间</th>
+						<th>进度</th>
+						<th>创建时间</th>
+						<th>完成时间</th>
 					</tr>
 					</thead>
 					<tbody>
 					@if (_vm.Tasks.Count == 0)
 					{
 						<tr>
-							<td colspan="@(_vm.BatchMode ? 5 : 4)" class="text-body-secondary">
+							<td colspan="@(_vm.BatchMode ? 11 : 10)" class="text-body-secondary">
 								没有符合筛选条件的任务。<button type="button" class="btn btn-link btn-sm p-0 align-baseline" @onclick="_vm.ClearFiltersAsync">清除筛选</button>
 							</td>
 						</tr>
@@ -188,20 +195,67 @@
 								</td>
 							}
 							<td>
-								<div class="fw-semibold text-break downloads-task-title">@DownloadStatusTitle(task)</div>
-								@if (!string.IsNullOrEmpty(task.SiteSource))
+								@{ var animeTitle = AnimeTitle(task); }
+								<div class="downloads-anime-title fw-semibold" title="@(animeTitle == "—" ? null : animeTitle)">@animeTitle</div>
+							</td>
+							<td class="downloads-episode-cell">
+								@if (task.EpisodeTooltip is { } episodeTooltip)
+								{
+									<span class="downloads-episode-gapped" title="@episodeTooltip">@task.EpisodeDisplay</span>
+								}
+								else
+								{
+									<span class="@(task.EpisodeDisplay == "—" ? "text-body-secondary" : null)">@task.EpisodeDisplay</span>
+								}
+							</td>
+							<td class="downloads-version-cell">
+								@if (task.Version > 1)
+								{
+									<span class="badge text-bg-secondary">v@task.Version</span>
+								}
+								else
+								{
+									<span class="text-body-secondary">—</span>
+								}
+							</td>
+							<td>
+								@if (SubtitleGroup(task) is { } group)
+								{
+									<div class="downloads-group-title" title="@group">@group</div>
+								}
+								else
+								{
+									<span class="text-body-secondary">—</span>
+								}
+							</td>
+							<td class="downloads-language-cell">
+								@if (string.IsNullOrWhiteSpace(task.SubtitleLanguage))
+								{
+									<span class="text-body-secondary">—</span>
+								}
+								else
+								{
+									@task.SubtitleLanguage
+								}
+							</td>
+							<td class="downloads-site-cell">
+								@if (string.IsNullOrWhiteSpace(task.SiteSource))
+								{
+									<span class="text-body-secondary">—</span>
+								}
+								else
 								{
 									<span class="badge text-bg-info downloads-site-badge">@task.SiteSource</span>
 								}
 							</td>
-							<td>
+							<td class="downloads-status-cell">
 								<span class="badge @StatusClass(task.Phase)">@task.StatusText</span>
 								@if (AttentionBadge(task) is { } attention)
 								{
 									<span class="badge text-bg-warning ms-1">@attention</span>
 								}
 							</td>
-							<td>
+							<td class="downloads-progress-cell">
 								@if (task is { ShowsProgress: true, Progress: { } progress })
 								{
 									<div class="progress" style="height: 8px;">
@@ -214,11 +268,17 @@
 									<span class="text-body-secondary">—</span>
 								}
 							</td>
-							<td class="small text-body-secondary">
-								<div>创建：@task.CreatedAtUtc.ToLocalTime().ToString("MM-dd HH:mm")</div>
+							<td class="downloads-created-cell" title="@(task.CreatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))">
+								<span class="small text-body-secondary">@(task.CreatedAtUtc.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture))</span>
+							</td>
+							<td class="downloads-completed-cell" title="@(task.CompletedAtUtc is { } completedAt ? completedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) : null)">
 								@if (task.CompletedAtUtc is { } completed)
 								{
-									<div>完成：@completed.ToLocalTime().ToString("MM-dd HH:mm")</div>
+									<span class="small text-body-secondary">@(completed.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture))</span>
+								}
+								else
+								{
+									<span class="text-body-secondary">—</span>
 								}
 							</td>
 						</tr>
@@ -769,6 +829,22 @@
 		{
 		}
 	}
+
+	/// <summary>列表动画名：中文名优先，依次回退命名快照与 RSS 标题。</summary>
+	private static string AnimeTitle(DownloadTaskView task)
+	{
+		if (!string.IsNullOrWhiteSpace(task.SubjectName)) return task.SubjectName;
+		if (!string.IsNullOrWhiteSpace(task.NamingSnapshot)) return task.NamingSnapshot;
+		if (!string.IsNullOrWhiteSpace(task.TorrentName)) return task.TorrentName;
+		return "—";
+	}
+
+	/// <summary>字幕组判重：与详情面板同一口径，无组名或回退存语言名时不单独展示。</summary>
+	private static string? SubtitleGroup(DownloadTaskView task) =>
+		string.IsNullOrWhiteSpace(task.SubtitleGroup) ||
+		string.Equals(task.SubtitleGroup, task.SubtitleLanguage, StringComparison.OrdinalIgnoreCase)
+			? null
+			: task.SubtitleGroup;
 
 	private static string DownloadStatusTitle(DownloadTaskView task)
 	{
