@@ -66,6 +66,11 @@ public sealed class DownloadTasksPageViewModel(
     /// <summary>测试注入：缩短防抖等待，避免用例真实挂起数百毫秒。</summary>
     internal TimeSpan SearchDebounceDelay { get; set; } = TimeSpan.FromMilliseconds(300);
 
+    /// <summary>测试注入：待确认文件操作的轮询间隔与最大轮数，避免用例真实等待。</summary>
+    internal TimeSpan PendingFileRefreshInterval { get; set; } = TimeSpan.FromSeconds(1);
+
+    internal int PendingFileRefreshAttempts { get; set; } = 120;
+
     /// <summary>状态筛选分组多选：默认全部勾选（等于不限制），全不勾选表示一个状态都不显示。</summary>
     public IReadOnlySet<DownloadStatusFilterGroup> StatusFilter => _statusFilter;
 
@@ -151,8 +156,12 @@ public sealed class DownloadTasksPageViewModel(
     // 其他页与被筛选隐藏任务的已选状态不受影响；批量操作仍按明确选中的 Id 执行。
     public bool AllSelected => Tasks.Count > 0 && Tasks.All(task => _selectedIds.Contains(task.Id));
 
-    /// <summary>页面组件释放时取消未触发的防抖定时与进行中的防抖查询。</summary>
-    public void Dispose() => CancelSearchDebounce();
+    /// <summary>页面组件释放时取消未触发的防抖定时与进行中的文件确认等待。</summary>
+    public void Dispose()
+    {
+        CancelSearchDebounce();
+        foreach (var state in _fileStates.Values) state.PendingRefreshCancellation?.Cancel();
+    }
 
     /// <summary>后台加载（防抖搜索）完成后的界面刷新回调；页面组件订阅后转 StateHasChanged。</summary>
     public event Action? ResultsChanged;
@@ -376,8 +385,11 @@ public sealed class DownloadTasksPageViewModel(
             var details = await RequireFileService().ListAsync(taskId, cancellationToken);
             if (IsCurrentFileState(taskId, state))
             {
-                state.Details = details;
+                state.Details               = details;
+                state.FileOperationPending = details.HasPendingFileOperation;
+                state.PendingFileWaitPaused = false;
                 foreach (var draft in state.Drafts.Values) draft.InvalidatePreview();
+                StartPendingFileRefresh(taskId, state);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -396,10 +408,17 @@ public sealed class DownloadTasksPageViewModel(
     }
 
     /// <summary>刷新文件：实时查询下载器并按原始种子核对新路径，与展开面板的 ListAsync 加载分开。</summary>
-    public async Task RefreshFilesAsync(Guid taskId, CancellationToken cancellationToken = default)
+    public Task RefreshFilesAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
         var state = FileState(taskId);
-        if (state.Loading || state.Busy) return;
+        // 待确认期间手动刷新会被服务端的 HasPending 拒绝；入口先锁住，避免误以为刷新成功。
+        if (state.FileOperationPending || state.Loading || state.Busy) return Task.CompletedTask;
+        return RefreshFilesCoreAsync(taskId, state, cancellationToken);
+    }
+
+    private async Task RefreshFilesCoreAsync(
+        Guid taskId, DownloadTaskFilesState state, CancellationToken cancellationToken)
+    {
         state.Loading = true;
         state.Error   = null;
         try
@@ -407,9 +426,12 @@ public sealed class DownloadTasksPageViewModel(
             var details = await RequireFileService().RefreshAsync(taskId, cancellationToken);
             if (IsCurrentFileState(taskId, state))
             {
-                state.Details = details;
+                state.Details               = details;
+                state.FileOperationPending = details.HasPendingFileOperation;
+                state.PendingFileWaitPaused = false;
                 // 刷新后来源路径可能变化，旧预览基于旧路径生成，必须失效。
                 foreach (var draft in state.Drafts.Values) draft.InvalidatePreview();
+                StartPendingFileRefresh(taskId, state);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -434,7 +456,7 @@ public sealed class DownloadTasksPageViewModel(
     public void BeginFileEdit(Guid taskId, int fileIndex)
     {
         var state = FileState(taskId);
-        if (state.Busy || state.Loading || state.Drafts.ContainsKey(fileIndex)) return;
+        if (state.Busy || state.Loading || state.FileOperationPending || state.Drafts.ContainsKey(fileIndex)) return;
         var file = state.Details?.Files.SingleOrDefault(file => file.Index == fileIndex);
         if (file is null) return;
         state.Drafts[fileIndex] = new DownloadFileEditDraft(file);
@@ -452,7 +474,8 @@ public sealed class DownloadTasksPageViewModel(
     public async Task PreviewFileAsync(Guid taskId, int fileIndex, CancellationToken cancellationToken = default)
     {
         var state = FileState(taskId);
-        if (state.Busy || state.Loading || !state.Drafts.TryGetValue(fileIndex, out var draft)) return;
+        if (state.Busy || state.Loading || state.FileOperationPending ||
+            !state.Drafts.TryGetValue(fileIndex, out var draft)) return;
         var request = draft.Request;
         draft.Preview        = null;
         draft.PreviewRequest = null;
@@ -493,8 +516,8 @@ public sealed class DownloadTasksPageViewModel(
     public async Task ApplyFileAsync(Guid taskId, int fileIndex, CancellationToken cancellationToken = default)
     {
         var state = FileState(taskId);
-        if (state.Busy || state.Loading || !state.Drafts.TryGetValue(fileIndex, out var draft) ||
-            !draft.CanApply) return;
+        if (state.Busy || state.Loading || state.FileOperationPending ||
+            !state.Drafts.TryGetValue(fileIndex, out var draft) || !draft.CanApply) return;
         var request = draft.Request;
         state.Busy    = true;
         state.Error   = null;
@@ -504,11 +527,18 @@ public sealed class DownloadTasksPageViewModel(
             var details = await RequireFileService().ApplyAsync(taskId, fileIndex, request, cancellationToken,
                                                                 draft.Preview?.FileTemplate);
             if (!IsCurrentFileState(taskId, state)) return;
-            state.Details = details;
+            state.PendingRefreshCancellation?.Cancel();
+            state.PendingRefreshCancellation = null;
+            state.Details               = details;
+            state.FileOperationPending = details.HasPendingFileOperation;
+            state.PendingFileWaitPaused = false;
             state.Drafts.Remove(fileIndex);
             // 根目录迁移会影响其他文件的完整路径，需要重新预览，但保留其编辑值。
             foreach (var otherDraft in state.Drafts.Values) otherDraft.InvalidatePreview();
-            state.Message = "修改已提交，文件位置以下载器确认结果为准。";
+            state.Message = state.FileOperationPending
+                ? "修改已提交，正在等待下载器确认，确认后会自动刷新。"
+                : "修改已提交，文件位置以下载器确认结果为准。";
+            StartPendingFileRefresh(taskId, state);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -534,6 +564,79 @@ public sealed class DownloadTasksPageViewModel(
 
     private bool IsCurrentFileState(Guid taskId, DownloadTaskFilesState state) =>
         _fileStates.GetValueOrDefault(taskId) == state;
+
+    private void StartPendingFileRefresh(Guid taskId, DownloadTaskFilesState state)
+    {
+        if (!state.FileOperationPending ||
+            state.PendingRefreshCancellation is { IsCancellationRequested: false }) return;
+        _ = WatchPendingFileOperationAsync(taskId, state);
+    }
+
+    /// <summary>自动等待暂停后的显式恢复：仍待确认时才重新轮询，不绕过服务端的确认闸门。</summary>
+    public void ContinueWaitingForFileOperation(Guid taskId)
+    {
+        var state = FileState(taskId);
+        if (!state.FileOperationPending || !state.PendingFileWaitPaused) return;
+        state.PendingFileWaitPaused = false;
+        state.Error                 = null;
+        state.Message               = "修改已提交，正在等待下载器确认，确认后会自动刷新。";
+        StartPendingFileRefresh(taskId, state);
+        ResultsChanged?.Invoke();
+    }
+
+    /// <summary>保护期内只查本地清单，确认操作日志清空后再真实刷新一次并恢复按钮。</summary>
+    private async Task WatchPendingFileOperationAsync(Guid taskId, DownloadTaskFilesState state)
+    {
+        var cancellation = state.PendingRefreshCancellation = new CancellationTokenSource();
+        try
+        {
+            for (var attempt = 0; attempt < PendingFileRefreshAttempts; attempt++)
+            {
+                await Task.Delay(PendingFileRefreshInterval, cancellation.Token);
+                if (!IsCurrentFileState(taskId, state) || !state.FileOperationPending) return;
+                var details = await RequireFileService().ListAsync(taskId, cancellation.Token);
+                if (!IsCurrentFileState(taskId, state) || !state.FileOperationPending) return;
+                if (details.HasPendingFileOperation) continue;
+                await RefreshFilesCoreAsync(taskId, state, cancellation.Token);
+                if (!IsCurrentFileState(taskId, state)) return;
+                // 只有清单确认无待处理、且真实刷新执行过一次之后，才允许手动刷新与再次编辑。
+                state.FileOperationPending = false;
+                state.PendingFileWaitPaused = false;
+                state.Message = state.Error is null ? "文件操作已确认，路径已自动刷新。" : null;
+                ResultsChanged?.Invoke();
+                return;
+            }
+
+            if (IsCurrentFileState(taskId, state) && state.FileOperationPending)
+                PauseFileOperationWait(state,
+                    "文件操作仍未被下载器确认，自动等待已暂停；请检查下载器后点击“继续等待确认”。");
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "下载任务 {TaskId} 文件操作确认等待失败。", taskId);
+            if (IsCurrentFileState(taskId, state))
+                PauseFileOperationWait(state,
+                    $"等待下载器确认失败：{exception.Message}。自动等待已暂停，请点击“继续等待确认”重试。");
+        }
+        finally
+        {
+            if (state.PendingRefreshCancellation == cancellation) state.PendingRefreshCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
+    /// <summary>未确认不是已确认：保持待处理状态锁住刷新与编辑，只暂停自动等待并给出恢复入口。</summary>
+    private void PauseFileOperationWait(DownloadTaskFilesState state, string error)
+    {
+        state.FileOperationPending = true;
+        state.PendingFileWaitPaused = true;
+        state.Error                 = error;
+        state.Message               = null;
+        ResultsChanged?.Invoke();
+    }
 
     public void ToggleBatchMode()
     {
@@ -837,11 +940,17 @@ public sealed class DownloadTasksPageViewModel(
 /// <summary>仅属于页面生命周期的文件详情与编辑草稿。</summary>
 public sealed class DownloadTaskFilesState
 {
-    public bool    Expanded { get; internal set; }
-    public bool    Loading  { get; internal set; }
-    public bool    Busy     { get; internal set; }
-    public string? Error    { get; internal set; }
-    public string? Message  { get; internal set; }
+    public bool    Expanded             { get; internal set; }
+    public bool    Loading              { get; internal set; }
+    public bool    Busy                 { get; internal set; }
+    public string? Error                { get; internal set; }
+    public string? Message              { get; internal set; }
+    public bool    FileOperationPending { get; internal set; }
+
+    /// <summary>超时或轮询失败后自动等待暂停；仍待确认时界面提供“继续等待确认”入口。</summary>
+    public bool PendingFileWaitPaused { get; internal set; }
+
+    internal CancellationTokenSource? PendingRefreshCancellation { get; set; }
 
     public DownloadTaskFilesView?                 Details { get; internal set; }
     public Dictionary<int, DownloadFileEditDraft> Drafts  { get; } = [];

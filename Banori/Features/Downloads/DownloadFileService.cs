@@ -1948,7 +1948,8 @@ public sealed class DownloadFileService(
         ApplicationDbContext db, DownloadTask task, CancellationToken ct)
     {
         var supersededNames = await SupersededNamesAsync(db, task, ct);
-        return new DownloadTaskFilesView(task.Id, DownloadRoundLayout.Root(task), ProjectFiles(task, supersededNames));
+        return new DownloadTaskFilesView(task.Id, DownloadRoundLayout.Root(task),
+                                         ProjectFiles(task, supersededNames), HasPending(task));
     }
 
     private IReadOnlyList<DownloadFileView> ProjectFiles(

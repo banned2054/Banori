@@ -7,7 +7,9 @@ public enum DownloadFileKind
     Seed
 }
 
-public sealed record DownloadTaskFilesView(Guid TaskId, string CurrentRootPath, IReadOnlyList<DownloadFileView> Files);
+/// <summary>HasPendingFileOperation 为真表示改名/移动尚未被下载器确认；此时路径刷新与再次编辑都不安全。</summary>
+public sealed record DownloadTaskFilesView(
+    Guid TaskId, string CurrentRootPath, IReadOnlyList<DownloadFileView> Files, bool HasPendingFileOperation = false);
 
 public sealed record DownloadFileView(
     int              Index,

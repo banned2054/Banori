@@ -685,6 +685,7 @@ public sealed class DownloadFileServiceTests
         h.Store.DeferLocation = true;
         var view    = await h.Service.ApplyAsync(h.Task.Id, 0, new DownloadFileEditRequest(DownloadFileKind.Seed));
         var pending = await h.Load();
+        Assert.True(view.HasPendingFileOperation);
         Assert.Equal("/downloads/Media/Anime", pending.SavePath);
         Assert.Equal("/downloads", pending.PendingSavePath);
         Assert.Equal("E01.mkv", view.Files[0].CurrentPath);
@@ -700,6 +701,7 @@ public sealed class DownloadFileServiceTests
         Assert.Equal("/downloads", complete.SavePath);
         Assert.Equal("Media/Anime/E02.mkv",
                      complete.Files.Single(file => file.FileIndex == 1).CurrentRelativePath);
+        Assert.False((await h.Service.ListAsync(h.Task.Id)).HasPendingFileOperation);
         Assert.Single(h.Store.SetLocationCalls);
     }
 

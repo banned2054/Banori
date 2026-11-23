@@ -11,7 +11,7 @@
 	}
 	@if (!string.IsNullOrEmpty(State.Message))
 	{
-		<div class="alert alert-success" role="status">@State.Message</div>
+		<div class="alert @(State.FileOperationPending ? "alert-warning" : "alert-success")" role="status">@State.Message</div>
 	}
 	@if (State.Details is null && !State.Loading)
 	{
@@ -20,11 +20,30 @@
 	@if (State.Details is { } details)
 	{
 		<div class="d-flex justify-content-between align-items-start gap-2 mb-2">
-			<div class="small">当前 torrent 根目录：<code class="text-break">@details.CurrentRootPath</code></div>
-			<button type="button" class="btn btn-sm btn-outline-secondary flex-shrink-0" disabled="@(State.Busy || State.Loading)"
-			        @onclick="RefreshAsync">
-				刷新文件
-			</button>
+			<div class="small">
+				当前 torrent 根目录：<code class="text-break">@details.CurrentRootPath</code>
+				@if (State.FileOperationPending)
+				{
+					<span class="text-body-secondary">
+						@(State.PendingFileWaitPaused
+							? "（自动等待已暂停，请点击“继续等待确认”）"
+							: "（等待下载器确认，确认后自动刷新）")
+					</span>
+				}
+			</div>
+			<div class="d-flex gap-2 flex-shrink-0">
+				@if (State.FileOperationPending && State.PendingFileWaitPaused)
+				{
+					<button type="button" class="btn btn-sm btn-outline-warning"
+					        @onclick="() => ViewModel.ContinueWaitingForFileOperation(TaskId)">
+						继续等待确认
+					</button>
+				}
+				<button type="button" class="btn btn-sm btn-outline-secondary"
+				        disabled="@(State.Busy || State.Loading || State.FileOperationPending)" @onclick="RefreshAsync">
+					刷新文件
+				</button>
+			</div>
 		</div>
 		@if (TaskView?.PathDecisionNote is { } decision)
 		{
@@ -77,7 +96,8 @@
 							</div>
 							@if (draft is null)
 							{
-								<button type="button" class="btn btn-sm btn-outline-primary flex-shrink-0" disabled="@(State.Busy || State.Loading)"
+								<button type="button" class="btn btn-sm btn-outline-primary flex-shrink-0"
+								        disabled="@(State.Busy || State.Loading || State.FileOperationPending)"
 								        aria-label="修改 @file.OriginalPath" @onclick="() => ViewModel.BeginFileEdit(TaskId, file.Index)">
 									修改
 								</button>
@@ -86,7 +106,7 @@
 						@if (draft is not null)
 						{
 							<div class="border-top mt-2 pt-2 file-edit" aria-label="文件编辑">
-								<fieldset disabled="@(State.Busy || State.Loading)">
+								<fieldset disabled="@(State.Busy || State.Loading || State.FileOperationPending)">
 									<div class="row g-2">
 										<div class="col-sm-3">
 											<label class="form-label small" for="kind-@key">文件分类</label>
