@@ -1,0 +1,293 @@
+@using System.ComponentModel.DataAnnotations
+@using Banori.Features.Downloads
+@using Banori.Features.Proxies
+@inject DownloadIntakeService          Intake
+@inject ProxyService                   ProxyService
+@inject ILogger<DownloadIntakeActions> Logger
+
+@* 统一的下载登记浮层按钮组：上传种子（选文件即登记）与一次性 RSS 链接下载，供总览页与下载任务页共用。 *@
+
+<div class="d-flex flex-wrap align-items-center gap-2">
+	<div class="position-relative">
+		<button type="button"
+		        class="btn @ButtonSizeClass @(_uploadPanelOpen ? "btn-primary" : OutlineButtonClass)"
+		        disabled="@IsBusy"
+		        aria-expanded="@_uploadPanelOpen"
+		        @onclick="ToggleUploadPanelAsync">
+			<span class="bi bi-cloud-arrow-up me-1" aria-hidden="true"></span>上传种子
+		</button>
+		@if (_uploadPanelOpen)
+		{
+			<div class="intake-popover-panel position-absolute @PanelAlignClass mt-1 p-3 bg-body border rounded shadow">
+				<div class="d-flex justify-content-between align-items-center mb-2">
+					<span class="fw-semibold">上传种子</span>
+					<button type="button" class="btn-close btn-sm" aria-label="关闭" @onclick="ClosePanels"></button>
+				</div>
+				<div class="text-body-secondary small mb-3">
+					选择文件后会立即登记下载任务；不关联订阅与条目。每个种子都必须绑定 Bangumi：标题映射未命中时需填写 Bangumi ID，绑定后按 Bangumi 作品名（中文名优先）命名。来源站点按种子内 tracker 分类识别（u2/byrbt/tjupt），未识别统一归 bt，命中多个站点分类时拒绝登记。
+				</div>
+				<div class="d-flex flex-column gap-2">
+					<div>
+						<label for="@($"{IdPrefix}-torrent-subject")" class="visually-hidden">Bangumi ID</label>
+						<input id="@($"{IdPrefix}-torrent-subject")"
+						       class="form-control form-control-sm"
+						       type="number"
+						       min="1"
+						       placeholder="Bangumi ID（映射未命中时必填）"
+						       disabled="@IsBusy"
+						       @bind="_torrentSubjectId"/>
+					</div>
+					<div class="d-flex align-items-center justify-content-between gap-2">
+						<InputFile id="@($"{IdPrefix}-torrent-file")"
+						           class="visually-hidden"
+						           accept=".torrent"
+						           disabled="@IsBusy"
+						           OnChange="UploadTorrentAsync"/>
+						<label for="@($"{IdPrefix}-torrent-file")"
+						       class="btn btn-sm btn-outline-primary mb-0 @(IsBusy ? "disabled" : string.Empty)">
+							<span class="bi bi-cloud-arrow-up me-1" aria-hidden="true"></span>@(IsBusy ? "正在登记…" : "选择并上传 .torrent")
+						</label>
+						<span class="small text-body-secondary">最大 @(DownloadIntakeService.MaxTorrentUploadBytes / 1024 / 1024) MB</span>
+					</div>
+				</div>
+			</div>
+		}
+	</div>
+
+	<div class="position-relative">
+		<button type="button"
+		        class="btn @ButtonSizeClass @(_rssPanelOpen ? "btn-primary" : OutlineButtonClass)"
+		        disabled="@IsBusy"
+		        aria-expanded="@_rssPanelOpen"
+		        @onclick="ToggleRssPanelAsync">
+			<span class="bi bi-rss me-1" aria-hidden="true"></span>RSS 链接下载
+		</button>
+		@if (_rssPanelOpen)
+		{
+			<div class="intake-popover-panel position-absolute @PanelAlignClass mt-1 p-3 bg-body border rounded shadow">
+				<div class="d-flex justify-content-between align-items-center mb-2">
+					<span class="fw-semibold">RSS 链接下载</span>
+					<button type="button" class="btn-close btn-sm" aria-label="关闭" @onclick="ClosePanels"></button>
+				</div>
+				<div class="text-body-secondary small mb-3">
+					抓取 RSS 中的所有条目，每个条目登记为一个下载任务；不创建订阅，重复资源自动跳过。每个条目都必须绑定 Bangumi：按标题映射、feed 自带信息或条目链接自动识别，全部未命中时需在下方补充 Bangumi ID 后重试。
+				</div>
+				<EditForm Model="_rssDraft" OnValidSubmit="DownloadFromRssAsync" FormName="@($"{IdPrefix}-rss-download")">
+					<DataAnnotationsValidator/>
+					<div class="d-flex flex-column gap-2">
+						<div>
+							<label class="form-label form-label-sm mb-1" for="@($"{IdPrefix}-rss-url")">RSS 地址</label>
+							<InputText id="@($"{IdPrefix}-rss-url")"
+							           class="form-control form-control-sm"
+							           type="url"
+							           disabled="@IsBusy"
+							           @bind-Value="_rssDraft.FeedUrl"/>
+							<ValidationMessage For="() => _rssDraft.FeedUrl"/>
+						</div>
+						<div>
+							<label class="form-label form-label-sm mb-1" for="@($"{IdPrefix}-rss-proxy")">代理（可选）</label>
+							<select id="@($"{IdPrefix}-rss-proxy")"
+							        class="form-select form-select-sm"
+							        disabled="@IsBusy"
+							        @bind="_rssDraft.ProxyId">
+								<option value="">不使用代理（直连）</option>
+								@foreach (var proxy in _proxies)
+								{
+									<option value="@proxy.Id">@proxy.Name</option>
+								}
+							</select>
+							<div class="form-text"><a href="settings#network-proxy">管理网络代理</a></div>
+						</div>
+						<div>
+							<label class="form-label form-label-sm mb-1" for="@($"{IdPrefix}-rss-subject")">Bangumi ID（可选）</label>
+							<input id="@($"{IdPrefix}-rss-subject")"
+							       class="form-control form-control-sm"
+							       type="number"
+							       min="1"
+							       placeholder="自动识别失败时必填"
+							       disabled="@IsBusy"
+							       @bind="_rssDraft.SubjectId"/>
+							<div class="form-text">整份 feed 视为同一部作品时填写；bgm.tv/subject/ 后面的数字。</div>
+						</div>
+						<div class="d-flex justify-content-end gap-2 mt-1">
+							<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@IsBusy" @onclick="ClosePanels">取消</button>
+							<button type="submit" class="btn btn-sm btn-primary" disabled="@IsBusy">
+								@(IsBusy ? "正在抓取…" : "抓取并登记下载")
+							</button>
+						</div>
+					</div>
+				</EditForm>
+			</div>
+		}
+	</div>
+</div>
+
+@code {
+	[Parameter] public string                               IdPrefix           { get; set; } = "intake";
+	[Parameter] public string                               Align              { get; set; } = "start";
+	[Parameter] public bool                                 SmallButtons       { get; set; }
+	[Parameter] public string                               OutlineButtonClass { get; set; } = "btn-outline-primary";
+	[Parameter] public bool                                 Disabled           { get; set; }
+	[Parameter] public EventCallback                        OnPanelOpening     { get; set; }
+	[Parameter] public EventCallback<DownloadIntakeFeedback> OnCompleted       { get; set; }
+
+	private IReadOnlyList<ProxyView> _proxies  = [];
+	private RssDownloadDraft         _rssDraft = new();
+	private int?                     _torrentSubjectId;
+	private bool                     _uploadPanelOpen;
+	private bool                     _rssPanelOpen;
+	private bool                     _busy;
+
+	private bool IsBusy => _busy || Disabled;
+
+	private string ButtonSizeClass => SmallButtons ? "btn-sm" : string.Empty;
+
+	private string PanelAlignClass => string.Equals(Align, "end", StringComparison.OrdinalIgnoreCase)
+		? "end-0"
+		: "start-0";
+
+	protected override async Task OnInitializedAsync()
+	{
+		_proxies = await ProxyService.ListAsync();
+	}
+
+	/// <summary>供宿主页面在打开其他互斥浮层时收起本组件的登记面板。</summary>
+	public void ClosePanels()
+	{
+		_uploadPanelOpen = false;
+		_rssPanelOpen    = false;
+	}
+
+	private async Task ToggleUploadPanelAsync()
+	{
+		var opening = !_uploadPanelOpen;
+		_uploadPanelOpen = opening;
+		_rssPanelOpen    = false;
+		if (opening) await OnPanelOpening.InvokeAsync();
+	}
+
+	private async Task ToggleRssPanelAsync()
+	{
+		var opening = !_rssPanelOpen;
+		_rssPanelOpen    = opening;
+		_uploadPanelOpen = false;
+		if (opening)
+		{
+			_proxies = await ProxyService.ListAsync();
+			await OnPanelOpening.InvokeAsync();
+		}
+	}
+
+	private async Task UploadTorrentAsync(InputFileChangeEventArgs args)
+	{
+		var file = args.File;
+		if (file is null) return;
+
+		_busy = true;
+		DownloadIntakeFeedback feedback;
+		try
+		{
+			await using var stream = file.OpenReadStream(DownloadIntakeService.MaxTorrentUploadBytes + 1024 * 1024);
+			using var       buffer = new MemoryStream();
+			await stream.CopyToAsync(buffer);
+			switch (buffer.Length)
+			{
+				case 0 :
+					feedback = new DownloadIntakeFeedback(false, "所选文件为空，请重新选择。");
+					break;
+				case > DownloadIntakeService.MaxTorrentUploadBytes :
+					feedback = new DownloadIntakeFeedback(false, "种子文件超过 10 MB，已拒绝。");
+					break;
+				default :
+					await Intake.CreateFromUploadAsync(buffer.ToArray(), null, _torrentSubjectId);
+					_torrentSubjectId = null;
+					_uploadPanelOpen  = false;
+					feedback          = new DownloadIntakeFeedback(true, "上传种子已登记，等待提交下载器。");
+					break;
+			}
+		}
+		catch (InvalidOperationException exception)
+		{
+			feedback = new DownloadIntakeFeedback(false, exception.Message);
+		}
+		catch (IOException)
+		{
+			feedback = new DownloadIntakeFeedback(false, "读取上传文件失败，请重试。");
+		}
+		catch (Exception exception)
+		{
+			Logger.LogWarning(exception, "上传 Torrent 登记失败。");
+			feedback = new DownloadIntakeFeedback(false,
+			                                      exception.Message.Contains("下载器", StringComparison.Ordinal)
+				                                      ? exception.Message
+				                                      : "上传或登记失败，请查看服务日志。");
+		}
+		finally
+		{
+			_busy = false;
+		}
+
+		await OnCompleted.InvokeAsync(feedback);
+	}
+
+	private async Task DownloadFromRssAsync()
+	{
+		_busy = true;
+		DownloadIntakeFeedback feedback;
+		try
+		{
+			var proxyId = Guid.TryParse(_rssDraft.ProxyId, out var parsed) ? parsed : (Guid?)null;
+			var result  = await Intake.CreateFromRssFeedAsync(_rssDraft.FeedUrl, proxyId, _rssDraft.SubjectId);
+			if (result.CreatedCount == 0 && !result.HasChanges && result.SupersededCount == 0)
+			{
+				feedback = new DownloadIntakeFeedback(false, "没有登记任何下载任务，请查看失败明细。", result);
+			}
+			else
+			{
+				var message = $"RSS 抓取完成：新建 {result.CreatedCount} 个下载任务"                                        +
+				              (result.DuplicateCount  > 0 ? $"，跳过重复 {result.DuplicateCount} 个" : string.Empty)  +
+				              (result.SupersededCount > 0 ? $"，择优跳过 {result.SupersededCount} 个" : string.Empty) +
+				              (result.FailedCount     > 0 ? $"，失败 {result.FailedCount} 个" : string.Empty)       +
+				              "。";
+				_rssDraft.Reset();
+				_rssPanelOpen = false;
+				feedback      = new DownloadIntakeFeedback(true, message, result);
+			}
+		}
+		catch (ArgumentException exception)
+		{
+			feedback = new DownloadIntakeFeedback(false, exception.Message);
+		}
+		catch (Exception exception)
+		{
+			Logger.LogWarning(exception, "RSS 链接下载失败。");
+			feedback = new DownloadIntakeFeedback(false, "RSS 抓取失败，请查看服务日志。");
+		}
+		finally
+		{
+			_busy = false;
+		}
+
+		await OnCompleted.InvokeAsync(feedback);
+	}
+
+	/// <summary>RSS 链接下载表单：RSS 地址必填，代理与 Bangumi ID 可选。</summary>
+	private sealed class RssDownloadDraft
+	{
+		[Required(ErrorMessage = "请填写 RSS 地址。")]
+		public string FeedUrl { get; set; } = string.Empty;
+
+		/// <summary>代理下拉的绑定值（代理 Id 的字符串形式）；空表示直连。</summary>
+		public string? ProxyId { get; set; }
+
+		/// <summary>整份 feed 统一绑定的 Bangumi Subject ID；自动识别失败时由用户显式提供。</summary>
+		public int? SubjectId { get; set; }
+
+		public void Reset()
+		{
+			FeedUrl   = string.Empty;
+			ProxyId   = null;
+			SubjectId = null;
+		}
+	}
+}

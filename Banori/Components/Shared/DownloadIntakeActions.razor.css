@@ -1,0 +1,4 @@
+.intake-popover-panel {
+    z-index: 1060;
+    width: min(26rem, calc(100vw - 2rem));
+}

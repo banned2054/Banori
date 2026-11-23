@@ -1,0 +1,32 @@
+@using Banori.Features.Downloads
+
+@if (Result is not null)
+{
+	var detailItems = Result.Items.Where(item => item.Outcome != RssDownloadItemOutcome.Created).ToList();
+	@if (detailItems.Count > 0)
+	{
+		<ul class="mb-0 mt-2 ps-3 small">
+			@foreach (var item in detailItems)
+			{
+				<li>
+					<span class="text-break">@item.Title</span>：
+					@(item.Outcome switch
+					{
+						RssDownloadItemOutcome.Duplicate  => "跳过（重复）",
+						RssDownloadItemOutcome.Superseded => "跳过（同集择优）",
+						_                                 => "失败"
+					})
+					@if (!string.IsNullOrWhiteSpace(item.Error) &&
+					     item.Error != "同一资源已有下载任务。")
+					{
+						<span class="text-body-secondary">@item.Error</span>
+					}
+				</li>
+			}
+		</ul>
+	}
+}
+
+@code {
+	[Parameter] public RssDownloadResult? Result { get; set; }
+}

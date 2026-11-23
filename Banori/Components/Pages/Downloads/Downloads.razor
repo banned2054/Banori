@@ -1,6 +1,7 @@
 @page "/downloads"
 @rendermode InteractiveServer
 @attribute [Authorize]
+@using Banori.Components.Shared
 @using Banori.Features.Downloads
 @using System.Globalization
 @implements IAsyncDisposable
@@ -17,25 +18,29 @@
 
 <div class="downloads-page" @ref="_pageRef" data-pane-expanded="@(_detailsExpanded ? "true" : "false")"
      data-batch-mode="@(_vm.BatchMode ? "true" : "false")">
-	<div class="d-flex justify-content-between align-items-start mb-3">
-		<div>
-			<h1 class="mb-1">下载任务</h1>
-			<div class="text-body-secondary">提交、对账与完成状态每 15 秒自动刷新；替换只记录关系，旧任务与文件保留。</div>
-		</div>
-		<div class="d-flex gap-2 flex-shrink-0 ms-3">
+	<div class="downloads-top-bar d-flex justify-content-end align-items-center gap-2">
+		<DownloadIntakeActions @ref="_intakeActions"
+		                       IdPrefix="downloads"
+		                       Align="end"
+		                       SmallButtons="true"
+		                       OutlineButtonClass="btn-outline-secondary"
+		                       Disabled="_vm.Busy"
+		                       OnPanelOpening="CloseFilterPanels"
+		                       OnCompleted="HandleIntakeCompletedAsync"/>
+		<div class="d-flex gap-2 flex-shrink-0">
 			@if (_vm.BatchMode)
 			{
-				<button type="button" class="btn btn-outline-danger" disabled="@(_vm.Busy || _vm.SelectedCount == 0)"
+				<button type="button" class="btn btn-sm btn-outline-danger" disabled="@(_vm.Busy || _vm.SelectedCount == 0)"
 				        @onclick="OpenBulkDeletePanelAsync">
 					删除所选（@_vm.SelectedCount）
 				</button>
-				<button type="button" class="btn btn-outline-secondary" disabled="@_vm.Busy" @onclick="_vm.ToggleBatchMode">
+				<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="_vm.ToggleBatchMode">
 					退出批量选择
 				</button>
 			}
 			else
 			{
-				<button type="button" class="btn btn-outline-secondary" disabled="@(_vm.Busy || _vm.Tasks.Count == 0)"
+				<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(_vm.Busy || _vm.Tasks.Count == 0)"
 				        @onclick="_vm.ToggleBatchMode">
 					批量选择
 				</button>
@@ -43,34 +48,9 @@
 		</div>
 	</div>
 
-	<div class="card mb-3">
-		<div class="card-body">
-			<h2 class="h5">上传种子</h2>
-			<div class="text-body-secondary small mb-2">
-				选择文件后会立即登记下载任务；不关联订阅与条目。每个种子都必须绑定 Bangumi：标题映射未命中时需填写 Bangumi ID，绑定后按 Bangumi 作品名（中文名优先）命名。来源站点按种子内 tracker 分类识别（u2/byrbt/tjupt），未识别统一归 bt，命中多个站点分类时拒绝登记。
-			</div>
-			<div class="row g-2 align-items-center">
-				<div class="col-auto">
-					<InputFile id="torrent-file-upload" class="visually-hidden" accept=".torrent" disabled="@_vm.Busy" OnChange="UploadTorrentAsync"/>
-					<label for="torrent-file-upload" class="btn btn-outline-primary mb-0 @(_vm.Busy ? "disabled" : string.Empty)">
-						<span class="bi bi-cloud-arrow-up me-1" aria-hidden="true"></span>选择并上传 .torrent
-					</label>
-				</div>
-				<div class="col-auto">
-					<label for="torrent-upload-subject" class="visually-hidden">Bangumi ID</label>
-					<input id="torrent-upload-subject" class="form-control" type="number" placeholder="Bangumi ID（映射未命中时必填）"
-					       min="1" disabled="@_vm.Busy" @bind="_vm.UploadSubjectId"/>
-				</div>
-				<div class="col-auto">
-					<span class="small text-body-secondary">最大 10 MB</span>
-				</div>
-			</div>
-		</div>
-	</div>
-
 	@if (_vm.Loaded)
 	{
-		<div class="downloads-toolbar d-flex flex-wrap align-items-center gap-2 mb-3">
+		<div class="downloads-toolbar d-flex flex-wrap align-items-center gap-2">
 			<input class="form-control" style="max-width: 260px;" type="search" placeholder="搜索标题、字幕组"
 			       aria-label="搜索下载任务" @bind="_vm.SearchText" @bind:event="oninput"/>
 			<div class="position-relative">
@@ -146,7 +126,7 @@
 			}
 			else if (_vm is { TotalCount: 0, HasActiveFilters: false })
 			{
-				<p class="text-body-secondary p-3">还没有下载任务。上传 .torrent 文件，或使用总览页的 RSS 链接下载。</p>
+				<p class="text-body-secondary p-3">还没有下载任务。点击右上角「上传种子」或「RSS 链接下载」添加任务。</p>
 			}
 			else
 			{
@@ -160,15 +140,69 @@
 								       checked="@_vm.AllSelected" @onchange="_vm.ToggleSelectAll"/>
 							</th>
 						}
-						<th>动画名</th>
-						<th>集数</th>
-						<th>版本</th>
-						<th>字幕组</th>
-						<th>语言</th>
+						<th aria-sort="@AriaSort(DownloadTaskSortColumn.AnimeName)">
+							<button type="button" class="downloads-sort-header @(IsSortActive(DownloadTaskSortColumn.AnimeName) ? "is-active" : null)"
+							        @onclick="() => _vm.SortByColumnAsync(DownloadTaskSortColumn.AnimeName)">
+								<span>动画名</span>
+								@if (IsSortActive(DownloadTaskSortColumn.AnimeName))
+								{
+									<span aria-hidden="true">@(_vm.SortDescending ? "↓" : "↑")</span>
+								}
+							</button>
+						</th>
+						<th aria-sort="@AriaSort(DownloadTaskSortColumn.Episode)">
+							<button type="button" class="downloads-sort-header @(IsSortActive(DownloadTaskSortColumn.Episode) ? "is-active" : null)"
+							        @onclick="() => _vm.SortByColumnAsync(DownloadTaskSortColumn.Episode)">
+								<span>集数</span>
+								@if (IsSortActive(DownloadTaskSortColumn.Episode))
+								{
+									<span aria-hidden="true">@(_vm.SortDescending ? "↓" : "↑")</span>
+								}
+							</button>
+						</th>
+						<th aria-sort="@AriaSort(DownloadTaskSortColumn.Version)">
+							<button type="button" class="downloads-sort-header @(IsSortActive(DownloadTaskSortColumn.Version) ? "is-active" : null)"
+							        @onclick="() => _vm.SortByColumnAsync(DownloadTaskSortColumn.Version)">
+								<span>版本</span>
+								@if (IsSortActive(DownloadTaskSortColumn.Version))
+								{
+									<span aria-hidden="true">@(_vm.SortDescending ? "↓" : "↑")</span>
+								}
+							</button>
+						</th>
+						<th aria-sort="@AriaSort(DownloadTaskSortColumn.SubtitleGroup)">
+							<button type="button" class="downloads-sort-header @(IsSortActive(DownloadTaskSortColumn.SubtitleGroup) ? "is-active" : null)"
+							        @onclick="() => _vm.SortByColumnAsync(DownloadTaskSortColumn.SubtitleGroup)">
+								<span>字幕组</span>
+								@if (IsSortActive(DownloadTaskSortColumn.SubtitleGroup))
+								{
+									<span aria-hidden="true">@(_vm.SortDescending ? "↓" : "↑")</span>
+								}
+							</button>
+						</th>
+						<th aria-sort="@AriaSort(DownloadTaskSortColumn.Language)">
+							<button type="button" class="downloads-sort-header @(IsSortActive(DownloadTaskSortColumn.Language) ? "is-active" : null)"
+							        @onclick="() => _vm.SortByColumnAsync(DownloadTaskSortColumn.Language)">
+								<span>语言</span>
+								@if (IsSortActive(DownloadTaskSortColumn.Language))
+								{
+									<span aria-hidden="true">@(_vm.SortDescending ? "↓" : "↑")</span>
+								}
+							</button>
+						</th>
 						<th>来源</th>
 						<th>状态</th>
 						<th>进度</th>
-						<th>创建时间</th>
+						<th aria-sort="@AriaSort(DownloadTaskSortColumn.CreatedAt)">
+							<button type="button" class="downloads-sort-header @(IsSortActive(DownloadTaskSortColumn.CreatedAt) ? "is-active" : null)"
+							        @onclick="() => _vm.SortByColumnAsync(DownloadTaskSortColumn.CreatedAt)">
+								<span>创建时间</span>
+								@if (IsSortActive(DownloadTaskSortColumn.CreatedAt))
+								{
+									<span aria-hidden="true">@(_vm.SortDescending ? "↓" : "↑")</span>
+								}
+							</button>
+						</th>
 						<th>完成时间</th>
 					</tr>
 					</thead>
@@ -184,7 +218,7 @@
 					@foreach (var task in _vm.Tasks)
 					{
 						<tr @key="task.Id" class="@(IsSelected(task.Id) ? "table-active" : null)"
-						    @onclick="() => SelectTaskAsync(task, _activeTab)"
+						    @onclick="() => SelectTaskAsync(task)"
 						    @oncontextmenu="e => OpenContextMenuAsync(e, task)" @oncontextmenu:preventDefault="@(!_vm.BatchMode)">
 							@if (_vm.BatchMode)
 							{
@@ -211,7 +245,7 @@
 							<td class="downloads-version-cell">
 								@if (task.Version > 1)
 								{
-									<span class="badge text-bg-secondary">v@task.Version</span>
+									<span class="badge text-bg-secondary">v@(task.Version)</span>
 								}
 								else
 								{
@@ -258,10 +292,12 @@
 							<td class="downloads-progress-cell">
 								@if (task is { ShowsProgress: true, Progress: { } progress })
 								{
-									<div class="progress" style="height: 8px;">
-										<div class="progress-bar" style="width: @(Math.Clamp(progress * 100, 0, 100).ToString("0.#"))%;"></div>
+									<div class="downloads-progress-wrap">
+										<div class="progress flex-grow-1" style="height: 6px;">
+											<div class="progress-bar" style="width: @(Math.Clamp(progress * 100, 0, 100).ToString("0.#"))%;"></div>
+										</div>
+										<span class="small text-body-secondary">@task.ProgressCaption@(progress.ToString("0.0%"))</span>
 									</div>
-									<span class="small text-body-secondary">@task.ProgressCaption@(progress.ToString("0.0%"))</span>
 								}
 								else
 								{
@@ -363,7 +399,8 @@
 	@if (!string.IsNullOrEmpty(_vm.Message))
 	{
 		<div class="alert @(_vm.Succeeded ? "alert-success" : "alert-danger") downloads-message mt-3" role="status">
-			@_vm.Message
+			<div>@_vm.Message</div>
+			<DownloadIntakeRssDetails Result="_rssResult"/>
 		</div>
 	}
 
@@ -378,9 +415,9 @@
 			<div class="d-grid gap-1 px-2 py-1">
 				@TaskActions(contextTask)
 				<button type="button" class="btn btn-sm btn-outline-secondary"
-				        @onclick="() => SelectTaskAsync(contextTask, DetailTab.Details)">查看详细信息</button>
+				        @onclick="() => OpenTaskTabAsync(contextTask, DetailTab.Details)">查看详细信息</button>
 				<button type="button" class="btn btn-sm btn-outline-secondary"
-				        @onclick="() => SelectTaskAsync(contextTask, DetailTab.Files)">查看文件列表</button>
+				        @onclick="() => OpenTaskTabAsync(contextTask, DetailTab.Files)">查看文件列表</button>
 				<button type="button" class="btn btn-sm btn-outline-danger" disabled="@_vm.Busy"
 				        @onclick="() => OpenDeletePanelAsync(contextTask)">删除</button>
 			</div>
@@ -506,6 +543,8 @@
 	private          DownloadTasksPageViewModel _vm  = null!;
 	private          PeriodicTimer?             _timer;
 	private          Task?                      _refreshLoop;
+	private          DownloadIntakeActions?     _intakeActions;
+	private          RssDownloadResult?         _rssResult;
 	private          bool                       _statusPanelOpen;
 	private          bool                       _languagePanelOpen;
 	private          Guid?                      _selectedTaskId;
@@ -626,17 +665,25 @@
 		}
 	}
 
-	/// <summary>两个筛选浮层互斥打开：点按钮切换开合，勾选选项不影响开合。</summary>
+	/// <summary>浮层互斥打开：点按钮切换开合，勾选选项不影响开合。</summary>
+	private void CloseFilterPanels()
+	{
+		_statusPanelOpen   = false;
+		_languagePanelOpen = false;
+	}
+
 	private void ToggleStatusPanel()
 	{
 		_statusPanelOpen   = !_statusPanelOpen;
 		_languagePanelOpen = false;
+		_intakeActions?.ClosePanels();
 	}
 
 	private void ToggleLanguagePanel()
 	{
 		_languagePanelOpen = !_languagePanelOpen;
 		_statusPanelOpen   = false;
+		_intakeActions?.ClosePanels();
 	}
 
 	/// <summary>页面打开期间限频重新查询持久化状态；页面关闭即停止，不影响后台任务。</summary>
@@ -671,8 +718,19 @@
 		return !_vm.BatchMode && _selectedTaskId == taskId;
 	}
 
-	/// <summary>点击行或右键菜单的查看入口：选中任务、展开下面板；批量模式不联动。</summary>
-	private async Task SelectTaskAsync(DownloadTaskView task, DetailTab tab)
+	/// <summary>点击列表行：仅选中任务，不改变下面板展开/折叠状态；批量模式不联动。</summary>
+	private async Task SelectTaskAsync(DownloadTaskView task)
+	{
+		if (_vm.BatchMode) return;
+
+		_selectedTaskId  = task.Id;
+		_contextMenuOpen = false;
+		if (_detailsExpanded && _activeTab == DetailTab.Files)
+			await RunOperationAsync(() => _vm.ActivateFilesTabAsync(task.Id, _cts.Token));
+	}
+
+	/// <summary>右键菜单的查看入口：选中任务、切到目标页签并展开下面板；批量模式不联动。</summary>
+	private async Task OpenTaskTabAsync(DownloadTaskView task, DetailTab tab)
 	{
 		if (_vm.BatchMode) return;
 
@@ -800,27 +858,18 @@
 		}
 	}
 
-	private async Task UploadTorrentAsync(InputFileChangeEventArgs e)
+	private async Task HandleIntakeCompletedAsync(DownloadIntakeFeedback feedback)
 	{
-		var file = e.File;
-		if (file is null) return;
-
-		try
-		{
-			await using var stream = file.OpenReadStream(DownloadIntakeService.MaxTorrentUploadBytes + 1024 * 1024);
-			await _vm.UploadTorrentAsync(stream, _cts.Token);
-		}
-		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
-		{
-		}
-		catch (IOException)
-		{
-			_vm.NoteFailure("读取上传文件失败，请重试。");
-		}
+		_rssResult = feedback.RssResult;
+		var shouldReload = feedback.Succeeded || (feedback.RssResult?.CreatedCount ?? 0) > 0;
+		await RunOperationAsync(() => _vm.ApplyIntakeFeedbackAsync(feedback.Succeeded, feedback.Message, shouldReload,
+		                                                           _cts.Token),
+		                        clearRssResult : false);
 	}
 
-	private async Task RunOperationAsync(Func<Task> operation)
+	private async Task RunOperationAsync(Func<Task> operation, bool clearRssResult = true)
 	{
+		if (clearRssResult) _rssResult = null;
 		try
 		{
 			await operation();
@@ -831,6 +880,11 @@
 	}
 
 	/// <summary>列表动画名：中文名优先，依次回退命名快照与 RSS 标题。</summary>
+	private bool IsSortActive(DownloadTaskSortColumn column) => _vm.SortColumn == column;
+
+	private string? AriaSort(DownloadTaskSortColumn column) =>
+		_vm.SortColumn != column ? null : _vm.SortDescending ? "descending" : "ascending";
+
 	private static string AnimeTitle(DownloadTaskView task)
 	{
 		if (!string.IsNullOrWhiteSpace(task.SubjectName)) return task.SubjectName;

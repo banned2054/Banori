@@ -1,19 +1,25 @@
 @page "/"
-@using Banori.Components.Pages.HomeForms
+@using Banori.Components.Shared
 @using Banori.Features.Dashboard
 @rendermode InteractiveServer
 @attribute [Authorize]
 @inject DashboardQueries DashboardService
 
-@* 总览页：下载登记表单在 DownloadForms 组件内（自带忙碌与结果状态），页面只负责仪表盘快照。 *@
+@* 总览页：下载登记浮层在 DownloadIntakeActions 组件内，页面展示反馈提示与仪表盘快照。 *@
 
 <PageTitle>总览 - Banori</PageTitle>
 
-<h1>总览</h1>
+<div class="mb-3">
+	<DownloadIntakeActions IdPrefix="home" Align="start" OnCompleted="HandleIntakeCompletedAsync"/>
+</div>
 
-<p class="lead">RSS 抓取评估与下载闭环正在运行；优胜条目自动登记下载任务。</p>
-
-<DownloadForms/>
+@if (_intakeFeedback is not null)
+{
+	<div class="alert @(_intakeFeedback.Succeeded ? "alert-success" : "alert-danger")" role="status">
+		<div>@_intakeFeedback.Message</div>
+		<DownloadIntakeRssDetails Result="_intakeFeedback.RssResult"/>
+	</div>
+}
 
 <div class="row g-3">
 	<div class="col-md-3">
@@ -59,11 +65,19 @@
 </div>
 
 @code {
-	private DashboardSnapshot? _snapshot;
+	private DashboardSnapshot?      _snapshot;
+	private DownloadIntakeFeedback? _intakeFeedback;
 
 	protected override async Task OnInitializedAsync()
 	{
 		_snapshot = await DashboardService.GetSnapshotAsync();
+	}
+
+	private async Task HandleIntakeCompletedAsync(DownloadIntakeFeedback feedback)
+	{
+		_intakeFeedback = feedback;
+		if (feedback.Succeeded || (feedback.RssResult?.CreatedCount ?? 0) > 0)
+			_snapshot = await DashboardService.GetSnapshotAsync();
 	}
 
 }

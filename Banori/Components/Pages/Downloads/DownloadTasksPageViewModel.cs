@@ -85,6 +85,26 @@ public sealed class DownloadTasksPageViewModel(
                                     StatusFilterActive            ||
                                     _languageFilter.Count > 0;
 
+    /// <summary>当前主排序列；默认为动画名。</summary>
+    public DownloadTaskSortColumn SortColumn { get; private set; } = DownloadTaskSortColumn.AnimeName;
+
+    /// <summary>当前主排序列是否降序。</summary>
+    public bool SortDescending { get; private set; }
+
+    /// <summary>点击表头排序：切到新列时采用该列默认方向（点击动画名即恢复默认排序），再点同列则反序。</summary>
+    public Task SortByColumnAsync(DownloadTaskSortColumn column)
+    {
+        if (SortColumn == column)
+            SortDescending = !SortDescending;
+        else
+        {
+            SortColumn     = column;
+            SortDescending = DownloadTaskQueries.DefaultSortDescending(column);
+        }
+
+        return ReloadFromFirstPageAsync();
+    }
+
     /// <summary>分页状态：页码为查询层钳制后的实际值，TotalCount 是筛选后的完整总数而不只当前页。</summary>
     public int PageNumber { get; private set; } = 1;
 
@@ -190,10 +210,12 @@ public sealed class DownloadTasksPageViewModel(
 
     private DownloadTaskListFilter BuildFilter() => new()
     {
-        SearchText   = _searchText,
-        StatusGroups = _statusFilter,
-        Languages    = _languageFilter,
-        Page         = _pageNumber
+        SearchText     = _searchText,
+        StatusGroups   = _statusFilter,
+        Languages      = _languageFilter,
+        SortColumn     = SortColumn,
+        SortDescending = SortDescending,
+        Page           = _pageNumber
     };
 
     /// <summary>
@@ -976,6 +998,15 @@ public sealed class DownloadTasksPageViewModel(
     {
         Succeeded = false;
         Message   = message;
+    }
+
+    /// <summary>接收统一登记组件的反馈并按需刷新任务列表。</summary>
+    public async Task ApplyIntakeFeedbackAsync(
+        bool succeeded, string message, bool shouldReload, CancellationToken cancellationToken = default)
+    {
+        Succeeded = succeeded;
+        Message   = message;
+        if (shouldReload) await LoadAsync(cancellationToken);
     }
 
     public async Task PauseAsync(Guid taskId, CancellationToken cancellationToken = default)
