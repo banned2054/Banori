@@ -377,16 +377,17 @@ public sealed class DownloadTasksPageViewModel(
     public async Task LoadFilesAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
         var state = FileState(taskId);
-        if (state.Loading || state.Busy) return;
-        state.Loading = true;
-        state.Error   = null;
+        if (state.Loading || state.Busy || state.Refreshing) return;
+        state.Loading            = true;
+        state.Error              = null;
+        state.SilentRefreshError = null;
         try
         {
             var details = await RequireFileService().ListAsync(taskId, cancellationToken);
             if (IsCurrentFileState(taskId, state))
             {
                 state.Details               = details;
-                state.FileOperationPending = details.HasPendingFileOperation;
+                state.FileOperationPending  = details.HasPendingFileOperation;
                 state.PendingFileWaitPaused = false;
                 foreach (var draft in state.Drafts.Values) draft.InvalidatePreview();
                 StartPendingFileRefresh(taskId, state);
@@ -407,27 +408,80 @@ public sealed class DownloadTasksPageViewModel(
         }
     }
 
+    /// <summary>
+    ///     切入文件列表 Tab 或在该 Tab 下切换选中任务时调用：若尚无本地清单先调 ListAsync 秒出展示，
+    ///     若允许远端同步则随后静默触发一次 RefreshAsync。
+    /// </summary>
+    public async Task ActivateFilesTabAsync(Guid taskId, CancellationToken cancellationToken = default)
+    {
+        var task = FindTask(taskId);
+        if (task is null) return;
+
+        var state = FileState(taskId);
+        if (ShouldSkipAutoFileSync(state)) return;
+
+        if (state.Details is null)
+        {
+            await LoadFilesAsync(taskId, cancellationToken);
+            ResultsChanged?.Invoke();
+            task = FindTask(taskId);
+            if (task is null || !IsCurrentFileState(taskId, state) || state.Details is null) return;
+            if (ShouldSkipAutoFileSync(state)) return;
+        }
+
+        if (!CanSyncFilesRemotelyOnActivate(task, state)) return;
+        if (task.Status is DownloadTaskStatus.Completed or DownloadTaskStatus.Replaced)
+            state.InitialRemoteSynced = true;
+
+        await RefreshFilesSilentlyAsync(taskId, state, cancellationToken);
+    }
+
+    /// <summary>
+    ///     15 秒定时静默刷新：仅对 Downloading / Paused 且非缺种的活跃任务请求远端，
+    ///     存在草稿、进行中操作或终态/未提交/受阻状态时跳过。
+    /// </summary>
+    public async Task AutoRefreshFilesAsync(Guid taskId, CancellationToken cancellationToken = default)
+    {
+        var task = FindTask(taskId);
+        if (task is null) return;
+
+        var state = FileState(taskId);
+        if (ShouldSkipAutoFileSync(state) || !CanAutoPollFilesRemotely(task)) return;
+
+        if (state.Details is null)
+        {
+            await LoadFilesAsync(taskId, cancellationToken);
+            ResultsChanged?.Invoke();
+            task = FindTask(taskId);
+            if (task is null || !IsCurrentFileState(taskId, state) || state.Details is null) return;
+            if (ShouldSkipAutoFileSync(state) || !CanAutoPollFilesRemotely(task)) return;
+        }
+
+        await RefreshFilesSilentlyAsync(taskId, state, cancellationToken);
+    }
+
     /// <summary>刷新文件：实时查询下载器并按原始种子核对新路径，与展开面板的 ListAsync 加载分开。</summary>
     public Task RefreshFilesAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
         var state = FileState(taskId);
         // 待确认期间手动刷新会被服务端的 HasPending 拒绝；入口先锁住，避免误以为刷新成功。
-        if (state.FileOperationPending || state.Loading || state.Busy) return Task.CompletedTask;
+        if (state.FileOperationPending || state.Loading || state.Busy || state.Refreshing) return Task.CompletedTask;
         return RefreshFilesCoreAsync(taskId, state, cancellationToken);
     }
 
     private async Task RefreshFilesCoreAsync(
         Guid taskId, DownloadTaskFilesState state, CancellationToken cancellationToken)
     {
-        state.Loading = true;
-        state.Error   = null;
+        state.Loading            = true;
+        state.Error              = null;
+        state.SilentRefreshError = null;
         try
         {
             var details = await RequireFileService().RefreshAsync(taskId, cancellationToken);
             if (IsCurrentFileState(taskId, state))
             {
                 state.Details               = details;
-                state.FileOperationPending = details.HasPendingFileOperation;
+                state.FileOperationPending  = details.HasPendingFileOperation;
                 state.PendingFileWaitPaused = false;
                 // 刷新后来源路径可能变化，旧预览基于旧路径生成，必须失效。
                 foreach (var draft in state.Drafts.Values) draft.InvalidatePreview();
@@ -453,15 +507,96 @@ public sealed class DownloadTasksPageViewModel(
         }
     }
 
+    private async Task RefreshFilesSilentlyAsync(
+        Guid taskId, DownloadTaskFilesState state, CancellationToken cancellationToken)
+    {
+        state.Refreshing         = true;
+        state.SilentRefreshError = null;
+        ResultsChanged?.Invoke();
+        try
+        {
+            var details = await RequireFileService().RefreshAsync(taskId, cancellationToken);
+            if (!IsCurrentFileState(taskId, state)) return;
+            // 同步期间用户可能开始编辑或触发了其他文件操作；绝不覆盖或冲掉用户草稿与预览。
+            if (ShouldSkipApplyingSilentRefresh(state)) return;
+
+            state.Details               = details;
+            state.FileOperationPending  = details.HasPendingFileOperation;
+            state.PendingFileWaitPaused = false;
+            state.Error                 = null;
+            StartPendingFileRefresh(taskId, state);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TorrentMissingException)
+        {
+            if (!IsCurrentFileState(taskId, state)) return;
+            const string missingMessage = "qBittorrent 中已找不到该种子";
+            if (state.Details is null)
+                state.Error = missingMessage;
+            else
+                state.SilentRefreshError = missingMessage;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "下载任务 {TaskId} 文件后台静默刷新失败。", taskId);
+            if (!IsCurrentFileState(taskId, state)) return;
+            if (state.Details is null)
+                state.Error = exception.Message;
+            else
+                state.SilentRefreshError = $"后台同步失败：{exception.Message}";
+        }
+        finally
+        {
+            state.Refreshing = false;
+            ResultsChanged?.Invoke();
+        }
+    }
+
+    private DownloadTaskView? FindTask(Guid taskId) =>
+        Tasks.FirstOrDefault(task => task.Id == taskId);
+
+    private static bool ShouldSkipAutoFileSync(DownloadTaskFilesState state) =>
+        state.Drafts.Count > 0 ||
+        state.Loading          ||
+        state.Busy             ||
+        state.Refreshing       ||
+        state.FileOperationPending;
+
+    private static bool ShouldSkipApplyingSilentRefresh(DownloadTaskFilesState state) =>
+        state.Drafts.Count > 0 ||
+        state.Loading          ||
+        state.Busy             ||
+        state.FileOperationPending;
+
+    private static bool CanSyncFilesRemotelyOnActivate(DownloadTaskView task, DownloadTaskFilesState state)
+    {
+        if (task.IsTorrentMissing) return false;
+        return task.Status switch
+        {
+            DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused => true,
+            DownloadTaskStatus.Completed or DownloadTaskStatus.Replaced =>
+                !task.IsSelectionTombstone && !state.InitialRemoteSynced,
+            _ => false
+        };
+    }
+
+    private static bool CanAutoPollFilesRemotely(DownloadTaskView task) =>
+        !task.IsTorrentMissing &&
+        task.Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused;
+
     public void BeginFileEdit(Guid taskId, int fileIndex)
     {
         var state = FileState(taskId);
         if (state.Busy || state.Loading || state.FileOperationPending || state.Drafts.ContainsKey(fileIndex)) return;
         var file = state.Details?.Files.SingleOrDefault(file => file.Index == fileIndex);
         if (file is null) return;
-        state.Drafts[fileIndex] = new DownloadFileEditDraft(file);
-        state.Error             = null;
-        state.Message           = null;
+        state.Drafts[fileIndex]  = new DownloadFileEditDraft(file);
+        state.Error              = null;
+        state.SilentRefreshError = null;
+        state.Message            = null;
     }
 
     public void CancelFileEdit(Guid taskId, int fileIndex)
@@ -519,9 +654,10 @@ public sealed class DownloadTasksPageViewModel(
         if (state.Busy || state.Loading || state.FileOperationPending ||
             !state.Drafts.TryGetValue(fileIndex, out var draft) || !draft.CanApply) return;
         var request = draft.Request;
-        state.Busy    = true;
-        state.Error   = null;
-        state.Message = null;
+        state.Busy               = true;
+        state.Error              = null;
+        state.SilentRefreshError = null;
+        state.Message            = null;
         try
         {
             var details = await RequireFileService().ApplyAsync(taskId, fileIndex, request, cancellationToken,
@@ -863,6 +999,7 @@ public sealed class DownloadTasksPageViewModel(
     /// <summary>种子丢失后重新下载：沿用原决策与命名快照重新提交，完成记录与逐集归属不变。</summary>
     public async Task RedownloadAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
+        if (_fileStates.TryGetValue(taskId, out var state)) state.InitialRemoteSynced = false;
         await RunOperationAsync(taskId, () => downloadService.RetryAsync(taskId, cancellationToken),
                                 "已重新提交下载，等待下载器确认。", cancellationToken);
     }
@@ -942,13 +1079,18 @@ public sealed class DownloadTaskFilesState
 {
     public bool    Expanded             { get; internal set; }
     public bool    Loading              { get; internal set; }
+    public bool    Refreshing           { get; internal set; }
     public bool    Busy                 { get; internal set; }
     public string? Error                { get; internal set; }
+    public string? SilentRefreshError   { get; internal set; }
     public string? Message              { get; internal set; }
     public bool    FileOperationPending { get; internal set; }
 
     /// <summary>超时或轮询失败后自动等待暂停；仍待确认时界面提供“继续等待确认”入口。</summary>
     public bool PendingFileWaitPaused { get; internal set; }
+
+    /// <summary>终态任务是否已在当前页面周期内按需同步过一次远端文件清单。</summary>
+    public bool InitialRemoteSynced { get; internal set; }
 
     internal CancellationTokenSource? PendingRefreshCancellation { get; set; }
 

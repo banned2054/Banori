@@ -606,6 +606,7 @@ public sealed record DownloadTaskView
 
     public required Guid               Id               { get; init; }
     public required Guid?              FeedItemId       { get; init; }
+    public          string             InfoHash         { get; init; } = string.Empty;
     public          string?            TorrentName      { get; init; }
     public          int?               SubjectId        { get; init; }
     public          string?            SubjectName      { get; init; }

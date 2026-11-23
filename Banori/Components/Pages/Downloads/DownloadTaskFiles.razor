@@ -1,13 +1,17 @@
 @using Banori.Features.Downloads
 @using System.Globalization
 <div class="download-task-files p-3 bg-body-tertiary" aria-label="任务文件详情">
-	@if (State.Loading)
+	@if (State.Loading && (!AutoRefreshMode || State.Details is null))
 	{
 		<p role="status">正在加载文件…</p>
 	}
 	@if (!string.IsNullOrEmpty(State.Error))
 	{
 		<div class="alert alert-danger" role="alert">@State.Error</div>
+	}
+	@if (!string.IsNullOrEmpty(State.SilentRefreshError))
+	{
+		<div class="alert alert-warning py-1 px-2 small mb-2" role="status">@State.SilentRefreshError</div>
 	}
 	@if (!string.IsNullOrEmpty(State.Message))
 	{
@@ -31,7 +35,14 @@
 					</span>
 				}
 			</div>
-			<div class="d-flex gap-2 flex-shrink-0">
+			<div class="d-flex align-items-center gap-2 flex-shrink-0">
+				@if (State.Refreshing)
+				{
+					<span class="small text-body-secondary d-inline-flex align-items-center gap-1" role="status">
+						<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+						正在同步…
+					</span>
+				}
 				@if (State.FileOperationPending && State.PendingFileWaitPaused)
 				{
 					<button type="button" class="btn btn-sm btn-outline-warning"
@@ -39,10 +50,6 @@
 						继续等待确认
 					</button>
 				}
-				<button type="button" class="btn btn-sm btn-outline-secondary"
-				        disabled="@(State.Busy || State.Loading || State.FileOperationPending)" @onclick="RefreshAsync">
-					刷新文件
-				</button>
 			</div>
 		</div>
 		@if (TaskView?.PathDecisionNote is { } decision)
@@ -187,6 +194,9 @@
 	public DownloadTasksPageViewModel ViewModel { get; set; } = null!;
 
 	[Parameter]
+	public bool AutoRefreshMode { get; set; }
+
+	[Parameter]
 	public CancellationToken CancellationToken { get; set; }
 
 	private DownloadTaskFilesState State => ViewModel.FileState(TaskId);
@@ -197,11 +207,6 @@
 	private Task ReloadAsync()
 	{
 		return RunAsync(() => ViewModel.LoadFilesAsync(TaskId, CancellationToken));
-	}
-
-	private Task RefreshAsync()
-	{
-		return RunAsync(() => ViewModel.RefreshFilesAsync(TaskId, CancellationToken));
 	}
 
 	private Task PreviewAsync(int index)

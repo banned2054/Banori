@@ -273,6 +273,7 @@ public sealed class DownloadTaskQueries(
         {
             Id          = task.Id,
             FeedItemId  = task.FeedItemId,
+            InfoHash    = task.InfoHash,
             TorrentName = task.FeedItem?.Title,
             SubjectId   = task.SubjectId,
             SubjectName = task.Subject is null                 ? null :

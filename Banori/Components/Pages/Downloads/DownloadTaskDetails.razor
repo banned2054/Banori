@@ -1,0 +1,452 @@
+@using Banori.Features.Downloads
+@using System.Globalization
+@implements IDisposable
+
+<div class="download-task-details p-3" aria-label="任务详细信息">
+	<div class="d-flex flex-wrap justify-content-between align-items-start gap-2 pb-2 mb-3 border-bottom">
+		<div class="min-w-0 flex-grow-1">
+			<div class="d-flex flex-wrap align-items-center gap-2">
+				<span class="fw-semibold text-break">@DisplayTitle</span>
+				<span class="badge @StatusBadgeClass">@Task.StatusText</span>
+				@if (Task is { ShowsProgress: true, Progress: { } progress })
+				{
+					<span class="d-inline-flex align-items-center gap-2 small text-body-secondary">
+						<span class="progress detail-inline-progress">
+							<span class="progress-bar" style="width: @(Math.Clamp(progress * 100, 0, 100).ToString("0.#", CultureInfo.InvariantCulture))%;"></span>
+						</span>
+						<span>@Task.ProgressCaption@(progress.ToString("0.0%", CultureInfo.InvariantCulture))</span>
+					</span>
+				}
+			</div>
+		</div>
+		<div class="d-flex flex-wrap align-items-center gap-1 flex-shrink-0">
+			@TaskActions?.Invoke(Task)
+			<button type="button" class="btn btn-sm btn-outline-danger" disabled="@Busy" @onclick="() => OnDelete.InvokeAsync(Task)">
+				删除
+			</button>
+		</div>
+	</div>
+
+	@if (HasAlert)
+	{
+		<div class="d-flex flex-column gap-2 mb-3" aria-label="异常与恢复操作">
+			@if ((Task.Status is DownloadTaskStatus.Failed or DownloadTaskStatus.Lost) && string.IsNullOrEmpty(Task.Error))
+			{
+				<div class="alert alert-danger mb-0 py-2 px-3 d-flex flex-wrap justify-content-between align-items-center gap-2" role="alert">
+					<div class="small text-break">
+						<strong>@Task.StatusText：</strong>尚未记录详细错误，可重新提交到下载器。
+					</div>
+					<button type="button" class="btn btn-sm btn-danger flex-shrink-0" disabled="@Busy"
+					        @onclick="() => OnRetry.InvokeAsync(Task.Id)">
+						重试
+					</button>
+				</div>
+			}
+			@if (!string.IsNullOrEmpty(Task.Error))
+			{
+				<div class="alert alert-danger mb-0 py-2 px-3 d-flex flex-wrap justify-content-between align-items-center gap-2" role="alert">
+					<div class="small text-break">
+						<strong>@(string.IsNullOrWhiteSpace(Task.FailedStep) ? "错误" : Task.FailedStep)：</strong>@Task.Error
+					</div>
+					@if (Task.Status is DownloadTaskStatus.Failed or DownloadTaskStatus.Lost)
+					{
+						<button type="button" class="btn btn-sm btn-danger flex-shrink-0" disabled="@Busy"
+						        @onclick="() => OnRetry.InvokeAsync(Task.Id)">
+							重试
+						</button>
+					}
+				</div>
+			}
+			@if (Task.ArchiveReviewReason is not null)
+			{
+				<div class="alert alert-warning mb-0 py-2 px-3 d-flex flex-wrap justify-content-between align-items-center gap-2" role="alert">
+					<div class="small text-break">
+						<strong>归档待核对：</strong>@Task.ArchiveReviewReason
+					</div>
+					@if (Task.Status == DownloadTaskStatus.Completed)
+					{
+						<button type="button" class="btn btn-sm btn-warning flex-shrink-0" disabled="@Busy"
+						        @onclick="() => OnRetryArchive.InvokeAsync(Task.Id)">
+							重新核对归档
+						</button>
+					}
+				</div>
+			}
+			@if (Task.IsTorrentMissing)
+			{
+				<div class="alert alert-warning mb-0 py-2 px-3 d-flex flex-wrap justify-content-between align-items-center gap-2" role="alert">
+					<div class="small text-break">
+						<strong>种子丢失：</strong>qBittorrent 中已找不到该种子，完成记录与逐集归属仍保留。
+					</div>
+					<button type="button" class="btn btn-sm btn-primary flex-shrink-0" disabled="@Busy"
+					        @onclick="() => OnRedownload.InvokeAsync(Task.Id)">
+						重新下载
+					</button>
+				</div>
+			}
+			@if (Task.Phase == DownloadDisplayPhase.VerificationUnconfirmed)
+			{
+				<div class="alert alert-warning mb-0 py-2 px-3 d-flex flex-wrap justify-content-between align-items-center gap-2" role="alert">
+					<div class="small text-break">
+						<strong>校验未确认：</strong>@VerificationUnconfirmedText
+					</div>
+					<button type="button" class="btn btn-sm btn-primary flex-shrink-0" disabled="@Busy"
+					        @onclick="() => OnReverify.InvokeAsync(Task.Id)">
+						重新校验
+					</button>
+				</div>
+			}
+		</div>
+	}
+
+	<div class="detail-section mb-3">
+		<div class="detail-meta-grid">
+			<div class="detail-field detail-field-wide detail-field-primary">
+				<div class="detail-label">qB 种子名</div>
+				<div class="detail-value text-break fw-semibold">
+					@if (string.IsNullOrWhiteSpace(Task.NamingSnapshot))
+					{
+						<span class="text-body-secondary">—</span>
+					}
+					else
+					{
+						@Task.NamingSnapshot
+					}
+				</div>
+			</div>
+			<div class="detail-field detail-field-wide">
+				<div class="detail-label">qB Hash</div>
+				<div class="detail-value d-flex flex-wrap align-items-center gap-2">
+					@if (string.IsNullOrWhiteSpace(Task.InfoHash))
+					{
+						<span class="text-body-secondary">—</span>
+					}
+					else
+					{
+						<code class="font-monospace text-break user-select-all">@Task.InfoHash</code>
+						<button type="button"
+						        class="btn btn-sm py-0 px-2 @(IsCopied ? "btn-success" : "btn-outline-secondary")"
+						        aria-label="复制 qB Hash" @onclick="CopyInfoHashAsync">
+							@(IsCopied ? "已复制" : "复制")
+						</button>
+					}
+				</div>
+			</div>
+			<div class="detail-field">
+				<div class="detail-label">动画名</div>
+				<div class="detail-value text-break">
+					@if (!string.IsNullOrWhiteSpace(Task.SubjectName))
+					{
+						<span>@Task.SubjectName</span>
+						@if (Task.SubjectId is { } subjectId)
+						{
+							<span class="text-body-secondary small ms-1">(Bangumi #@subjectId)</span>
+						}
+					}
+					else if (Task.SubjectId is { } subjectId)
+					{
+						<span>Bangumi #@subjectId</span>
+					}
+					else
+					{
+						<span class="text-body-secondary">—</span>
+					}
+				</div>
+			</div>
+			<div class="detail-field">
+				<div class="detail-label">集数</div>
+				<div class="detail-value">@EpisodeText</div>
+			</div>
+			<div class="detail-field">
+				<div class="detail-label">版本</div>
+				<div class="detail-value">v@Task.Version</div>
+			</div>
+			<div class="detail-field">
+				<div class="detail-label">字幕组</div>
+				<div class="detail-value text-break">@SubtitleGroupText</div>
+			</div>
+			<div class="detail-field">
+				<div class="detail-label">字幕语言</div>
+				<div class="detail-value">@OrDash(Task.SubtitleLanguage)</div>
+			</div>
+			<div class="detail-field">
+				<div class="detail-label">来源站点</div>
+				<div class="detail-value">
+					@if (string.IsNullOrWhiteSpace(Task.SiteSource))
+					{
+						<span class="text-body-secondary">—</span>
+					}
+					else
+					{
+						<span class="badge text-bg-info">@Task.SiteSource</span>
+					}
+				</div>
+			</div>
+			<div class="detail-field">
+				<div class="detail-label">总大小</div>
+				<div class="detail-value">@(Task.TotalSize is { } totalSize ? SizeText(totalSize) : "—")</div>
+			</div>
+			<div class="detail-field detail-field-wide">
+				<div class="detail-label">RSS 标题</div>
+				<div class="detail-value text-break text-body-secondary">@OrDash(Task.TorrentName)</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="detail-lower-grid">
+		<section class="detail-card p-3" aria-label="状态详细描述">
+			<h3 class="detail-card-title">状态与替换关系</h3>
+			<dl class="detail-kv-list mb-0">
+				<div class="detail-kv-row">
+					<dt>当前状态</dt>
+					<dd><span class="badge @StatusBadgeClass">@Task.StatusText</span></dd>
+				</div>
+				<div class="detail-kv-row">
+					<dt>当前等待</dt>
+					<dd>@Task.WaitingForText</dd>
+				</div>
+				@if (ExtraPhaseNotes.Count > 0)
+				{
+					<div class="detail-kv-row">
+						<dt>阶段说明</dt>
+						<dd>
+							@foreach (var note in ExtraPhaseNotes)
+							{
+								<div>@note</div>
+							}
+						</dd>
+					</div>
+				}
+				<div class="detail-kv-row">
+					<dt>下一步</dt>
+					<dd>@OrDash(Task.NextStepText)</dd>
+				</div>
+				@if (!string.IsNullOrWhiteSpace(Task.ProgressNote))
+				{
+					<div class="detail-kv-row">
+						<dt>进度说明</dt>
+						<dd>@Task.ProgressNote</dd>
+					</div>
+				}
+				@if (!string.IsNullOrWhiteSpace(Task.PathDecisionNote))
+				{
+					<div class="detail-kv-row">
+						<dt>路径决策</dt>
+						<dd>@Task.PathDecisionNote</dd>
+					</div>
+				}
+				@if (HasReplacesRelation)
+				{
+					<div class="detail-kv-row">
+						<dt>@(Task.ShowPendingReplacement ? "完成后将替换" : "替换自")</dt>
+						<dd class="text-break">@(Task.ReplacesNaming ?? ShortId(Task.ReplacesTaskId!.Value))</dd>
+					</div>
+				}
+				@if (HasReplacedByRelation)
+				{
+					<div class="detail-kv-row">
+						<dt>已被替换</dt>
+						<dd class="text-break">@(Task.ReplacedByNaming ?? ShortId(Task.ReplacedByTaskId!.Value))</dd>
+					</div>
+				}
+				@if (!HasReplacesRelation && !HasReplacedByRelation)
+				{
+					<div class="detail-kv-row">
+						<dt>替换关系</dt>
+						<dd class="text-body-secondary">—</dd>
+					</div>
+				}
+			</dl>
+		</section>
+
+		<section class="detail-card p-3" aria-label="任务时间线">
+			<h3 class="detail-card-title">时间线</h3>
+			<dl class="detail-kv-list mb-0">
+				<div class="detail-kv-row">
+					<dt>创建时间</dt>
+					<dd>@FormatTime(Task.CreatedAtUtc)</dd>
+				</div>
+				<div class="detail-kv-row">
+					<dt>提交时间</dt>
+					<dd>@FormatTime(Task.SubmittedAtUtc)</dd>
+				</div>
+				<div class="detail-kv-row">
+					<dt>完成时间</dt>
+					<dd>@FormatTime(Task.CompletedAtUtc)</dd>
+				</div>
+				<div class="detail-kv-row">
+					<dt>上次观察时间</dt>
+					<dd>@FormatTime(Task.LastSyncedAtUtc)</dd>
+				</div>
+				<div class="detail-kv-row">
+					<dt>下次观察时间</dt>
+					<dd>@(Task.NextObservationAtUtc is { } next && !Task.Status.IsFinal() ? FormatTime(next) : "—")</dd>
+				</div>
+				<div class="detail-kv-row">
+					<dt>外部停止观察时间</dt>
+					<dd>@FormatTime(Task.ExternalStopObservedAtUtc)</dd>
+				</div>
+			</dl>
+		</section>
+	</div>
+</div>
+
+@code {
+	private CancellationTokenSource? _copyFeedbackCts;
+	private string?                  _copiedHash;
+
+	[Parameter]
+	[EditorRequired]
+	public DownloadTaskView Task { get; set; } = null!;
+
+	[Parameter]
+	public bool Busy { get; set; }
+
+	[Parameter]
+	public string StatusBadgeClass { get; set; } = "text-bg-secondary";
+
+	[Parameter]
+	public RenderFragment<DownloadTaskView>? TaskActions { get; set; }
+
+	[Parameter]
+	public EventCallback<Guid> OnRetry { get; set; }
+
+	[Parameter]
+	public EventCallback<Guid> OnRetryArchive { get; set; }
+
+	[Parameter]
+	public EventCallback<Guid> OnRedownload { get; set; }
+
+	[Parameter]
+	public EventCallback<Guid> OnReverify { get; set; }
+
+	[Parameter]
+	public EventCallback<DownloadTaskView> OnDelete { get; set; }
+
+	[Parameter]
+	public Func<string, Task<bool>>? CopyTextAsync { get; set; }
+
+	private bool HasAlert =>
+		!string.IsNullOrEmpty(Task.Error)   ||
+		Task.Status is DownloadTaskStatus.Failed or DownloadTaskStatus.Lost ||
+		Task.ArchiveReviewReason is not null ||
+		Task.IsTorrentMissing                ||
+		Task.Phase == DownloadDisplayPhase.VerificationUnconfirmed;
+
+	private bool IsCopied =>
+		!string.IsNullOrEmpty(_copiedHash) &&
+		string.Equals(_copiedHash, Task.InfoHash, StringComparison.Ordinal);
+
+	private string DisplayTitle
+	{
+		get
+		{
+			var subject  = string.IsNullOrWhiteSpace(Task.SubjectName) ? Task.NamingSnapshot : Task.SubjectName;
+			var episode  = Task.Episode is null ? string.Empty : $" 第{Task.Episode:0.##}集";
+			var language = string.IsNullOrWhiteSpace(Task.SubtitleLanguage) ? string.Empty : $" {Task.SubtitleLanguage}";
+			var group = string.IsNullOrWhiteSpace(Task.SubtitleGroup) ||
+			            string.Equals(Task.SubtitleGroup, Task.SubtitleLanguage, StringComparison.OrdinalIgnoreCase)
+				? string.Empty
+				: $" {Task.SubtitleGroup}";
+			var version = Task.Version > 1 ? $" v{Task.Version}" : string.Empty;
+			return $"{subject}{episode}{language}{group}{version}";
+		}
+	}
+
+	private string EpisodeText =>
+		Task.Episode is { } episode ? $"第 {episode.ToString("0.##", CultureInfo.InvariantCulture)} 集" : "—";
+
+	private string SubtitleGroupText =>
+		string.IsNullOrWhiteSpace(Task.SubtitleGroup) ||
+		string.Equals(Task.SubtitleGroup, Task.SubtitleLanguage, StringComparison.OrdinalIgnoreCase)
+			? "—"
+			: Task.SubtitleGroup;
+
+	private string VerificationUnconfirmedText =>
+		Task.VerificationRequestState == DownloadVerificationRequestState.SendFailed
+			? "请求发送失败（可能已送达），未计入请求次数；文件保持原样，可重新校验，不重新下载。"
+			: "校验执行或结果未确认；文件保持原样，可「重新校验」再次发起，不重新下载。";
+
+	private IReadOnlyList<string> ExtraPhaseNotes =>
+		string.IsNullOrWhiteSpace(Task.PathDecisionNote)
+			? Task.PhaseNotes
+			: Task.PhaseNotes.Where(note => !string.Equals(note, Task.PathDecisionNote, StringComparison.Ordinal)).ToArray();
+
+	private bool HasReplacesRelation =>
+		Task.ReplacesNaming is not null || Task.ReplacesTaskId is not null;
+
+	private bool HasReplacedByRelation =>
+		(Task.ReplacedByNaming is not null || Task.ReplacedByTaskId is not null) && !Task.IsSelectionTombstone;
+
+	protected override void OnParametersSet()
+	{
+		if (!string.Equals(_copiedHash, Task.InfoHash, StringComparison.Ordinal))
+			ClearCopyFeedback();
+	}
+
+	private async Task CopyInfoHashAsync()
+	{
+		if (CopyTextAsync is null || string.IsNullOrWhiteSpace(Task.InfoHash)) return;
+
+		var hash = Task.InfoHash;
+		if (!await CopyTextAsync(hash)) return;
+
+		_copyFeedbackCts?.Cancel();
+		_copyFeedbackCts?.Dispose();
+		var cts = _copyFeedbackCts = new CancellationTokenSource();
+		_copiedHash = hash;
+		_           = ResetCopyFeedbackAfterDelayAsync(hash, cts.Token);
+	}
+
+	private async Task ResetCopyFeedbackAfterDelayAsync(string hash, CancellationToken cancellationToken)
+	{
+		try
+		{
+			await System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(1.8), cancellationToken);
+			if (string.Equals(_copiedHash, hash, StringComparison.Ordinal))
+			{
+				_copiedHash = null;
+				await InvokeAsync(StateHasChanged);
+			}
+		}
+		catch (OperationCanceledException)
+		{
+		}
+		catch (ObjectDisposedException)
+		{
+		}
+	}
+
+	private void ClearCopyFeedback()
+	{
+		_copyFeedbackCts?.Cancel();
+		_copyFeedbackCts?.Dispose();
+		_copyFeedbackCts = null;
+		_copiedHash      = null;
+	}
+
+	private static string OrDash(string? value) =>
+		string.IsNullOrWhiteSpace(value) ? "—" : value;
+
+	private static string ShortId(Guid id) =>
+		id.ToString("N")[..8];
+
+	private static string FormatTime(DateTimeOffset? timestamp) =>
+		timestamp is { } value
+			? value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
+			: "—";
+
+	private static string SizeText(long size) =>
+		size switch
+		{
+			< 1024                => $"{size} B",
+			< 1024 * 1024         => $"{ScaledSize(size, 1024)} KB",
+			< 1024L * 1024 * 1024 => $"{ScaledSize(size, 1024 * 1024)} MB",
+			_                     => $"{ScaledSize(size, 1024L * 1024 * 1024)} GB"
+		};
+
+	private static string ScaledSize(long size, long unit) =>
+		(size / (double)unit).ToString("0.#", CultureInfo.InvariantCulture);
+
+	public void Dispose() => ClearCopyFeedback();
+}
