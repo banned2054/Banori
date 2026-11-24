@@ -188,14 +188,13 @@ public sealed class FeedItemEvaluator(
         var correctionReason = correction.Reason == "未应用集数修正规则。" ? string.Empty : $" {correction.Reason}";
         // 命名模板的 {source} 令牌取订阅 RSS 地址判定的来源站点（mikan/anibt），未知来源不渲染。
         var siteSource       = feedSite;
-        var namingTemplate   = await namingTemplateStore.GetAsync(cancellationToken);
-        // 预览与命名要素同源生成，且分别快照 AniParser 与 Bangumi 字段。
-        var ingredients =
-            NamingIngredientsComposer.Compose(namingTemplate, parsed,
-                                              ReleaseNamePreviewPolicy.FormatEpisodeText(correction.Episode),
-                                              preference, siteSource, subject.Id, subject.Name, subject.NameCn,
-                                              subject.Platform, subject.AirDate);
-        var namingPreview = namingPolicy.Create(ingredients);
+        var namingTemplate = await namingTemplateStore.GetAsync(cancellationToken);
+        // 预览按当前模板实时渲染，命名要素不保存模板快照，仅保留 AniParser 与 Bangumi 字段。
+        var ingredients = NamingIngredientsComposer.Compose(parsed,
+                                                            ReleaseNamePreviewPolicy.FormatEpisodeText(correction.Episode),
+                                                            preference, siteSource, subject.Id, subject.Name, subject.NameCn,
+                                                            subject.Platform, subject.AirDate);
+        var namingPreview = namingPolicy.Create(ingredients with { Template = namingTemplate });
 
         await SaveAnalysisAsync(itemId,
                                 CreateAnalysis(parsed, status, subject.Id, subject.DisplayName,

@@ -16,7 +16,8 @@ public sealed class SettingsPageViewModel(
     ManageTelegramSettings         telegramSettings,
     ManageGotifySettings           gotifySettings,
     ProxyService                   proxyService,
-    ILogger<SettingsPageViewModel> logger)
+    ILogger<SettingsPageViewModel> logger,
+    DownloadService?               downloadService = null)
 {
     private static readonly ReleaseNamePreviewPolicy PreviewPolicy = new();
 
@@ -180,13 +181,23 @@ public sealed class SettingsPageViewModel(
         SaveAsync(async token =>
         {
             // 先校验目录，错误输入不得先覆盖命名模板。
-            var directories = DownloadDirectorySettingsStore.Normalize(Naming.MediaDirectory, Naming.SeedDirectory);
+            var directories   = DownloadDirectorySettingsStore.Normalize(Naming.MediaDirectory, Naming.SeedDirectory);
+            var oldSingle     = await namingTemplateStore.GetAsync(token);
+            var oldCollection = await namingTemplateStore.GetCollectionTemplateAsync(token);
             await namingTemplateStore.SaveAsync(Naming.NamingTemplate, token);
             await namingTemplateStore.SaveFileTemplateAsync(Naming.FileNamingTemplate, token);
             await namingTemplateStore.SaveCollectionTemplateAsync(Naming.CollectionNamingTemplate, token);
             await directorySettingsStore.SaveAsync(directories.MediaDirectory, directories.SeedDirectory, token);
             Naming.MediaDirectory = directories.MediaDirectory;
             Naming.SeedDirectory  = directories.SeedDirectory;
+
+            if (downloadService is null) return;
+            var newSingle         = await namingTemplateStore.GetAsync(token);
+            var newCollection     = await namingTemplateStore.GetCollectionTemplateAsync(token);
+            var singleChanged     = !string.Equals(oldSingle, newSingle, StringComparison.Ordinal);
+            var collectionChanged = !string.Equals(oldCollection, newCollection, StringComparison.Ordinal);
+            if (singleChanged || collectionChanged)
+                await downloadService.NotifyTorrentNamingChangedAsync(singleChanged, collectionChanged, token);
         }, cancellationToken);
 
     public Task SaveTelegramAsync(CancellationToken cancellationToken = default) =>

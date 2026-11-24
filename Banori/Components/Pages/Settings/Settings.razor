@@ -14,6 +14,7 @@
 @inject ManageTelegramSettings         TelegramSettings
 @inject ManageGotifySettings           GotifySettings
 @inject ProxyService                   ProxyService
+@inject DownloadService                DownloadService
 @inject ILogger<SettingsPageViewModel> Logger
 
 <PageTitle>设置 - Banori</PageTitle>
@@ -173,7 +174,7 @@ else
 								<span class="naming-preview-label">单集预览</span>
 								<code class="text-break">@_vm.PreviewTorrentName()</code>
 							</div>
-							<div class="form-text">仅控制 qBittorrent 中的种子名，不参与保存目录与文件名；留空恢复默认。</div>
+							<div class="form-text">仅控制 qBittorrent 中的单集种子名，修改保存后会同步更新已有单集任务，不参与保存目录与文件名；留空恢复默认。</div>
 						</div>
 
 						<div class="mb-4">
@@ -193,7 +194,7 @@ else
 								<span class="naming-preview-label">合集预览（缺第 3 集）</span>
 								<code class="text-break">@_vm.PreviewCollectionName()</code>
 							</div>
-							<div class="form-text">用于多集正片种子，只影响新任务。范围格式示例：<code>{episode:Eee-Eee}</code> → E01-E02,E04-E06，<code>{episode:ee-ee}</code> → 01-02,04-06。</div>
+							<div class="form-text">用于多集正片种子，修改保存后会同步更新已有合集任务在 qBittorrent 中的种子名。范围格式示例：<code>{episode:Eee-Eee}</code> → E01-E02,E04-E06，<code>{episode:ee-ee}</code> → 01-02,04-06。</div>
 						</div>
 
 						<div class="mb-3">
@@ -486,7 +487,7 @@ else
 	protected override void OnInitialized()
 	{
 		_vm = new SettingsPageViewModel(DownloaderSettings, NamingTemplates, DirectorySettings, TelegramSettings, GotifySettings,
-		                                ProxyService, Logger);
+		                                ProxyService, Logger, DownloadService);
 	}
 
 	protected override void OnParametersSet()

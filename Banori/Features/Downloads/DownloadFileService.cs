@@ -1385,7 +1385,7 @@ public sealed class DownloadFileService(
          ?? task.Files.Select(file => aniParser.Parse(DownloadEpisodeResolver.FileName(file.OriginalRelativePath)))
                 .Select(parsed => parsed?.Episode ?? parsed?.StartEpisode).FirstOrDefault(value => value is not null);
         if (episode is null) throw new InvalidOperationException("缺少命名要素和集数，请填写集数或补充任务命名快照。");
-        task.NamingIngredients = new TorrentNamingIngredients(await namingTemplateStore.GetAsync(ct), title,
+        task.NamingIngredients = new TorrentNamingIngredients(null, title,
                                                               ReleaseNamePreviewPolicy.FormatEpisodeText(episode.Value),
                                                               task.Version, null, task.SiteSource,
                                                               BangumiId : task.SubjectId, BangumiName : subject?.Name,

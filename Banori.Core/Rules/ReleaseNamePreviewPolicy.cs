@@ -88,6 +88,10 @@ public sealed class ReleaseNamePreviewPolicy
 
     public static string FormatEpisodeText(decimal episode) => FormatEpisode(episode);
 
+    /// <summary>含区间连字符或分段逗号的集数文本属于多集合集；单集只有单个集号。</summary>
+    public static bool IsCollectionEpisodeText(string? episodeText) =>
+        !string.IsNullOrWhiteSpace(episodeText) && (episodeText.Contains('-') || episodeText.Contains(','));
+
     public static string? FormatEpisodeText(ParseResult parsed)
     {
         if (parsed.Episode is { } episode) return FormatEpisode(episode);

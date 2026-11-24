@@ -38,7 +38,9 @@ public sealed partial class DownloadService(
     DownloadEpisodeResolver?                episodeResolver         = null,
     DownloadTimingPolicy?                   timingPolicy            = null,
     DownloadIntakeService?                  intakeService           = null,
-    DownloadTaskChangeNotifier?             changeNotifier          = null)
+    DownloadTaskChangeNotifier?             changeNotifier          = null,
+    NamingTemplateStore?                    namingTemplateStore     = null,
+    ReconcilePulse?                         reconcilePulse          = null)
 {
     /// <summary>响应丢失后的自动重新提交上限；达到上限视为提交失败，等待人工重试。</summary>
     public const int MaxAutoSubmitAttempts = 5;
@@ -115,6 +117,7 @@ public sealed partial class DownloadService(
         tasks = tasks.OrderBy(task => task.CreatedAtUtc).ToList();
 
         List<(Guid Id, string InfoHash, DateTimeOffset? NextObservationAtUtc)> pendingFileTasks;
+        List<PendingTorrentRename>                                             pendingRenameTasks;
         await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
             pendingFileTasks = downloadFileService is null
@@ -127,12 +130,19 @@ public sealed partial class DownloadService(
                           .Select(task => new ValueTuple<Guid, string, DateTimeOffset?>
                                       (task.Id, task.InfoHash, task.NextObservationAtUtc))
                           .ToListAsync(cancellationToken);
+            pendingRenameTasks = await db.DownloadTasks.AsNoTracking()
+                                         .Where(task => task.TorrentRenamePending)
+                                         .Select(task => new PendingTorrentRename(
+                                                     task.Id, task.InfoHash, task.NamingSnapshot, task.Status))
+                                         .ToListAsync(cancellationToken);
         }
 
-        if (tasks.Count == 0 && pendingFileTasks.Count == 0 && !hasRetiredCleanup) return;
+        if (tasks.Count == 0 && pendingFileTasks.Count == 0 && pendingRenameTasks.Count == 0 && !hasRetiredCleanup)
+            return;
 
         // 会话与清理指纹共用开头读取的连接快照，杜绝两次读取之间切换下载器导致的误确认。
         await using var session = await sessionFactory.CreateAsync(settings, password, cancellationToken);
+        await SyncPendingTorrentRenamesUnderGateAsync(session, pendingRenameTasks, cancellationToken);
 
         // 校验或移动中的种子不得执行冲突计划（改名/移动）：恢复链先看快照状态，
         // 处于 Checking 或 IsMoving 的任务本轮跳过，待其稳定后再恢复。
@@ -4301,8 +4311,11 @@ public sealed partial class DownloadService(
             fileNames   = await session.ListFileNamesAsync(snapshot.Hash, cancellationToken);
             // 种子名不带扩展名，与添加时 rename 参数设置的名称同形；扩展名只属于内容文件。
             ingredients = TorrentNamingIngredients.FromJson(task.NamingIngredients);
-            if (string.IsNullOrWhiteSpace(ingredients?.EpisodeText)) ingredients = null;
-            targetName  = ingredients is not null ? namingPolicy.Create(ingredients) : task.NamingSnapshot;
+            if (ingredients is null ||
+                string.IsNullOrWhiteSpace(ingredients.Title) ||
+                string.IsNullOrWhiteSpace(ingredients.EpisodeText))
+                ingredients = null;
+            targetName  = await RenderLiveTorrentNameAsync(ingredients, task.NamingSnapshot, cancellationToken);
             subjectId   = task.SubjectId;
             taskEpisode = task.Episode;
             taskVersion = task.Version;
@@ -4347,6 +4360,9 @@ public sealed partial class DownloadService(
             // 存量任务保持旧的收尾方式：只改文件名与种子名，不使用种子名称模板改内容目录。
             try
             {
+                var fileTemplate = namingTemplateStore is null
+                    ? null
+                    : await namingTemplateStore.GetFileTemplateAsync(cancellationToken);
                 if (fileNames.Count == 1)
                 {
                     // 单文件也按文件名实际集数应用 Subject 修正规则；无可解析集数时保留任务快照命名。
@@ -4357,14 +4373,19 @@ public sealed partial class DownloadService(
                                                     taskVersion);
                     var singleName = singleIngredients is null
                         ? targetName
-                        : namingPolicy.Create(singleIngredients, true);
+                        : namingPolicy.Create(fileTemplate is null
+                                                  ? singleIngredients
+                                                  : singleIngredients with { FileTemplate = fileTemplate }, true);
                     await session.RenameTorrentFileAsync(snapshot.Hash, fileNames[0],
                                                          AppendExtension(singleName, extension), cancellationToken);
                 }
                 else if (ingredients is not null)
                 {
                     // 多文件种子：逐文件按各自集数改名，附属文件挪进 Seed/。
-                    await RenameContentFilesAsync(session, snapshot.Hash, fileNames, ingredients, subjectId,
+                    var contentIngredients = fileTemplate is null
+                        ? ingredients
+                        : ingredients with { FileTemplate = fileTemplate };
+                    await RenameContentFilesAsync(session, snapshot.Hash, fileNames, contentIngredients, subjectId,
                                                   taskEpisode, taskVersion, cancellationToken);
                 }
 
@@ -4386,8 +4407,10 @@ public sealed partial class DownloadService(
                                             .SingleAsync(value => value.Id == taskId, cancellationToken);
         if (trackedTask.Status.IsFinal()) return;
 
-        trackedTask.Status          = DownloadTaskStatus.Completed;
-        trackedTask.Progress        = 1;
+        trackedTask.Status               = DownloadTaskStatus.Completed;
+        trackedTask.NamingSnapshot       = targetName;
+        trackedTask.TorrentRenamePending = false;
+        trackedTask.Progress             = 1;
         trackedTask.CompletedAtUtc  = timeProvider.GetUtcNow();
         trackedTask.LastSyncedAtUtc = trackedTask.CompletedAtUtc;
         trackedTask.FailedStep      = null;

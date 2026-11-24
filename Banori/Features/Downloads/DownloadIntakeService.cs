@@ -505,14 +505,13 @@ public sealed class DownloadIntakeService(
 
         if (CollectionNaming(fileAnalysis, subject.SubjectId) is { } collection)
         {
-            var parsed = collection.Parsed;
-            var group  = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
-            var ingredients =
-                NamingIngredientsComposer.Compose(await namingTemplateStore.GetCollectionTemplateAsync(cancellationToken),
-                                                  parsed, collection.EpisodeText, group, siteSource,
-                                                  subject.SubjectId, bgmName, bgmNameCn,
-                                                  metadata?.Platform ?? string.Empty, metadata?.AirDate);
-            return (namingPolicy.Create(ingredients), ingredients.ToJson(), null);
+            var parsed             = collection.Parsed;
+            var group              = string.IsNullOrWhiteSpace(parsed.Group) ? parsed.Language.ToString() : parsed.Group;
+            var collectionTemplate = await namingTemplateStore.GetCollectionTemplateAsync(cancellationToken);
+            var ingredients = NamingIngredientsComposer.Compose(parsed, collection.EpisodeText, group, siteSource,
+                                                                subject.SubjectId, bgmName, bgmNameCn,
+                                                                metadata?.Platform ?? string.Empty, metadata?.AirDate);
+            return (namingPolicy.Create(ingredients with { Template = collectionTemplate }), ingredients.ToJson(), null);
         }
 
         var fallbackParse = fileAnalysis.IdentityParse;
@@ -533,13 +532,13 @@ public sealed class DownloadIntakeService(
             var seedTemplate = parsed.StartEpisode is { } start && parsed.EndEpisode > start
                 ? await namingTemplateStore.GetCollectionTemplateAsync(cancellationToken)
                 : template;
-            var ingredients = NamingIngredientsComposer.Compose(seedTemplate, parsed, episodeText, group,
+            var ingredients = NamingIngredientsComposer.Compose(parsed, episodeText, group,
                                                                 siteSource, subject.SubjectId, bgmName, bgmNameCn,
                                                                 metadata?.Platform ?? string.Empty, metadata?.AirDate);
-            return (namingPolicy.Create(ingredients), ingredients.ToJson(), parsed);
+            return (namingPolicy.Create(ingredients with { Template = seedTemplate }), ingredients.ToJson(), parsed);
         }
 
-        var fallbackIngredients = new TorrentNamingIngredients(template, subject.DisplayName, string.Empty, 1,
+        var fallbackIngredients = new TorrentNamingIngredients(null, subject.DisplayName, string.Empty, 1,
                                                                null, siteSource,
                                                                BangumiId : subject.SubjectId, BangumiName : bgmName,
                                                                BangumiNameCn : bgmNameCn,
@@ -1371,24 +1370,26 @@ public sealed class DownloadIntakeService(
         var resolvedSource = TorrentSiteSource.FromFeedUrl(feedUrl);
         var sourceScope = SourceScopes.Normalize(item.SourceScope);
         if (sourceScope == SourceScopes.Legacy) sourceScope = SourceScopes.FromFeedUrl(feedUrl);
-        var (namingSnapshot, namingIngredients) = AlignNamingSource(item, resolvedSource);
+        var ingredients  = ResolveFeedItemNamingIngredients(item, resolvedSource);
         var config       = await ruleProvider.GetAsync(cancellationToken);
         var fileAnalysis = AnalyzeTorrentFiles(infoHash, torrent, isMultiFile, config);
+        var isCollection = false;
         if (CollectionNaming(fileAnalysis, item.SubjectId) is { } collection)
         {
-            var ingredients = TorrentNamingIngredients.FromJson(namingIngredients)!;
-            ingredients = ingredients with
-            {
-                Template    = await namingTemplateStore.GetCollectionTemplateAsync(cancellationToken),
-                EpisodeText = collection.EpisodeText
-            };
-            namingSnapshot    = namingPolicy.Create(ingredients);
-            namingIngredients = ingredients.ToJson();
+            ingredients  = ingredients with { EpisodeText = collection.EpisodeText };
+            isCollection = true;
         }
-        // 文件名模板是全局实时规则，不随任务落库；订阅评估快照可能带旧字段，写入任务前一并清除。
-        if (TorrentNamingIngredients.FromJson(namingIngredients) is { } taskIngredients &&
-            taskIngredients.FileTemplate is not null)
-            namingIngredients = (taskIngredients with { FileTemplate = null }).ToJson();
+        else
+        {
+            isCollection = ReleaseNamePreviewPolicy.IsCollectionEpisodeText(ingredients.EpisodeText);
+        }
+
+        var activeTemplate = isCollection
+            ? await namingTemplateStore.GetCollectionTemplateAsync(cancellationToken)
+            : await namingTemplateStore.GetAsync(cancellationToken);
+        var namingSnapshot = namingPolicy.Create(ingredients with { Template = activeTemplate });
+        // 种子名模板与文件名模板均为全局实时规则，不随任务快照落库；旧条目快照若带模板字段一并清除。
+        var namingIngredients = (ingredients with { Template = null, FileTemplate = null }).ToJson();
 
         var settings          = await qbittorrentSettings.GetAsync(cancellationToken);
         var directorySettings = await GetDirectoriesAsync(cancellationToken);
@@ -1612,23 +1613,19 @@ public sealed class DownloadIntakeService(
 
     /// <summary>
     ///     订阅任务的命名来源对齐：条目命名要素可能带着历史错误来源（曾把加密 RSS 地址当主机名写入）。
-    ///     创建任务时只把来源替换为本次判定的 RSS 主机来源并重渲染快照，其余命名要素（模板、集数
-    ///     修正、字幕组、Bangumi 字段等）保持条目评估时的值不动；要素缺失或无法渲染时要求重新
-    ///     评估，不能把无法确认来源的旧快照复制到新任务。有效要素的来源本就一致时保留原快照。
+    ///     创建任务时把来源替换为本次判定的 RSS 主机来源，其余命名要素（集数修正、字幕组、
+    ///     Bangumi 字段等）保持条目评估时的值不动；模板始终由调用方按当前全局设置实时渲染。
     /// </summary>
-    private (string Snapshot, string? IngredientsJson) AlignNamingSource(FeedItem item, string? resolvedSource)
+    private static TorrentNamingIngredients ResolveFeedItemNamingIngredients(FeedItem item, string? resolvedSource)
     {
-        var snapshot    = item.NamingPreview!;
         var ingredients = TorrentNamingIngredients.FromJson(item.NamingIngredients);
         if (ingredients is null || string.IsNullOrWhiteSpace(ingredients.Title) ||
             string.IsNullOrWhiteSpace(ingredients.EpisodeText))
             throw new InvalidOperationException("该条目缺少有效的命名要素，请先重新评估后再创建下载任务。");
 
-        if (string.Equals(ingredients.Source, resolvedSource, StringComparison.Ordinal))
-            return (snapshot, item.NamingIngredients);
-
-        ingredients = ingredients with { Source = resolvedSource };
-        return (namingPolicy.Create(ingredients), ingredients.ToJson());
+        return string.Equals(ingredients.Source, resolvedSource, StringComparison.Ordinal)
+            ? ingredients
+            : ingredients with { Source = resolvedSource };
     }
 
     private Task<DownloadDirectorySettings> GetDirectoriesAsync(CancellationToken cancellationToken) =>
