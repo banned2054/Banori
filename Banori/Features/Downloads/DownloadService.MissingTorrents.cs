@@ -187,6 +187,7 @@ public sealed partial class DownloadService
                                                    .SetProperty(task => task.MissingCheckConfigKey, storedConfigKey)
                                                    .SetProperty(task => task.NextMissingCheckAtUtc, nextCheck),
                                      cancellationToken);
+        if (missingAt != current.TorrentMissingAtUtc) changeNotifier?.Notify(candidate.Id, true);
     }
 
     private DateTimeOffset LongDue(string infoHash, Guid taskId, DateTimeOffset now)

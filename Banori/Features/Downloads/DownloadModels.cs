@@ -1273,6 +1273,11 @@ public sealed record DownloadTaskListFilter
     public int PageSize { get; init; } = DefaultPageSize;
 }
 
+/// <summary>无页码虚拟列表的有序任务索引快照：完整有序任务 ID 列表与全部历史任务的可选语言。</summary>
+public sealed record DownloadTaskIndexSnapshot(
+    IReadOnlyList<Guid>   TaskIds,
+    IReadOnlyList<string> Languages);
+
 /// <summary>下载任务列表分页结果：当前页行、筛选后的完整总数与可选语言项（空字符串哨兵 = 存在无语言任务）。</summary>
 public sealed record DownloadTaskListPage(
     IReadOnlyList<DownloadTaskView> Items,

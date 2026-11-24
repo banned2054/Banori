@@ -44,7 +44,8 @@ public sealed class DownloadIntakeService(
     IDataProtectionProvider                 dataProtectionProvider,
     DownloadDirectorySettingsStore?         directorySettingsStore   = null,
     DownloadFileClassificationPolicy?       fileClassificationPolicy = null,
-    DownloadEpisodeResolver?                episodeResolver          = null)
+    DownloadEpisodeResolver?                episodeResolver          = null,
+    DownloadTaskChangeNotifier?             changeNotifier           = null)
 {
     /// <summary>所有下载登记的前置门禁：解析 Bangumi 绑定，未绑定返回 null（调用方拒绝下载并要求补 ID）。</summary>
     private const string SubjectUnboundMessage = "未能绑定 Bangumi Subject，请在表单补充 Bangumi ID 后重试。";
@@ -199,6 +200,7 @@ public sealed class DownloadIntakeService(
             task.Error            = "同集候选落选，保留终止记录供查重。";
             db.DownloadTasks.Add(task);
             await db.SaveChangesAsync(cancellationToken);
+            changeNotifier?.Notify(task.Id, true);
             logger.LogInformation("上传种子同集落选，已登记终止记录 {TaskId}（hash {InfoHash}）。",
                                   task.Id, infoHash);
             throw new InvalidOperationException($"本次上传未登记：{ComposeLossReason(verdicts)}。（已保留终止记录供查重）");
@@ -209,6 +211,7 @@ public sealed class DownloadIntakeService(
         try
         {
             await db.SaveChangesAsync(cancellationToken);
+            changeNotifier?.Notify(task.Id, true);
         }
         catch (DbUpdateException)
         {
@@ -460,6 +463,7 @@ public sealed class DownloadIntakeService(
             task.Error            = "同集候选落选，保留终止记录供查重。";
             db.DownloadTasks.Add(task);
             await db.SaveChangesAsync(cancellationToken);
+            changeNotifier?.Notify(task.Id, true);
             logger.LogInformation("RSS 条目同集落选，已登记终止记录 {TaskId}（hash {InfoHash}）。",
                                   task.Id, infoHash);
             return (null, ComposeLossReason(verdicts));
@@ -468,6 +472,7 @@ public sealed class DownloadIntakeService(
         await ApplyWinningEpisodesAsync(db, task, scopes, verdicts, sourceScope, cancellationToken);
         db.DownloadTasks.Add(task);
         await db.SaveChangesAsync(cancellationToken);
+        changeNotifier?.Notify(task.Id, true);
         logger.LogInformation("已从 RSS 条目创建下载任务 {TaskId}（hash {InfoHash}）。", task.Id, infoHash);
         return (task.Id, null);
     }
@@ -1425,6 +1430,7 @@ public sealed class DownloadIntakeService(
         try
         {
             await db.SaveChangesAsync(cancellationToken);
+            changeNotifier?.Notify(task.Id, true);
         }
         catch (DbUpdateException)
         {
@@ -1525,6 +1531,7 @@ public sealed class DownloadIntakeService(
 
         await ApplyWinningEpisodesAsync(db, task, scopes, replacements, sourceScope, cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
+        changeNotifier?.Notify(task.Id, false);
     }
 
     /// <summary>

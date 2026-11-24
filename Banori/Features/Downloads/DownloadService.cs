@@ -37,7 +37,8 @@ public sealed partial class DownloadService(
     DownloadSubmissionPathValidator?        submissionPathValidator = null,
     DownloadEpisodeResolver?                episodeResolver         = null,
     DownloadTimingPolicy?                   timingPolicy            = null,
-    DownloadIntakeService?                  intakeService           = null)
+    DownloadIntakeService?                  intakeService           = null,
+    DownloadTaskChangeNotifier?             changeNotifier          = null)
 {
     /// <summary>响应丢失后的自动重新提交上限；达到上限视为提交失败，等待人工重试。</summary>
     public const int MaxAutoSubmitAttempts = 5;
@@ -976,15 +977,18 @@ public sealed partial class DownloadService(
             await session.DeleteTorrentAsync(task.InfoHash, deleteFiles, cancellationToken);
         }
 
+        IReadOnlyList<Guid> affectedIds;
         await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
             var tracked = await db.DownloadTasks.SingleOrDefaultAsync(value => value.Id == taskId, cancellationToken);
             if (tracked is null) return;
 
-            await ClearReplacementReferencesAsync(db, [taskId], cancellationToken);
+            affectedIds = await ClearReplacementReferencesAsync(db, [taskId], cancellationToken);
             db.DownloadTasks.Remove(tracked);
             await db.SaveChangesAsync(cancellationToken);
         }
+
+        changeNotifier?.Notify(affectedIds, true);
 
         logger.LogInformation("已删除下载任务 {TaskId}（hash {InfoHash}，删除器种子：{DeleteTorrent}，连带文件：{DeleteFiles}）。",
                               taskId, task.InfoHash, deleteFromDownloader, deleteFiles);
@@ -1058,17 +1062,20 @@ public sealed partial class DownloadService(
                                               cancellationToken);
         }
 
-        int deletedCount;
+        int                 deletedCount;
+        IReadOnlyList<Guid> affectedIds;
         await using (var db = await dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
             var ids     = tasks.Select(task => task.Id).ToList();
             var tracked = await db.DownloadTasks.Where(task => ids.Contains(task.Id)).ToListAsync(cancellationToken);
             deletedCount = tracked.Count;
 
-            await ClearReplacementReferencesAsync(db, ids, cancellationToken);
+            affectedIds = await ClearReplacementReferencesAsync(db, ids, cancellationToken);
             db.DownloadTasks.RemoveRange(tracked);
             await db.SaveChangesAsync(cancellationToken);
         }
+
+        if (deletedCount > 0 || affectedIds.Count > 0) changeNotifier?.Notify(affectedIds, true);
 
         logger.LogInformation("已批量删除 {Count} 个下载任务（删除器种子：{DeleteTorrent}，连带文件：{DeleteFiles}）。",
                               deletedCount, deleteFromDownloader, deleteFiles);
@@ -1076,9 +1083,10 @@ public sealed partial class DownloadService(
     }
 
     /// <summary>清理指向待删任务的替换引用：替换者被删的旧任务回退为已完成，其余任务对待删任务的替换声明置空；逐集承接的文件在所属任务仍活动时恢复下载职责；每集登记表回退待完成与现任引用。</summary>
-    private async Task ClearReplacementReferencesAsync(
+    private async Task<IReadOnlyList<Guid>> ClearReplacementReferencesAsync(
         ApplicationDbContext db, IReadOnlyCollection<Guid> deletedIds, CancellationToken cancellationToken)
     {
+        var affectedIds = new HashSet<Guid>(deletedIds);
         var referencing = await db.DownloadTasks
                                   .Where(other => (other.ReplacesTaskId != null &&
                                                    deletedIds.Contains(other.ReplacesTaskId.Value)) ||
@@ -1087,6 +1095,7 @@ public sealed partial class DownloadService(
                                   .ToListAsync(cancellationToken);
         foreach (var other in referencing)
         {
+            affectedIds.Add(other.Id);
             if (other.ReplacedByTaskId is { } replacedBy && deletedIds.Contains(replacedBy))
             {
                 // 替换者已删除：仅确有完成记录的旧资源回退为已完成；未提交落选者保留
@@ -1214,7 +1223,7 @@ public sealed partial class DownloadService(
                                         .Where(task => task.Status         == DownloadTaskStatus.Replaced &&
                                                        task.CompletedAtUtc != null)
                                         .ToListAsync(cancellationToken);
-        if (restoreCandidates.Count == 0) return;
+        if (restoreCandidates.Count == 0) return [.. affectedIds];
         // 必须以 tracking 实体加载：EF identity resolution 复用同 DbContext 中刚修改的逐集引用；
         // AsNoTracking + 匿名投影会绕过变更跟踪，从数据库读到 SaveChanges 之前的旧值。
         var referencedRows = await db.EpisodeVersions
@@ -1231,7 +1240,10 @@ public sealed partial class DownloadService(
         {
             candidate.Status           = DownloadTaskStatus.Completed;
             candidate.ReplacedByTaskId = null;
+            affectedIds.Add(candidate.Id);
         }
+
+        return [.. affectedIds];
     }
 
     /// <summary>
@@ -2296,6 +2308,7 @@ public sealed partial class DownloadService(
         tracked.Error                = error.Length > 1000 ? error[..1000] : error;
         tracked.NextObservationAtUtc = null;
         await db.SaveChangesAsync(ct);
+        changeNotifier?.Notify(task.Id, true);
     }
 
     /// <summary>
@@ -3213,6 +3226,7 @@ public sealed partial class DownloadService(
             // 启动意图与证据一起落库。Resume 响应丢失时仍走本状态机，不能落回普通提前命名。
             tracked.VerificationIntent = (intent with { Step = DownloadVerificationStep.ReadyToRun }).ToJson();
             await db.SaveChangesAsync(ct);
+            changeNotifier?.Notify([task.Id, .. retiredOwnerIds], true);
         }
 
         // 完整任务：数据完整性已确认，停止态下恢复做种一次并 best-effort 通告 tracker，
@@ -3350,6 +3364,7 @@ public sealed partial class DownloadService(
         }
 
         await db.SaveChangesAsync(ct);
+        changeNotifier?.Notify(task.Id, true);
     }
 
     /// <summary>
@@ -3593,6 +3608,7 @@ public sealed partial class DownloadService(
                     tracked.IsSystemPaused   = true;
                     tracked.PreparationStage = DownloadPreparationStage.Planned;
                     await db.SaveChangesAsync(ct);
+                    changeNotifier?.Notify(task.Id, false);
                 }
 
                 logger.LogInformation("任务 {TaskId} 隔离完成，已在任务专属根重新添加并回到准备流程。", task.Id);
@@ -4388,6 +4404,10 @@ public sealed partial class DownloadService(
         await SwitchEpisodeIncumbentsAsync(completionDb, trackedTask, cancellationToken);
 
         await completionDb.SaveChangesAsync(cancellationToken);
+        IReadOnlyCollection<Guid> completedAffected = trackedTask.ReplacesTaskId is { } targetId
+            ? [taskId, targetId]
+            : [taskId];
+        changeNotifier?.Notify(completedAffected, true);
         logger.LogInformation("下载任务 {TaskId} 已完成并改名为 {TargetName}。", taskId, targetName);
     }
 
@@ -4609,9 +4629,34 @@ public sealed partial class DownloadService(
                            .SingleAsync(value => value.Id == taskId, cancellationToken);
         if (task.Status != expectedStatus) return false;
 
+        var prevStatus            = task.Status;
+        var prevUserPaused        = task.IsUserPaused;
+        var prevSystemPaused      = task.IsSystemPaused;
+        var prevCategory          = task.LastObservedCategory;
+        var prevVerification      = task.VerificationIntent;
+        var prevMissingAt         = task.TorrentMissingAtUtc;
+        var prevNamingSnapshot    = task.NamingSnapshot;
+        var prevNamingIngredients = task.NamingIngredients;
+        var prevEpisode           = task.Episode;
+        var prevVersion           = task.Version;
+
         update(task);
         if (onApplied is not null) await onApplied(db, task);
         await db.SaveChangesAsync(cancellationToken);
+
+        var affectsListOrderOrMembership =
+            task.Status != prevStatus                                                                     ||
+            task.IsUserPaused != prevUserPaused                                                           ||
+            task.IsSystemPaused != prevSystemPaused                                                       ||
+            (task.LastObservedCategory == QbittorrentTorrentCategory.Checking) !=
+            (prevCategory == QbittorrentTorrentCategory.Checking)                                         ||
+            !string.Equals(task.VerificationIntent, prevVerification, StringComparison.Ordinal)           ||
+            task.TorrentMissingAtUtc != prevMissingAt                                                     ||
+            !string.Equals(task.NamingSnapshot, prevNamingSnapshot, StringComparison.Ordinal)             ||
+            !string.Equals(task.NamingIngredients, prevNamingIngredients, StringComparison.Ordinal)       ||
+            task.Episode != prevEpisode                                                                   ||
+            task.Version != prevVersion;
+        changeNotifier?.Notify(taskId, affectsListOrderOrMembership);
         return true;
     }
 

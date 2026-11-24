@@ -39,19 +39,49 @@ public sealed class DownloadTaskQueries(
     {
         await using var db         = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var             pageSize   = Math.Clamp(filter.PageSize, 1, 200);
-        var             query      = ApplyFilters(db.DownloadTasks.AsNoTracking(), filter);
-        var             totalCount = await query.CountAsync(cancellationToken);
+        var             languages  = await ListLanguagesAsync(db, cancellationToken);
+        var             orderedIds = await QueryOrderedIdsAsync(db, filter, cancellationToken);
+        var             totalCount = orderedIds.Count;
         var             pageCount  = Math.Max(1, (int)Math.Ceiling(totalCount / (double)pageSize));
         var             page       = Math.Clamp(filter.Page, 1, pageCount);
-        var             languages  = await ListLanguagesAsync(db, cancellationToken);
         if (totalCount == 0) return new DownloadTaskListPage([], page, pageSize, 0, languages);
 
-        // 下载器就绪只读取一次：等待提交的解释需要同一快照，不能每个任务重复读设置。
-        var settings = qbittorrentSettings is null ? null : await qbittorrentSettings.GetAsync(cancellationToken);
-        var downloaderReady = settings is { Enabled: true, IsConfigured: true };
+        var pageIds = orderedIds.Skip((page - 1) * pageSize).Take(pageSize).ToArray();
+        var items   = await LoadSummariesByIdsAsync(db, pageIds, cancellationToken);
+        return new DownloadTaskListPage(items, page, pageSize, totalCount, languages);
+    }
+
+    public async Task<DownloadTaskIndexSnapshot> ListIdsAsync(
+        DownloadTaskListFilter filter, CancellationToken cancellationToken = default)
+    {
+        await using var db         = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var             languages  = await ListLanguagesAsync(db, cancellationToken);
+        var             orderedIds = await QueryOrderedIdsAsync(db, filter, cancellationToken);
+        return new DownloadTaskIndexSnapshot(orderedIds, languages);
+    }
+
+    public async Task<IReadOnlyList<DownloadTaskView>> GetSummariesByIdsAsync(
+        IReadOnlyList<Guid> ids, CancellationToken cancellationToken = default)
+    {
+        if (ids.Count == 0) return [];
+
+        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        return await LoadSummariesByIdsAsync(db, ids, cancellationToken);
+    }
+
+    public async Task<DownloadTaskView?> GetDetailAsync(Guid taskId, CancellationToken cancellationToken = default)
+    {
+        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        return (await LoadSummariesByIdsAsync(db, [taskId], cancellationToken)).SingleOrDefault();
+    }
+
+    private async Task<List<Guid>> QueryOrderedIdsAsync(
+        ApplicationDbContext db, DownloadTaskListFilter filter, CancellationToken cancellationToken)
+    {
+        var query = ApplyFilters(db.DownloadTasks.AsNoTracking(), filter);
 
         // SQLite 不支持 DateTimeOffset 的 ORDER BY 与比较，且默认排序需结合择优规则，
-        // 取匹配行的轻量键集在内存中按多列优先级稳定排序后切出当页，再按 Id 取回整行。筛选与计数始终在 SQL 端完成。
+        // 取匹配行的轻量键集在内存中按多列优先级稳定排序。筛选始终在 SQL 端完成。
         var selectionRules = selectionRuleSettings is null
             ? null
             : await selectionRuleSettings.GetAsync(cancellationToken);
@@ -71,6 +101,8 @@ public sealed class DownloadTaskQueries(
                                       task.CreatedAtUtc
                                   })
                                   .ToListAsync(cancellationToken);
+        if (rawKeys.Count == 0) return [];
+
         var keys = rawKeys.Select(row => BuildSortKey(row.Id,
                                                       row.SubjectName,
                                                       row.NamingSnapshot,
@@ -81,24 +113,69 @@ public sealed class DownloadTaskQueries(
                                                       row.CreatedAtUtc,
                                                       selectionRules))
                           .ToList();
-        var comparer = new SortKeyComparer(filter.SortColumn, filter.SortDescending, selectionRules);
-        keys.Sort(comparer);
-        var pageIds = keys.Skip((page - 1) * pageSize)
-                          .Take(pageSize)
-                          .Select(key => key.Id)
-                          .ToArray();
-        var rows = await db.DownloadTasks.AsNoTracking()
-                           .Include(task => task.FeedItem)
-                           .Include(task => task.Subject)
-                           .Include(task => task.Files)
-                           .Where(task => pageIds.Contains(task.Id))
-                           .ToListAsync(cancellationToken);
-        var rowsById  = rows.ToDictionary(task => task.Id);
-        var pageTasks = pageIds.Where(rowsById.ContainsKey).Select(id => rowsById[id]).ToList();
+        keys.Sort(new SortKeyComparer(filter.SortColumn, filter.SortDescending, selectionRules));
+        return keys.Select(key => key.Id).ToList();
+    }
 
-        var relatedNames = await RelatedNamesAsync(db, pageTasks, cancellationToken);
-        var items        = pageTasks.Select(task => ToView(task, relatedNames, downloaderReady)).ToList();
-        return new DownloadTaskListPage(items, page, pageSize, totalCount, languages);
+    private async Task<IReadOnlyList<DownloadTaskView>> LoadSummariesByIdsAsync(
+        ApplicationDbContext db, IReadOnlyList<Guid> ids, CancellationToken cancellationToken)
+    {
+        if (ids.Count == 0) return [];
+
+        var distinctIds = ids.Distinct().ToArray();
+        var rows = await db.DownloadTasks.AsNoTracking()
+                           .Where(task => distinctIds.Contains(task.Id))
+                           .Select(task => new TaskSummaryRow(task.Id,
+                                                              task.FeedItemId,
+                                                              task.InfoHash,
+                                                              task.FeedItem == null ? null : task.FeedItem.Title,
+                                                              task.SubjectId,
+                                                              task.Subject == null
+                                                                  ? null
+                                                                  : string.IsNullOrWhiteSpace(task.Subject.NameCn)
+                                                                      ? task.Subject.Name
+                                                                      : task.Subject.NameCn,
+                                                              task.Episode,
+                                                              task.NamingIngredients,
+                                                              task.Version,
+                                                              task.Status,
+                                                              task.IsUserPaused,
+                                                              task.IsSystemPaused,
+                                                              task.Progress,
+                                                              task.TotalSize,
+                                                              task.NamingSnapshot,
+                                                              task.SiteSource,
+                                                              task.FailedStep,
+                                                              task.Error,
+                                                              task.CreatedAtUtc,
+                                                              task.SubmittedAtUtc,
+                                                              task.CompletedAtUtc,
+                                                              task.ReplacesTaskId,
+                                                              task.ReplacedByTaskId,
+                                                              task.PreparationStage,
+                                                              task.ArchiveReview,
+                                                              task.IsolationState,
+                                                              task.VerificationIntent,
+                                                              task.ExternalStopObservedAtUtc,
+                                                              task.RunRecovery,
+                                                              task.LastSyncedAtUtc,
+                                                              task.LastObservedCategory,
+                                                              task.NextObservationAtUtc,
+                                                              task.TorrentMissingAtUtc,
+                                                              task.AttemptCount,
+                                                              task.PathDecision,
+                                                              task.PendingSavePath != null ||
+                                                              task.Files.Any(file => file.PendingRenameTo != null)))
+                           .ToListAsync(cancellationToken);
+        if (rows.Count == 0) return [];
+
+        // 下载器就绪只读取一次：等待提交的解释需要同一快照，不能每个任务重复读设置。
+        var settings        = qbittorrentSettings is null ? null : await qbittorrentSettings.GetAsync(cancellationToken);
+        var downloaderReady = settings is { Enabled: true, IsConfigured: true };
+        var rowsById        = rows.ToDictionary(row => row.Id);
+        var orderedRows     = ids.Where(rowsById.ContainsKey).Select(id => rowsById[id]).ToList();
+        var relatedNames    = await RelatedNamesAsync(db, orderedRows, cancellationToken);
+        return orderedRows.Select(row => ToView(row, relatedNames, downloaderReady)).ToList();
     }
 
     private static IQueryable<DownloadTask>
@@ -274,17 +351,17 @@ public sealed class DownloadTaskQueries(
     }
 
     private static async Task<IReadOnlyDictionary<Guid, string>> RelatedNamesAsync(
-        ApplicationDbContext db, IReadOnlyList<DownloadTask> tasks, CancellationToken cancellationToken)
+        ApplicationDbContext db, IReadOnlyList<TaskSummaryRow> rows, CancellationToken cancellationToken)
     {
-        var relatedIds = tasks.SelectMany(task =>
-                               {
-                                   var decision = DownloadPathDecision.FromJson(task.PathDecision);
-                                   return new[] { task.ReplacesTaskId, task.ReplacedByTaskId, decision?.RelatedTaskId };
-                               })
-                              .Where(value => value is not null)
-                              .Select(value => value!.Value)
-                              .Distinct()
-                              .ToList();
+        var relatedIds = rows.SelectMany(row =>
+                              {
+                                  var decision = DownloadPathDecision.FromJson(row.PathDecision);
+                                  return new[] { row.ReplacesTaskId, row.ReplacedByTaskId, decision?.RelatedTaskId };
+                              })
+                             .Where(value => value is not null)
+                             .Select(value => value!.Value)
+                             .Distinct()
+                             .ToList();
         if (relatedIds.Count == 0) return new Dictionary<Guid, string>();
         return await db.DownloadTasks.AsNoTracking()
                        .Where(task => relatedIds.Contains(task.Id))
@@ -292,50 +369,49 @@ public sealed class DownloadTaskQueries(
     }
 
     private static DownloadTaskView ToView(
-        DownloadTask task, IReadOnlyDictionary<Guid, string> relatedNames, bool downloaderReady)
+        TaskSummaryRow row, IReadOnlyDictionary<Guid, string> relatedNames, bool downloaderReady)
     {
-        var ingredients   = TorrentNamingIngredients.FromJson(task.NamingIngredients);
-        var archiveReview = DownloadArchiveReview.FromJson(task.ArchiveReview);
-        var intent        = DownloadVerificationIntent.FromJson(task.VerificationIntent);
-        var decision      = DownloadPathDecision.FromJson(task.PathDecision);
-        var runRecovery   = DownloadRunRecovery.FromJson(task.RunRecovery);
+        var ingredients   = TorrentNamingIngredients.FromJson(row.NamingIngredients);
+        var archiveReview = DownloadArchiveReview.FromJson(row.ArchiveReview);
+        var intent        = DownloadVerificationIntent.FromJson(row.VerificationIntent);
+        var decision      = DownloadPathDecision.FromJson(row.PathDecision);
+        var runRecovery   = DownloadRunRecovery.FromJson(row.RunRecovery);
         return new DownloadTaskView
         {
-            Id          = task.Id,
-            FeedItemId  = task.FeedItemId,
-            InfoHash    = task.InfoHash,
-            TorrentName = task.FeedItem?.Title,
-            SubjectId   = task.SubjectId,
-            SubjectName = task.Subject is null                 ? null :
-                string.IsNullOrWhiteSpace(task.Subject.NameCn) ? task.Subject.Name : task.Subject.NameCn,
-            Episode          = task.Episode,
+            Id               = row.Id,
+            FeedItemId       = row.FeedItemId,
+            InfoHash         = row.InfoHash,
+            TorrentName      = row.TorrentName,
+            SubjectId        = row.SubjectId,
+            SubjectName      = row.SubjectName,
+            Episode          = row.Episode,
             EpisodeText      = ingredients?.EpisodeText,
-            Version          = task.Version,
+            Version          = row.Version,
             SubtitleGroup    = ingredients?.Group,
             SubtitleLanguage = ingredients?.Language,
-            Status           = task.Status,
-            IsUserPaused     = task.IsUserPaused,
-            IsSystemPaused   = task.IsSystemPaused,
-            Progress         = task.Progress,
-            TotalSize        = task.TotalSize,
-            NamingSnapshot   = task.NamingSnapshot,
-            SiteSource       = task.SiteSource,
-            FailedStep       = task.FailedStep,
-            Error            = task.Error,
-            CreatedAtUtc     = task.CreatedAtUtc,
-            SubmittedAtUtc   = task.SubmittedAtUtc,
-            CompletedAtUtc   = task.CompletedAtUtc,
-            ReplacesTaskId   = task.ReplacesTaskId,
-            ReplacesNaming = task.ReplacesTaskId is { } replacedId
+            Status           = row.Status,
+            IsUserPaused     = row.IsUserPaused,
+            IsSystemPaused   = row.IsSystemPaused,
+            Progress         = row.Progress,
+            TotalSize        = row.TotalSize,
+            NamingSnapshot   = row.NamingSnapshot,
+            SiteSource       = row.SiteSource,
+            FailedStep       = row.FailedStep,
+            Error            = row.Error,
+            CreatedAtUtc     = row.CreatedAtUtc,
+            SubmittedAtUtc   = row.SubmittedAtUtc,
+            CompletedAtUtc   = row.CompletedAtUtc,
+            ReplacesTaskId   = row.ReplacesTaskId,
+            ReplacesNaming = row.ReplacesTaskId is { } replacedId
                 ? relatedNames.GetValueOrDefault(replacedId)
                 : null,
-            ReplacedByTaskId = task.ReplacedByTaskId,
-            ReplacedByNaming = task.ReplacedByTaskId is { } replacedById
+            ReplacedByTaskId = row.ReplacedByTaskId,
+            ReplacedByNaming = row.ReplacedByTaskId is { } replacedById
                 ? relatedNames.GetValueOrDefault(replacedById)
                 : null,
-            PreparationStage         = task.PreparationStage,
+            PreparationStage         = row.PreparationStage,
             ArchiveReviewReason      = archiveReview?.Reason,
-            IsolationState           = task.IsolationState,
+            IsolationState           = row.IsolationState,
             VerificationStep         = intent?.Step,
             VerificationRequestState = intent?.RequestState,
             VerificationRound        = intent?.Round            ?? 0,
@@ -344,16 +420,16 @@ public sealed class DownloadTaskQueries(
             StopConfirmPending = intent?.TimeoutStopRequestedAtUtc is not null ||
                                  intent?.PauseRequestedAtUtc is not null,
             ResultStabilizing         = intent?.StabilityObservedAtUtc is not null,
-            ExternalStopObservedAtUtc = task.ExternalStopObservedAtUtc,
+            ExternalStopObservedAtUtc = row.ExternalStopObservedAtUtc,
             RunPurpose                = runRecovery?.Purpose,
             RunState                  = runRecovery?.State,
             RunReason                 = runRecovery?.Reason,
             RunObservedAtUtc          = runRecovery?.LastObservedAtUtc,
-            LastSyncedAtUtc           = task.LastSyncedAtUtc,
-            LastObservedCategory      = task.LastObservedCategory,
-            NextObservationAtUtc      = task.NextObservationAtUtc,
-            TorrentMissingAtUtc       = task.TorrentMissingAtUtc,
-            AttemptCount              = task.AttemptCount,
+            LastSyncedAtUtc           = row.LastSyncedAtUtc,
+            LastObservedCategory      = row.LastObservedCategory,
+            NextObservationAtUtc      = row.NextObservationAtUtc,
+            TorrentMissingAtUtc       = row.TorrentMissingAtUtc,
+            AttemptCount              = row.AttemptCount,
             DownloaderReady           = downloaderReady,
             PathDecisionKind          = decision?.Kind,
             PathDecisionReason        = decision?.Reason,
@@ -361,10 +437,47 @@ public sealed class DownloadTaskQueries(
             PathDecisionRelatedNaming = decision?.RelatedTaskId is { } decisionRelatedId
                 ? relatedNames.GetValueOrDefault(decisionRelatedId)
                 : null,
-            HasPendingFileMoves = task.PendingSavePath is not null ||
-                                  task.Files.Any(file => file.PendingRenameTo is not null)
+            HasPendingFileMoves = row.HasPendingFileMoves
         };
     }
+
+    private sealed record TaskSummaryRow(
+        Guid                        Id,
+        Guid?                       FeedItemId,
+        string                      InfoHash,
+        string?                     TorrentName,
+        int?                        SubjectId,
+        string?                     SubjectName,
+        decimal?                    Episode,
+        string?                     NamingIngredients,
+        int                         Version,
+        DownloadTaskStatus          Status,
+        bool                        IsUserPaused,
+        bool                        IsSystemPaused,
+        double?                     Progress,
+        long?                       TotalSize,
+        string                      NamingSnapshot,
+        string?                     SiteSource,
+        string?                     FailedStep,
+        string?                     Error,
+        DateTimeOffset              CreatedAtUtc,
+        DateTimeOffset?             SubmittedAtUtc,
+        DateTimeOffset?             CompletedAtUtc,
+        Guid?                       ReplacesTaskId,
+        Guid?                       ReplacedByTaskId,
+        DownloadPreparationStage    PreparationStage,
+        string?                     ArchiveReview,
+        DownloadIsolationState      IsolationState,
+        string?                     VerificationIntent,
+        DateTimeOffset?             ExternalStopObservedAtUtc,
+        string?                     RunRecovery,
+        DateTimeOffset?             LastSyncedAtUtc,
+        QbittorrentTorrentCategory? LastObservedCategory,
+        DateTimeOffset?             NextObservationAtUtc,
+        DateTimeOffset?             TorrentMissingAtUtc,
+        int                         AttemptCount,
+        string?                     PathDecision,
+        bool                        HasPendingFileMoves);
 
     public static bool DefaultSortDescending(DownloadTaskSortColumn column) => column switch
     {
