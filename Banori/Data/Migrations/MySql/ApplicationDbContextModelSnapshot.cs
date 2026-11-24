@@ -359,6 +359,9 @@ namespace Banori.Data.Migrations.MySql
                     b.Property<DateTimeOffset?>("TorrentMissingAtUtc")
                         .HasColumnType("datetime(6)");
 
+                    b.Property<bool>("TorrentRenamePending")
+                        .HasColumnType("tinyint(1)");
+
                     b.Property<string>("TorrentUrl")
                         .HasMaxLength(2000)
                         .HasColumnType("varchar(2000)");

@@ -59,8 +59,9 @@ public sealed class NamingIngredientsModelConsistencyTests
         Assert.True(categoryProperty.IsNullable);
 
         var migration = assembly.Migrations.Keys.Last();
-        // 迁移序列末尾是未确认 Add 根台账；新增迁移后更新这里的最新迁移名。
-        Assert.Contains("UnconfirmedAddPaths", migration);
+        // 迁移序列末尾是种子改名待同步列；新增迁移后更新这里的最新迁移名。
+        Assert.Contains("AddTorrentRenamePending", migration);
+        Assert.Contains(assembly.Migrations.Keys, key => key.Contains("UnconfirmedAddPaths"));
         // 顺延不得丢失历史迁移：缺种巡检与启动恢复列所在迁移仍须在序列中。
         Assert.Contains(assembly.Migrations.Keys, key => key.Contains("AddTorrentMissingCheck"));
         // 启动恢复列所在的迁移仍须在序列中。

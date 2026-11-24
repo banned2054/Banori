@@ -141,6 +141,9 @@ public sealed class DownloadTask
     /// <summary>登记侧逐集择优改动了本任务的文件选择，等待对账把变更下推到下载器并确认。</summary>
     public bool SelectionSyncPending { get; set; }
 
+    /// <summary>种子名模板变更后待同步到下载器改名；由后台对账异步执行，qB 离线时保留待下一轮重试。</summary>
+    public bool TorrentRenamePending { get; set; }
+
     /// <summary>本任务完成后应标记为被替换的旧任务；无外键，仅记录替换关系。</summary>
     public Guid? ReplacesTaskId { get; set; }
 

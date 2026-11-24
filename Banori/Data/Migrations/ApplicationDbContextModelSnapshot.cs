@@ -354,6 +354,9 @@ namespace Banori.Data.Migrations
                     b.Property<DateTimeOffset?>("TorrentMissingAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("TorrentRenamePending")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("TorrentUrl")
                         .HasMaxLength(2000)
                         .HasColumnType("TEXT");
