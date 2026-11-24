@@ -4,17 +4,20 @@ using Banned.Qbittorrent.Models.Enums;
 using Banned.Qbittorrent.Models.Requests;
 using Banned.Qbittorrent.Models.Torrent;
 using Banned.Qbittorrent.Utils;
+using System.Text.Json;
 
 namespace Banori.Integrations.Qbittorrent;
 
 /// <summary>包装 Banned.Qbittorrent 客户端：临时文件上传、Hash 规范化与快照映射都在这里完成。</summary>
 public sealed class QbittorrentSession(
-    QBittorrentClient         client,
-    TorrentInfoBodyObserver?  bodyObserver   = null,
-    HttpClient?               ownedHttpClient = null) : IQbittorrentSession
+    QBittorrentClient        client,
+    TorrentInfoBodyObserver? bodyObserver    = null,
+    HttpClient?              ownedHttpClient = null,
+    string?                  baseUrl         = null) : IQbittorrentSession
 {
-    private readonly TorrentInfoBodyObserver? _bodyObserver   = bodyObserver;
+    private readonly TorrentInfoBodyObserver? _bodyObserver    = bodyObserver;
     private readonly HttpClient?              _ownedHttpClient = ownedHttpClient;
+    private readonly string?                  _baseUrl         = baseUrl;
 
     /// <summary>
     ///     torrents/info 列表读取的可注入边界。Banned.Qbittorrent 1.8.0 会把 JSON null 归并为空列表，
@@ -186,6 +189,112 @@ public sealed class QbittorrentSession(
         IReadOnlyCollection<string> infoHashes, bool deleteFiles, CancellationToken cancellationToken = default) =>
         client.Torrent.DeleteTorrents(infoHashes.Select(NormalizeHash).ToList(), deleteFiles,
                                       cancellationToken);
+
+    public async Task<QbittorrentMainDataDelta> SyncMainDataAsync(
+        long rid, CancellationToken cancellationToken = default)
+    {
+        if (_ownedHttpClient is null)
+            throw new InvalidOperationException("当前 qBittorrent 会话未持有 HttpClient，无法调用 sync/maindata。");
+
+        var requestUri = BuildSyncMainDataUri(_baseUrl, _ownedHttpClient.BaseAddress, rid);
+        using var response = await _ownedHttpClient.GetAsync(requestUri, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var payload = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        return ParseMainDataDelta(payload);
+    }
+
+    internal static QbittorrentMainDataDelta ParseMainDataDelta(ReadOnlyMemory<byte> payload)
+    {
+        if (payload.IsEmpty) throw new InvalidDataException("sync/maindata 返回空响应。");
+
+        using var document = JsonDocument.Parse(payload);
+        var       root     = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("sync/maindata 响应不是有效的 JSON 对象。");
+        if (!root.TryGetProperty("rid", out var ridElement) || !ridElement.TryGetInt64(out var rid))
+            throw new InvalidDataException("sync/maindata 响应缺少有效 rid。");
+
+        var fullUpdate = root.TryGetProperty("full_update", out var fullUpdateElement) &&
+                         fullUpdateElement.ValueKind == JsonValueKind.True;
+
+        var torrents = new Dictionary<string, QbittorrentTorrentDelta>(StringComparer.OrdinalIgnoreCase);
+        if (root.TryGetProperty("torrents", out var torrentsElement) &&
+            torrentsElement.ValueKind == JsonValueKind.Object)
+            foreach (var entry in torrentsElement.EnumerateObject())
+            {
+                if (entry.Value.ValueKind != JsonValueKind.Object) continue;
+                var hash = NormalizeHash(entry.Name);
+                if (hash.Length == 0) continue;
+                torrents[hash] = ParseTorrentDelta(entry.Value);
+            }
+
+        var torrentsRemoved = new List<string>();
+        if (root.TryGetProperty("torrents_removed", out var removedElement) &&
+            removedElement.ValueKind == JsonValueKind.Array)
+            foreach (var item in removedElement.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.String) continue;
+                var hash = NormalizeHash(item.GetString() ?? string.Empty);
+                if (hash.Length > 0) torrentsRemoved.Add(hash);
+            }
+
+        return new QbittorrentMainDataDelta(rid, fullUpdate, torrents, torrentsRemoved, payload.Length);
+    }
+
+    private static QbittorrentTorrentDelta ParseTorrentDelta(JsonElement element)
+    {
+        string? name = element.TryGetProperty("name", out var nameElement) &&
+                       nameElement.ValueKind == JsonValueKind.String
+            ? nameElement.GetString()
+            : null;
+
+        string?                     rawState = null;
+        QbittorrentTorrentCategory? category = null;
+        bool?                       isMoving = null;
+        if (element.TryGetProperty("state", out var stateElement) &&
+            stateElement.ValueKind == JsonValueKind.String)
+        {
+            rawState = stateElement.GetString();
+            category = QbittorrentTorrentStateMapper.MapRawState(rawState, out var movingFromState);
+            isMoving = movingFromState;
+        }
+
+        if (element.TryGetProperty("moving", out var movingElement) &&
+            movingElement.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            isMoving = movingElement.GetBoolean();
+
+        double? progress = element.TryGetProperty("progress", out var progressElement) &&
+                           progressElement.TryGetDouble(out var parsedProgress)
+            ? parsedProgress
+            : null;
+        long? totalSize = element.TryGetProperty("total_size", out var totalSizeElement) &&
+                          totalSizeElement.TryGetInt64(out var parsedTotalSize)
+            ? parsedTotalSize
+            : null;
+        string? savePath = element.TryGetProperty("save_path", out var savePathElement) &&
+                           savePathElement.ValueKind == JsonValueKind.String
+            ? savePathElement.GetString()
+            : null;
+
+        return new QbittorrentTorrentDelta(name, category, rawState, isMoving, progress, totalSize, savePath);
+    }
+
+    private static string BuildSyncMainDataUri(string? baseUrl, Uri? clientBaseAddress, long rid)
+    {
+        if (!string.IsNullOrWhiteSpace(baseUrl))
+        {
+            var normalizedBase = baseUrl.Trim().TrimEnd('/');
+            return $"{normalizedBase}/api/v2/sync/maindata?rid={rid}";
+        }
+
+        if (clientBaseAddress is not null)
+        {
+            var normalizedBase = clientBaseAddress.ToString().TrimEnd('/');
+            return $"{normalizedBase}/api/v2/sync/maindata?rid={rid}";
+        }
+
+        throw new InvalidOperationException("SyncMainDataAsync 需要已配置的 BaseUrl。");
+    }
 
     public ValueTask DisposeAsync()
     {

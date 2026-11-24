@@ -1,10 +1,24 @@
 using Banned.Qbittorrent.Models.Enums;
+using Banned.Qbittorrent.Utils;
 
 namespace Banori.Integrations.Qbittorrent;
 
 /// <summary>把 qBittorrent 种子状态翻译为业务对账需要的类别，便于独立测试。</summary>
 public static class QbittorrentTorrentStateMapper
 {
+    public static QbittorrentTorrentCategory MapRawState(string? rawState, out bool isMoving)
+    {
+        if (string.IsNullOrWhiteSpace(rawState))
+        {
+            isMoving = false;
+            return QbittorrentTorrentCategory.Unknown;
+        }
+
+        var state = StringUtils.String2TorrentState(rawState.Trim());
+        isMoving = state == EnumTorrentState.Moving;
+        return Map(state);
+    }
+
     public static QbittorrentTorrentCategory Map(EnumTorrentState state)
     {
         return state switch

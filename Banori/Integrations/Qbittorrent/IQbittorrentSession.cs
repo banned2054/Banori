@@ -143,7 +143,40 @@ public interface IQbittorrentSession : IAsyncDisposable
     /// <summary>从下载器批量删除种子；deleteFiles 为 true 时连同已下载的文件一起删除。</summary>
     Task DeleteTorrentsAsync(
         IReadOnlyCollection<string> infoHashes, bool deleteFiles, CancellationToken cancellationToken = default);
+
+    /// <summary>按 rid 拉取 <c>api/v2/sync/maindata</c> 全量或增量同步数据。</summary>
+    Task<QbittorrentMainDataDelta> SyncMainDataAsync(long rid, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("当前 qBittorrent 会话实现不支持 sync/maindata 增量同步。");
 }
+
+/// <summary>单次 <c>sync/maindata</c> 响应中单条种子的变化字段：未在 JSON 中出现的字段保持 <see langword="null" />。</summary>
+public sealed record QbittorrentTorrentDelta(
+    string?                     Name      = null,
+    QbittorrentTorrentCategory? Category  = null,
+    string?                     RawState  = null,
+    bool?                       IsMoving  = null,
+    double?                     Progress  = null,
+    long?                       TotalSize = null,
+    string?                     SavePath  = null);
+
+/// <summary>由 <c>sync/maindata</c> 增量合并维护的单条种子实时运行时快照。</summary>
+public sealed record QbittorrentMainDataTorrent(
+    string                     Hash,
+    string                     Name,
+    QbittorrentTorrentCategory Category,
+    string?                    RawState,
+    bool                       IsMoving,
+    double                     Progress,
+    long                       TotalSize,
+    string                     SavePath);
+
+/// <summary>单次 <c>api/v2/sync/maindata</c> 协议响应。</summary>
+public sealed record QbittorrentMainDataDelta(
+    long                                                 Rid,
+    bool                                                 FullUpdate,
+    IReadOnlyDictionary<string, QbittorrentTorrentDelta> Torrents,
+    IReadOnlyList<string>                                TorrentsRemoved,
+    long                                                 ResponseBytes = 0);
 
 /// <summary>会话工厂：每次创建独立登录的会话。未配置或禁用时 CreateAsync 抛 InvalidOperationException。</summary>
 public interface IQbittorrentSessionFactory
