@@ -53,7 +53,9 @@ public sealed class DownloadFileService(
     ReleaseNamePreviewPolicy                namingPolicy,
     SubjectEpisodeCorrectionPolicy          episodeCorrectionPolicy,
     TimeProvider                            timeProvider,
-    DownloadTimingPolicy?                   timingPolicy = null) : IDownloadFileService
+    DownloadTimingPolicy?                   timingPolicy   = null,
+    ReconcilePulse?                         reconcilePulse = null,
+    DownloadTaskChangeNotifier?             changeNotifier = null) : IDownloadFileService
 {
     private static readonly HashSet<string> SubtitleExtensions =
         [with(StringComparer.OrdinalIgnoreCase), ".ass", ".ssa", ".srt", ".sup"];
@@ -151,6 +153,29 @@ public sealed class DownloadFileService(
                                                      expectedFileTemplate);
         Stage(task, plan);
         await db.SaveChangesAsync(cancellationToken); // Overrides and journal must survive before any remote side effect.
+        var confirmed = false;
+        try
+        {
+            confirmed = await ExecutePendingAsync(db, session, task, cancellationToken);
+            if (!confirmed) reconcilePulse?.Pulse();
+        }
+        finally
+        {
+            if (!confirmed) changeNotifier?.Notify(task.Id, false);
+        }
+
+        return await ViewAsync(db, task, cancellationToken);
+    }
+
+    public async Task<DownloadTaskFilesView> ObservePendingAsync(
+        Guid taskId, CancellationToken cancellationToken = default)
+    {
+        using var       lease = await coordinationGate.EnterAsync(cancellationToken);
+        await using var db    = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var             task  = await LoadAsync(db, taskId, cancellationToken);
+        if (!HasPending(task)) return await ViewAsync(db, task, cancellationToken);
+
+        await using var session = await sessionFactory.CreateAsync(cancellationToken);
         await ExecutePendingAsync(db, session, task, cancellationToken);
         return await ViewAsync(db, task, cancellationToken);
     }
@@ -468,7 +493,9 @@ public sealed class DownloadFileService(
         await ValidatePlanAsync(db, session, task, plan, cancellationToken, mappingPaths);
         Stage(task, plan);
         await db.SaveChangesAsync(cancellationToken);
-        return await ExecutePendingAsync(db, session, task, cancellationToken, mappingPaths);
+        var executed = await ExecutePendingAsync(db, session, task, cancellationToken, mappingPaths);
+        if (!executed) changeNotifier?.Notify(task.Id, false);
+        return executed;
     }
 
     /// <summary>调用方必须持有同一个 DownloadCoordinationGate。返回 false 表示尚在等待移动/路径确认，不能标记完成。</summary>
@@ -543,6 +570,7 @@ public sealed class DownloadFileService(
                                                         file => DownloadRoundLayout.CurrentRelative(task, file)));
         Stage(task, plan);
         await db.SaveChangesAsync(cancellationToken);
+        changeNotifier?.Notify(task.Id, false);
         return true;
     }
 
@@ -578,7 +606,9 @@ public sealed class DownloadFileService(
         await ValidatePlanAsync(db, session, task, plan, cancellationToken);
         Stage(task, plan);
         await db.SaveChangesAsync(cancellationToken);
-        return await ExecutePendingAsync(db, session, task, cancellationToken);
+        var executed = await ExecutePendingAsync(db, session, task, cancellationToken);
+        if (!executed) changeNotifier?.Notify(task.Id, false);
+        return executed;
     }
 
     /// <summary>
@@ -619,9 +649,16 @@ public sealed class DownloadFileService(
         Stage(task, plan);
         await db.SaveChangesAsync(ct);
         var executed = await ExecutePendingAsync(db, session, task, ct);
-        if (!executed || task.ArchiveReview is null) return executed;
+        if (!executed)
+        {
+            changeNotifier?.Notify(task.Id, false);
+            return executed;
+        }
+
+        if (task.ArchiveReview is null) return executed;
         task.ArchiveReview = null;
         await db.SaveChangesAsync(ct);
+        changeNotifier?.Notify(task.Id, false);
 
         return executed;
     }
@@ -634,6 +671,7 @@ public sealed class DownloadFileService(
             Reason = reason, UpdatedAtUtc = timeProvider.GetUtcNow()
         }.ToJson();
         await db.SaveChangesAsync(ct);
+        changeNotifier?.Notify(task.Id, false);
     }
 
     /// <summary>
@@ -719,7 +757,11 @@ public sealed class DownloadFileService(
             await ValidatePlanAsync(db, session, owner, replacementPlan, ct);
             Stage(owner, replacementPlan);
             await db.SaveChangesAsync(ct);
-            if (!await ExecutePendingAsync(db, session, owner, ct)) return false;
+            if (!await ExecutePendingAsync(db, session, owner, ct))
+            {
+                changeNotifier?.Notify(owner.Id, false);
+                return false;
+            }
         }
 
         return true;
@@ -923,7 +965,9 @@ public sealed class DownloadFileService(
         }.ToJson();
         Stage(task, plan);
         await db.SaveChangesAsync(cancellationToken); // 决策与改名/移动日志必须先于任何远端副作用。
-        return await ExecutePendingAsync(db, session, task, cancellationToken);
+        var executed = await ExecutePendingAsync(db, session, task, cancellationToken);
+        if (!executed) changeNotifier?.Notify(task.Id, false);
+        return executed;
     }
 
     private async Task<DownloadTask> InitializeUnderGateAsync(ApplicationDbContext db,     IQbittorrentSession session,
@@ -991,7 +1035,9 @@ public sealed class DownloadFileService(
         // Legacy/adopted tasks have no known global base: retain their real root rather than guess a parent directory.
         task.DownloadRootPath ??= task.SavePath;
         RelativeDownloadPathPolicy.ValidateDirectories(task.MediaDirectory, task.SeedDirectory);
+        var hasChanges = db.ChangeTracker.HasChanges();
         await db.SaveChangesAsync(ct);
+        if (hasChanges) changeNotifier?.Notify(task.Id, false);
         return task;
     }
 
@@ -1035,8 +1081,12 @@ public sealed class DownloadFileService(
         if (!string.Equals(hash, task.InfoHash, StringComparison.OrdinalIgnoreCase))
             throw new DownloadFileIdentityException("原始种子 InfoHash 与任务不一致，拒绝刷新。");
 
-        var snapshot = await SnapshotAsync(session, task.InfoHash, ct);
-        if (snapshot.IsMoving || !SameRoot(snapshot.SavePath, DownloadRoundLayout.Root(task)))
+        var currentRoot = DownloadRoundLayout.Root(task);
+        var snapshot    = await SnapshotAsync(session, task.InfoHash, ct);
+        var rootChanged = !SameRoot(snapshot.SavePath, currentRoot);
+        if (rootChanged)
+            EnsureCompletedRootRebindAllowed(task, snapshot);
+        else if (snapshot.IsMoving)
             throw new DownloadFileIdentityException("下载器保存目录已变化或仍在移动，拒绝刷新。");
 
         var remaining =
@@ -1080,33 +1130,123 @@ public sealed class DownloadFileService(
             updates.Add((file, observed.Path));
         }
 
+        for (var i = 0; i < updates.Count; i++)
+        for (var j = i + 1; j < updates.Count; j++)
+            if (PathsOverlap(updates[i].Relative, updates[j].Relative))
+                throw new DownloadFileIdentityException("下载器返回相互冲突的文件路径，拒绝刷新。");
+
         var finalSnapshot = await SnapshotAsync(session, task.InfoHash, ct);
-        if (finalSnapshot.IsMoving ||
-            !SameRoot(finalSnapshot.SavePath, DownloadRoundLayout.Root(task)))
+        if (rootChanged)
+            EnsureCompletedRootRebindStable(finalSnapshot, snapshot.SavePath);
+        else if (finalSnapshot.IsMoving || !SameRoot(finalSnapshot.SavePath, currentRoot))
             throw new DownloadFileIdentityException("下载器保存目录在读取清单期间发生变化或仍在移动，拒绝刷新。");
 
-        foreach (var (file, relative) in updates)
+        var targetRoot = rootChanged ? Root(finalSnapshot.SavePath) : currentRoot;
+        if (rootChanged)
         {
-            var oldCurrent = DownloadRoundLayout.CurrentAbsolute(task, file);
-            var published  = DownloadRoundLayout.PublishedAbsolute(task, file);
-            var sameVideo  = EqualPath(oldCurrent, published);
-            if (!SameRelativePath(file.CurrentRelativePath, relative))
+            var targetSizes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (file, relative) in updates) targetSizes[Join(targetRoot, relative)] = file.Size;
+            await ValidateKnownPathOccupancyAsync(db, session, task, targetSizes, ct);
+        }
+
+        var now = timeProvider.GetUtcNow();
+        // 修改 task.SavePath 前，先计算每个文件的旧当前路径、旧已发布路径与是否指向同一份物理文件。
+        var snapshots = updates.Select(item =>
+        {
+            var oldCurrent   = DownloadRoundLayout.CurrentAbsolute(task, item.File);
+            var oldPublished = DownloadRoundLayout.PublishedAbsolute(task, item.File);
+            var sameFile     = EqualPath(oldCurrent, oldPublished);
+            return (item.File, item.Relative, oldCurrent, oldPublished, sameFile);
+        }).ToList();
+
+        var hasLayoutChanges = false;
+        if (rootChanged)
+        {
+            task.SavePath    = targetRoot;
+            hasLayoutChanges = true;
+        }
+
+        foreach (var (file, relative, oldCurrent, oldPublished, sameFile) in snapshots)
+        {
+            var newCurrent      = Join(targetRoot, relative);
+            var currentChanged  = !SameRelativePath(file.CurrentRelativePath, relative);
+            var absoluteChanged = !string.Equals(oldCurrent, newCurrent, StringComparison.Ordinal);
+
+            if (currentChanged) file.CurrentRelativePath = relative;
+
+            if (sameFile)
             {
-                file.CurrentRelativePath = relative;
-                file.UpdatedAtUtc         = timeProvider.GetUtcNow();
-            }
-            if (sameVideo)
-            {
-                file.PublishedRelativePath = relative;
-                file.PublishedPath         = Join(DownloadRoundLayout.Root(task), relative);
+                if (rootChanged || currentChanged)
+                {
+                    file.PublishedRelativePath = relative;
+                    file.PublishedPath         = newCurrent;
+                    hasLayoutChanges           = true;
+                }
+                else
+                {
+                    if (file.PublishedRelativePath != relative)
+                    {
+                        file.PublishedRelativePath = relative;
+                        hasLayoutChanges           = true;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(file.PublishedPath))
+                    {
+                        file.PublishedPath = newCurrent;
+                        hasLayoutChanges   = true;
+                    }
+                }
+
                 if (!EqualPath(DownloadRoundLayout.PublishedAbsolute(task, file),
                                DownloadRoundLayout.CurrentAbsolute(task, file)))
                     throw new DownloadFileIdentityException("刷新后已发布路径与当前路径不一致，拒绝刷新。");
             }
+            else if (rootChanged && string.IsNullOrWhiteSpace(file.PublishedPath))
+            {
+                // 独立已发布副本：固化为旧已发布绝对路径，防止后续改 task.SavePath 漂移归档位置。
+                file.PublishedPath = oldPublished;
+                hasLayoutChanges   = true;
+            }
+
+            if (absoluteChanged)
+            {
+                file.UpdatedAtUtc = now;
+                hasLayoutChanges  = true;
+            }
         }
 
-        await db.SaveChangesAsync(ct);
+        if (hasLayoutChanges || db.ChangeTracker.HasChanges())
+        {
+            await db.SaveChangesAsync(ct);
+            changeNotifier?.Notify(task.Id, false);
+        }
     }
+
+    private static void EnsureCompletedRootRebindAllowed(DownloadTask task, TorrentSnapshot snapshot)
+    {
+        if (task.Status != DownloadTaskStatus.Completed)
+            throw new DownloadFileIdentityException("下载器保存目录已变化或仍在移动，拒绝刷新。");
+        if (HasPending(task)                  ||
+            DownloadRoundLayout.IsPending(task) ||
+            task.VerificationIntent is not null ||
+            task.IsolationState != DownloadIsolationState.None)
+            throw new DownloadFileIdentityException("任务存在待确认操作、校验或隔离状态，拒绝重绑保存目录。");
+        if (!IsStableCompletedSnapshot(snapshot))
+            throw new DownloadFileIdentityException("下载器保存目录已变化，但种子仍在移动、校验或未完成，拒绝刷新。");
+    }
+
+    private static void EnsureCompletedRootRebindStable(TorrentSnapshot finalSnapshot, string expectedRoot)
+    {
+        if (!IsStableCompletedSnapshot(finalSnapshot) || !SameRoot(finalSnapshot.SavePath, expectedRoot))
+            throw new DownloadFileIdentityException("下载器保存目录在读取清单期间发生变化、仍在移动或状态不稳定，拒绝刷新。");
+    }
+
+    private static bool IsStableCompletedSnapshot(TorrentSnapshot snapshot) =>
+        !snapshot.IsMoving &&
+        snapshot.Progress >= 1 &&
+        snapshot.Category is not (QbittorrentTorrentCategory.Checking
+                                 or QbittorrentTorrentCategory.Error
+                                 or QbittorrentTorrentCategory.Unknown);
 
     private static string RefreshRelativePath(string path)
     {
@@ -1521,9 +1661,6 @@ public sealed class DownloadFileService(
         }
 
         var currentRoot = DownloadRoundLayout.Root(task);
-        var targets = plan.Paths.Values.Select(path => Join(plan.Root, path))
-                          .Concat(plan.Paths.Values.Select(path => Join(currentRoot, path)))
-                          .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var targetSizes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         var sizeByIndex = task.Files.ToDictionary(file => file.FileIndex, file => file.Size);
         foreach (var pair in plan.Paths)
@@ -1531,6 +1668,16 @@ public sealed class DownloadFileService(
             targetSizes[Join(plan.Root, pair.Value)]   = sizeByIndex[pair.Key];
             targetSizes[Join(currentRoot, pair.Value)] = sizeByIndex[pair.Key];
         }
+
+        await ValidateKnownPathOccupancyAsync(db, session, task, targetSizes, ct, verificationMappingPaths);
+    }
+
+    private static async Task ValidateKnownPathOccupancyAsync(
+        ApplicationDbContext db, IQbittorrentSession session, DownloadTask task,
+        IReadOnlyDictionary<string, long> targetSizes, CancellationToken ct,
+        HashSet<string>? verificationMappingPaths = null)
+    {
+        var targets = targetSizes.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         // 受管与外部占用采用同一证据要求：休眠或已被替换的任务也可能保留真实文件，不能直接放行。
         var others = await db.DownloadTasks.Include(value => value.Files).AsNoTracking()
@@ -1941,6 +2088,7 @@ public sealed class DownloadFileService(
         task.NextObservationAtUtc        = null;
         if (task.Status == DownloadTaskStatus.Completed) task.ArchiveReview = null;
         await db.SaveChangesAsync(ct);
+        changeNotifier?.Notify(task.Id, false);
         return true;
     }
 

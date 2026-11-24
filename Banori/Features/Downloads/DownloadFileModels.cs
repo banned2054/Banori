@@ -76,6 +76,12 @@ public interface IDownloadFileService
         CancellationToken cancellationToken = default, string? expectedFileTemplate = null);
 
     /// <summary>
+    ///     观察尚未确认的改名/移动操作：在协调门内核对下载器状态，确认生效即落库并返回最新布局，
+    ///     仍在确认窗口内返回待确认视图，耗尽补发预算时抛出确认超时异常并保留操作日志。
+    /// </summary>
+    Task<DownloadTaskFilesView> ObservePendingAsync(Guid taskId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     ///     重新核对受阻归档，按同一检查和迁移链重试，不跳过外部占用或文件身份校验。
     /// </summary>
     Task RetryArchiveAsync(Guid taskId, CancellationToken cancellationToken = default);
