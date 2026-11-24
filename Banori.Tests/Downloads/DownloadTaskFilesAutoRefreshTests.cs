@@ -47,7 +47,7 @@ public sealed class DownloadTaskFilesAutoRefreshTests
     }
 
     [Fact]
-    public async Task ActivateFilesTab_FinalTaskSyncsOnlyOnceAndSkipsLaterPolling()
+    public async Task AutoRefreshFiles_CompletedTaskWithAssociationPollsContinuously_AndSkipsMissingOrTombstone()
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
         var       id      = await harness.CreateUploadAsync(TestTorrentBytes.Create("Auto Final - 01"));
@@ -57,10 +57,23 @@ public sealed class DownloadTaskFilesAutoRefreshTests
         await vm.LoadAsync();
 
         await vm.ActivateFilesTabAsync(id);
-        await vm.ActivateFilesTabAsync(id);
+        await vm.AutoRefreshFilesAsync(id);
         await vm.AutoRefreshFilesAsync(id);
 
-        Assert.Equal(["List", "Refresh"], service.Calls);
+        Assert.Equal("List", service.Calls[0]);
+        Assert.Equal(3, service.Calls.Count(call => call == "Refresh"));
+
+        // 确认缺种的已完成任务不再自动同步。
+        await using (var db = await harness.CreateDbContextAsync())
+        {
+            var entity = await db.DownloadTasks.SingleAsync(task => task.Id == id);
+            entity.TorrentMissingAtUtc = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+        }
+
+        await vm.LoadAsync();
+        await vm.AutoRefreshFilesAsync(id);
+        Assert.Equal(3, service.Calls.Count(call => call == "Refresh"));
     }
 
     [Fact]
@@ -171,6 +184,9 @@ public sealed class DownloadTaskFilesAutoRefreshTests
             Guid id, int index, DownloadFileEditRequest request, CancellationToken cancellationToken = default,
             string? expectedFileTemplate = null) =>
             throw new InvalidOperationException("该文件替身不承担应用操作。");
+
+        public Task<DownloadTaskFilesView> ObservePendingAsync(Guid id, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("该文件替身不承担改名确认操作。");
 
         public Task RetryArchiveAsync(Guid id, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("该文件替身不承担归档确认。");

@@ -179,7 +179,7 @@ public sealed class DownloadTasksPageViewModelTests
     }
 
     [Fact]
-    public async Task SelectAll_OperatesOnCurrentPageOnly_AndKeepsOtherPagesSelection()
+    public async Task SelectAll_OperatesOnVisibleViewportOnly_AndKeepsOffscreenSelection()
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
         await DownloadTaskListTestSeed.SeedAsync(harness,
@@ -190,22 +190,29 @@ public sealed class DownloadTasksPageViewModelTests
                                                                                     DownloadTaskListTestSeed
                                                                                        .At(index))));
         var vm = CreateViewModel(harness);
+        vm.OverscanCount = 5;
         await vm.LoadAsync();
-        Assert.Multiple(() => Assert.Equal(101, vm.TotalCount), () => Assert.Equal(100, vm.Tasks.Count));
+        await vm.SetViewportAsync(0, 20);
+        Assert.Multiple(() => Assert.Equal(101, vm.TotalCount),
+                        () => Assert.Equal(20, vm.VisibleTaskIds.Count),
+                        () => Assert.Equal(25, vm.Tasks.Count));
 
         vm.ToggleBatchMode();
         vm.ToggleSelectAll();
-        Assert.Equal(100, vm.SelectedCount);
+        // 仅勾选视口内的 20 行，不含 5 行缓冲区。
+        Assert.Equal(20, vm.SelectedCount);
+        Assert.True(vm.AllSelected);
 
-        await vm.GoToPageAsync(2);
-        Assert.Single(vm.Tasks);
+        await vm.SetViewportAsync(100, 10);
+        Assert.Single(vm.VisibleTaskIds);
+        Assert.False(vm.AllSelected);
         vm.ToggleSelectAll();
-        Assert.Multiple(() => Assert.True(vm.AllSelected), () => Assert.Equal(101, vm.SelectedCount));
+        Assert.Multiple(() => Assert.True(vm.AllSelected), () => Assert.Equal(21, vm.SelectedCount));
 
         vm.ToggleSelectAll();
-        Assert.Multiple(() => Assert.False(vm.AllSelected), () => Assert.Equal(100, vm.SelectedCount));
+        Assert.Multiple(() => Assert.False(vm.AllSelected), () => Assert.Equal(20, vm.SelectedCount));
 
-        await vm.GoToPageAsync(1);
+        await vm.SetViewportAsync(0, 20);
         Assert.True(vm.AllSelected);
         vm.ToggleSelectAll();
         Assert.Equal(0, vm.SelectedCount);
@@ -230,6 +237,7 @@ public sealed class DownloadTasksPageViewModelTests
                                                            .Concat(failedTasks));
         var vm = CreateViewModel(harness);
         await vm.LoadAsync();
+        await vm.SetViewportAsync(0, 100);
         Assert.Equal(102, vm.TotalCount);
 
         vm.ToggleBatchMode();
@@ -243,16 +251,16 @@ public sealed class DownloadTasksPageViewModelTests
 
         await vm.ClearFiltersAsync();
         Assert.Multiple(() => Assert.Equal(102, vm.TotalCount),
-                        () => Assert.Equal(100, vm.Tasks.Count),
-                        // 第一页的 100 个完成任务仍在选中集内，表头全选如实反映当前页。
+                        () => Assert.Equal(100, vm.VisibleTaskIds.Count),
+                        // 前 100 个完成任务仍在选中集内，表头全选如实反映当前视口。
                         () => Assert.True(vm.AllSelected));
         vm.ToggleSelectAll();
-        // 取消全选只移除当前页的 100 个；筛选隐藏期间选中的 2 个失败任务保留。
+        // 取消全选只移除当前视口的 100 个；筛选隐藏期间选中的 2 个失败任务保留。
         Assert.True(failedTasks.Select(task => task.Id).ToHashSet().SetEquals(vm.SelectedIds));
     }
 
     [Fact]
-    public async Task SearchText_Debounces_ResetsToFirstPage_AndCoversAllHistory()
+    public async Task SearchText_Debounces_ResetsScrollToTop_AndCoversAllHistory()
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
         // 目标任务是 501 条中最旧的一条：旧的 500 条截断实现会被本用例击穿。
@@ -267,30 +275,29 @@ public sealed class DownloadTasksPageViewModelTests
         var vm = CreateViewModel(harness);
         vm.SearchDebounceDelay = TimeSpan.FromMilliseconds(1);
         await vm.LoadAsync();
-        Assert.Multiple(
-                        () => Assert.Equal(501, vm.TotalCount),
-                        () => Assert.Equal(6, vm.TotalPages));
+        Assert.Equal(501, vm.TotalCount);
 
-        // 最旧的一条落在第 6 页：分页确实覆盖最新 500 条之外的历史。
-        await vm.GoToPageAsync(6);
-        Assert.Equal("Old - 0001", Assert.Single(vm.Tasks).NamingSnapshot);
+        // 滚到最末尾：覆盖最新 500 条之外的历史。
+        await vm.SetViewportAsync(500, 10);
+        Assert.Equal("Old - 0001", Assert.Single(vm.VisibleTaskIds) == vm.Tasks[^1].Id ? vm.Tasks[^1].NamingSnapshot : null);
 
-        await vm.GoToPageAsync(2);
-        Assert.Equal(2, vm.PageNumber);
+        await vm.SetViewportAsync(120, 20);
+        Assert.Equal(120, vm.VisibleStartIndex);
 
         vm.SearchText = "Old - 0001";
         await WaitForFilterAsync(vm, () => vm.TotalCount == 1);
-        Assert.Multiple(() => Assert.Equal(1, vm.PageNumber),
+        Assert.Multiple(() => Assert.Equal(0, vm.VisibleStartIndex),
+                        () => Assert.Equal(0, vm.ConsumePendingScrollTopPx()),
                         () => Assert.Equal(1, vm.TotalCount),
                         () => Assert.Equal("Old - 0001", Assert.Single(vm.Tasks).NamingSnapshot));
 
         vm.SearchText = "   ";
         await WaitForFilterAsync(vm, () => vm.TotalCount == 501);
-        Assert.Equal(1, vm.PageNumber);
+        Assert.Equal(0, vm.VisibleStartIndex);
     }
 
     [Fact]
-    public async Task LoadAsync_ClampedPageNumber_SyncsInternalState()
+    public async Task RefreshFallback_ClampsOutOfRangeViewportWhenTailTasksDeleted()
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
         var tasks = Enumerable.Range(0, 101)
@@ -300,27 +307,22 @@ public sealed class DownloadTasksPageViewModelTests
         await DownloadTaskListTestSeed.SeedAsync(harness, tasks);
         var vm = CreateViewModel(harness);
         await vm.LoadAsync();
-        await vm.GoToPageAsync(2);
-        Assert.Multiple(() => Assert.Equal(2, vm.PageNumber), () => Assert.Single(vm.Tasks));
+        await vm.SetViewportAsync(100, 20);
+        Assert.Multiple(() => Assert.Equal(100, vm.VisibleStartIndex), () => Assert.Single(vm.VisibleTaskIds));
 
-        // 100 条后原第 2 页越界：刷新时查询层钳制回第 1 页。
+        // 删掉最后 20 条后原视口起点越界：刷新时钳制回有效末尾。
         await using (var db = await harness.CreateDbContextAsync())
         {
-            db.DownloadTasks.Remove(tasks[0]);
+            var removedIds = vm.OrderedTaskIds.Skip(81).ToArray();
+            var toRemove   = await db.DownloadTasks.Where(task => removedIds.Contains(task.Id)).ToListAsync();
+            db.DownloadTasks.RemoveRange(toRemove);
             await db.SaveChangesAsync();
         }
 
-        await vm.LoadAsync();
-        Assert.Multiple(() => Assert.Equal(1, vm.PageNumber),
-                        () => Assert.Equal(100, vm.Tasks.Count),
-                        () => Assert.Equal(100, vm.TotalCount));
-
-        // 任务回到 101 条后刷新：内部页码已同步为 1，仍停在第 1 页，不自动跳回第 2 页。
-        await DownloadTaskListTestSeed.SeedAsync(harness, [tasks[0]]);
-        await vm.LoadAsync();
-        Assert.Multiple(() => Assert.Equal(1, vm.PageNumber),
-                        () => Assert.Equal(101, vm.TotalCount),
-                        () => Assert.Equal(100, vm.Tasks.Count));
+        await vm.RefreshFallbackAsync();
+        Assert.Multiple(() => Assert.Equal(81, vm.TotalCount),
+                        () => Assert.Equal(80, vm.VisibleStartIndex),
+                        () => Assert.Single(vm.VisibleTaskIds));
     }
 
     [Fact]
@@ -680,6 +682,10 @@ public sealed class DownloadTasksPageViewModelTests
         public Task<DownloadTaskFilesView> ApplyAsync(
             Guid taskId, int index, DownloadFileEditRequest request,
             CancellationToken cancellationToken = default, string? expectedFileTemplate = null) =>
+            Task.FromResult(FilesView);
+
+        public Task<DownloadTaskFilesView> ObservePendingAsync(
+            Guid taskId, CancellationToken cancellationToken = default) =>
             Task.FromResult(FilesView);
 
         public Task RetryArchiveAsync(Guid taskId, CancellationToken cancellationToken = default) =>

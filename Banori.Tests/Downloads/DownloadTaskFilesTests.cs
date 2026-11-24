@@ -301,19 +301,19 @@ public sealed class DownloadTaskFilesTests
 
         var confirmed = service.Details with { HasPendingFileOperation = false, CurrentRootPath = "ConfirmedRoot" };
         service.ConfirmedDetails = confirmed;
-        service.RefreshedDetails = confirmed;
         service.ConfirmPending   = true;
         await WaitForAsync(() => !state.FileOperationPending);
 
-        Assert.Equal(1, service.RefreshCalls);
+        Assert.True(service.ObserveCalls >= 1);
+        Assert.Equal(0, service.RefreshCalls);
         Assert.Same(confirmed, state.Details);
         Assert.Null(state.Error);
         Assert.Contains("自动刷新", state.Message);
         Assert.False(state.PendingFileWaitPaused);
 
-        // 确认并自动刷新一次后，显式刷新入口才恢复可用。
+        // 确认并直接采用 ObservePendingAsync 的布局后，显式刷新入口即恢复可用。
         await vm.RefreshFilesAsync(id);
-        Assert.Equal(2, service.RefreshCalls);
+        Assert.Equal(1, service.RefreshCalls);
     }
 
     [Fact]
@@ -349,12 +349,12 @@ public sealed class DownloadTaskFilesTests
 
         var confirmed = service.Details with { HasPendingFileOperation = false, CurrentRootPath = "ConfirmedRoot" };
         service.ConfirmedDetails = confirmed;
-        service.RefreshedDetails = confirmed;
         service.ConfirmPending   = true;
         vm.ContinueWaitingForFileOperation(id);
         await WaitForAsync(() => !state.FileOperationPending);
 
-        Assert.Equal(1, service.RefreshCalls);
+        Assert.True(service.ObserveCalls >= 4);
+        Assert.Equal(0, service.RefreshCalls);
         Assert.Same(confirmed, state.Details);
         Assert.Null(state.Error);
         Assert.Contains("自动刷新", state.Message);
@@ -375,7 +375,7 @@ public sealed class DownloadTaskFilesTests
         await vm.PreviewFileAsync(id, 0);
         service.Details = service.Details with { HasPendingFileOperation = true };
         await vm.ApplyFileAsync(id, 0);
-        service.FailList = true;
+        service.FailObserve = true;
 
         var state = vm.FileState(id);
         await WaitForAsync(() => state.PendingFileWaitPaused);
@@ -383,20 +383,18 @@ public sealed class DownloadTaskFilesTests
         Assert.True(state.FileOperationPending);
         Assert.Equal(0, service.RefreshCalls);
         Assert.Contains("等待下载器确认失败", state.Error);
-        Assert.Contains("无法读取文件列表", state.Error);
+        Assert.Contains("无法核对改名状态", state.Error);
         Assert.Contains("继续等待确认", await RenderAsync(vm, id));
         await vm.RefreshFilesAsync(id);
         Assert.Equal(0, service.RefreshCalls);
 
-        service.FailList = false;
+        service.FailObserve = false;
         var confirmed = service.Details with { HasPendingFileOperation = false, CurrentRootPath = "ConfirmedRoot" };
         service.ConfirmedDetails = confirmed;
-        service.RefreshedDetails = confirmed;
         service.ConfirmPending   = true;
         vm.ContinueWaitingForFileOperation(id);
         await WaitForAsync(() => !state.FileOperationPending);
 
-        Assert.Equal(1, service.RefreshCalls);
         Assert.Same(confirmed, state.Details);
         Assert.Null(state.Error);
         Assert.Contains("自动刷新", state.Message);
@@ -594,13 +592,15 @@ public sealed class DownloadTaskFilesTests
 
     private sealed class FakeFileService(Guid taskId, DownloadTaskFilesView? details = null) : IDownloadFileService
     {
-        public int                                          ListCalls    { get; private set; }
-        public int                                          ApplyCalls   { get; private set; }
-        public int                                          RefreshCalls { get; private set; }
-        public bool                                         FailList     { get; set; }
-        public bool                                         FailApply    { get; set; }
-        public bool                                         FailRefresh  { get; set; }
-        public bool                                         ConfirmPending { get; set; }
+        public int                                          ListCalls        { get; private set; }
+        public int                                          ApplyCalls       { get; private set; }
+        public int                                          RefreshCalls     { get; private set; }
+        public int                                          ObserveCalls     { get; private set; }
+        public bool                                         FailList         { get; set; }
+        public bool                                         FailApply        { get; set; }
+        public bool                                         FailRefresh      { get; set; }
+        public bool                                         FailObserve      { get; set; }
+        public bool                                         ConfirmPending   { get; set; }
         public DownloadTaskFilesView?                       ConfirmedDetails { get; set; }
         public DownloadFileEditRequest?                     LastRequest  { get; private set; }
         public TaskCompletionSource<DownloadTaskFilesView>? ListGate     { get; init; }
@@ -651,6 +651,14 @@ public sealed class DownloadTaskFilesTests
             RefreshCalls++;
             if (FailRefresh) throw new InvalidOperationException("下载器刷新失败");
             return Task.FromResult(RefreshedDetails ?? Details);
+        }
+
+        public Task<DownloadTaskFilesView> ObservePendingAsync(Guid id, CancellationToken cancellationToken = default)
+        {
+            Assert.Equal(taskId, id);
+            ObserveCalls++;
+            if (FailObserve) throw new InvalidOperationException("无法核对改名状态");
+            return Task.FromResult(ConfirmPending && ConfirmedDetails is not null ? ConfirmedDetails : Details);
         }
 
         public Task RetryArchiveAsync(Guid id, CancellationToken cancellationToken = default) =>
