@@ -36,6 +36,13 @@
 				}
 			</div>
 			<div class="d-flex align-items-center gap-2 flex-shrink-0">
+				@if (State.LastSyncedAtUtc is { } lastSynced)
+				{
+					<span class="small text-body-secondary"
+					      title="@lastSynced.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)">
+						最近同步 @lastSynced.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture)
+					</span>
+				}
 				@if (State.Refreshing)
 				{
 					<span class="small text-body-secondary d-inline-flex align-items-center gap-1" role="status">
@@ -201,8 +208,8 @@
 
 	private DownloadTaskFilesState State => ViewModel.FileState(TaskId);
 
-	/// <summary>从页面视图模型反查任务投影：文件面板需要路径决策解释，避免重复查询。</summary>
-	private DownloadTaskView? TaskView => ViewModel.Tasks.FirstOrDefault(item => item.Id == TaskId);
+	/// <summary>从页面视图模型反查任务投影：文件面板需要路径决策解释，滚出视口时也保持可用。</summary>
+	private DownloadTaskView? TaskView => ViewModel.GetTaskView(TaskId);
 
 	private Task ReloadAsync()
 	{

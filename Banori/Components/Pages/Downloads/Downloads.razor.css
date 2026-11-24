@@ -28,12 +28,29 @@
     min-height: 0;
 }
 
-.downloads-page[data-batch-mode="false"] .downloads-list-pane tbody tr {
+.downloads-page[data-batch-mode="false"] .downloads-list-pane tbody tr.downloads-row {
     cursor: pointer;
 }
 
 .downloads-list-pane .table {
     margin-bottom: 0;
+}
+
+.downloads-table tbody tr.downloads-row {
+    height: 38px;
+}
+
+.downloads-table tbody tr.downloads-row > td {
+    height: 38px;
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+    white-space: nowrap;
+    vertical-align: middle;
+}
+
+.downloads-table tbody tr.downloads-spacer > td {
+    padding: 0;
+    border: 0;
 }
 
 .downloads-table thead th {

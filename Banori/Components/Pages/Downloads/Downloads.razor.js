@@ -115,6 +115,78 @@ export function initializeDetailPane(root) {
     };
 }
 
+/**
+ * 绑定虚拟列表滚动、容器尺寸变化与页面可见性监听；通过 requestAnimationFrame 节流回传可视区范围。
+ * 返回可释放句柄，在组件销毁时解绑全部监听。
+ */
+export function initializeVirtualList(listPane, dotNetRef, rowHeightPx) {
+    const empty = { dispose() {} };
+    if (!listPane || !dotNetRef || !Number.isFinite(rowHeightPx) || rowHeightPx <= 0) return empty;
+
+    let rafId = 0;
+    let disposed = false;
+    let lastStart = -1;
+    let lastCount = -1;
+
+    function reportViewport(force = false) {
+        if (disposed) return;
+        const thead = listPane.querySelector('thead');
+        const headerHeight = thead ? thead.getBoundingClientRect().height : 0;
+        const bodyHeight = Math.max(0, listPane.clientHeight - headerHeight);
+        const start = Math.max(0, Math.floor(listPane.scrollTop / rowHeightPx));
+        const count = bodyHeight <= 0 ? 0 : Math.ceil(bodyHeight / rowHeightPx);
+        if (!force && start === lastStart && count === lastCount) return;
+        lastStart = start;
+        lastCount = count;
+        dotNetRef.invokeMethodAsync('OnViewportChangedAsync', start, count).catch(() => {});
+    }
+
+    function scheduleReport() {
+        if (disposed || rafId !== 0) return;
+        rafId = requestAnimationFrame(() => {
+            rafId = 0;
+            reportViewport(false);
+        });
+    }
+
+    function onScroll() {
+        scheduleReport();
+    }
+
+    function onVisibilityChange() {
+        if (disposed) return;
+        dotNetRef.invokeMethodAsync('OnVisibilityChangedAsync', document.visibilityState === 'hidden').catch(() => {});
+    }
+
+    listPane.addEventListener('scroll', onScroll, { passive: true });
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    let resizeObserver = null;
+    if (typeof ResizeObserver === 'function') {
+        resizeObserver = new ResizeObserver(() => scheduleReport());
+        resizeObserver.observe(listPane);
+    }
+
+    reportViewport(true);
+    if (document.visibilityState === 'hidden') onVisibilityChange();
+
+    return {
+        dispose() {
+            disposed = true;
+            if (rafId !== 0) cancelAnimationFrame(rafId);
+            listPane.removeEventListener('scroll', onScroll);
+            document.removeEventListener('visibilitychange', onVisibilityChange);
+            if (resizeObserver) resizeObserver.disconnect();
+        }
+    };
+}
+
+/** 同步设置列表容器滚动位置（回顶或后台更新按锚点恢复）。 */
+export function setScrollTop(listPane, scrollTop) {
+    if (!listPane || typeof scrollTop !== 'number') return;
+    listPane.scrollTop = Math.max(0, scrollTop);
+}
+
 /** 复制任意文本：优先异步剪贴板 API，非 HTTPS 或不可用时回退隐藏 textarea。 */
 export async function copyText(text) {
     if (typeof text !== 'string') return false;

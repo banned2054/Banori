@@ -11,6 +11,9 @@
 @inject DownloadTaskQueries                 TaskQueries
 @inject DownloadTaskFilterStore             FilterStore
 @inject DownloadFileService                 FileService
+@inject DownloadTaskChangeNotifier          ChangeNotifier
+@inject QbittorrentMainDataSyncService      MainDataSyncService
+@inject TimeProvider                        TimeProvider
 @inject ILogger<DownloadTasksPageViewModel> Logger
 @inject IJSRuntime                          JsRuntime
 
@@ -40,7 +43,7 @@
 			}
 			else
 			{
-				<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(_vm.Busy || _vm.Tasks.Count == 0)"
+				<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(_vm.Busy || _vm.TotalCount == 0)"
 				        @onclick="_vm.ToggleBatchMode">
 					批量选择
 				</button>
@@ -103,23 +106,12 @@
 			{
 				<button type="button" class="btn btn-outline-secondary" @onclick="_vm.ClearFiltersAsync">清除筛选</button>
 			}
-			<span class="ms-auto d-flex align-items-center gap-2">
-				<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(!_vm.HasPreviousPage)"
-				        @onclick="() => _vm.GoToPageAsync(_vm.PageNumber - 1)">
-					上一页
-				</button>
-				<span class="small text-body-secondary">第 @_vm.PageNumber / @_vm.TotalPages 页</span>
-				<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(!_vm.HasNextPage)"
-				        @onclick="() => _vm.GoToPageAsync(_vm.PageNumber + 1)">
-					下一页
-				</button>
-				<span class="small text-body-secondary">共 @_vm.TotalCount 个任务 · 本页 @_vm.Tasks.Count 个</span>
-			</span>
+			<span class="ms-auto small text-body-secondary">共 @_vm.TotalCount 个任务</span>
 		</div>
 	}
 
 	<div class="downloads-workspace">
-		<div class="downloads-list-pane">
+		<div class="downloads-list-pane" @ref="_listPaneRef">
 			@if (!_vm.Loaded)
 			{
 				<p class="p-3">正在加载…</p>
@@ -136,7 +128,7 @@
 						@if (_vm.BatchMode)
 						{
 							<th style="width: 1rem;">
-								<input type="checkbox" class="form-check-input mt-0" aria-label="全选"
+								<input type="checkbox" class="form-check-input mt-0" aria-label="勾选可见行" title="勾选可见行"
 								       checked="@_vm.AllSelected" @onchange="_vm.ToggleSelectAll"/>
 							</th>
 						}
@@ -207,7 +199,7 @@
 					</tr>
 					</thead>
 					<tbody>
-					@if (_vm.Tasks.Count == 0)
+					@if (_vm.TotalCount == 0)
 					{
 						<tr>
 							<td colspan="@(_vm.BatchMode ? 11 : 10)" class="text-body-secondary">
@@ -215,11 +207,19 @@
 							</td>
 						</tr>
 					}
-					@foreach (var task in _vm.Tasks)
+					else
 					{
-						<tr @key="task.Id" class="@(IsSelected(task.Id) ? "table-active" : null)"
-						    @onclick="() => SelectTaskAsync(task)"
-						    @oncontextmenu="e => OpenContextMenuAsync(e, task)" @oncontextmenu:preventDefault="@(!_vm.BatchMode)">
+						@if (_vm.TopSpacerHeightPx > 0)
+						{
+							<tr class="downloads-spacer" aria-hidden="true" style="height: @(_vm.TopSpacerHeightPx)px;">
+								<td colspan="@(_vm.BatchMode ? 11 : 10)" style="height: @(_vm.TopSpacerHeightPx)px;"></td>
+							</tr>
+						}
+						@foreach (var task in _vm.Tasks)
+						{
+							<tr @key="task.Id" class="downloads-row @(IsSelected(task.Id) ? "table-active" : null)"
+							    @onclick="() => SelectTaskAsync(task)"
+							    @oncontextmenu="e => OpenContextMenuAsync(e, task)" @oncontextmenu:preventDefault="@(!_vm.BatchMode)">
 							@if (_vm.BatchMode)
 							{
 								<td>
@@ -318,27 +318,18 @@
 								}
 							</td>
 						</tr>
+						}
+						@if (_vm.BottomSpacerHeightPx > 0)
+						{
+							<tr class="downloads-spacer" aria-hidden="true" style="height: @(_vm.BottomSpacerHeightPx)px;">
+								<td colspan="@(_vm.BatchMode ? 11 : 10)" style="height: @(_vm.BottomSpacerHeightPx)px;"></td>
+							</tr>
+						}
 					}
 					</tbody>
 				</table>
 			}
 		</div>
-
-		@if (_vm.Loaded && _vm.TotalPages > 1)
-		{
-			<div class="d-flex justify-content-center align-items-center gap-2 py-2 border-top">
-				<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(!_vm.HasPreviousPage)"
-				        @onclick="() => _vm.GoToPageAsync(_vm.PageNumber - 1)">
-					上一页
-				</button>
-				<span class="small text-body-secondary">第 @_vm.PageNumber / @_vm.TotalPages 页</span>
-				<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(!_vm.HasNextPage)"
-				        @onclick="() => _vm.GoToPageAsync(_vm.PageNumber + 1)">
-					下一页
-				</button>
-				<span class="small text-body-secondary">共 @_vm.TotalCount 个任务 · 本页 @_vm.Tasks.Count 个</span>
-			</div>
-		}
 
 		<div class="downloads-splitter @(_detailsExpanded ? null : "is-hidden")" role="separator"
 		     aria-orientation="horizontal" aria-label="拖动调整详情面板高度" title="拖动调整详情面板高度"></div>
@@ -354,7 +345,7 @@
 					        @onclick="() => SwitchTabAsync(DetailTab.Files)">文件列表</button>
 				</div>
 				<div class="d-flex align-items-center gap-2 min-w-0">
-					@if (SelectedTask is { } paneTask)
+					@if (_vm.SelectedTask is { } paneTask)
 					{
 						<span class="small text-body-secondary text-truncate downloads-task-title">@DownloadStatusTitle(paneTask)</span>
 					}
@@ -367,7 +358,7 @@
 			@if (_detailsExpanded)
 			{
 				<div class="downloads-detail-content" role="tabpanel">
-					@if (SelectedTask is { } task)
+					@if (_vm.SelectedTask is { } task)
 					{
 						@if (_activeTab == DetailTab.Details)
 						{
@@ -404,7 +395,7 @@
 		</div>
 	}
 
-	@if (_contextMenuOpen && SelectedTask is { } contextTask)
+	@if (_contextMenuOpen && _vm.SelectedTask is { } contextTask)
 	{
 		<div style="position: fixed; inset: 0; z-index: 1079;"
 		     @onclick="CloseContextMenu" @oncontextmenu="CloseContextMenu" @oncontextmenu:preventDefault="true"></div>
@@ -539,28 +530,36 @@
 		Files
 	}
 
-	private readonly CancellationTokenSource    _cts = new();
-	private          DownloadTasksPageViewModel _vm  = null!;
-	private          PeriodicTimer?             _timer;
-	private          Task?                      _refreshLoop;
-	private          DownloadIntakeActions?     _intakeActions;
-	private          RssDownloadResult?         _rssResult;
-	private          bool                       _statusPanelOpen;
-	private          bool                       _languagePanelOpen;
-	private          Guid?                      _selectedTaskId;
-	private          bool                       _detailsExpanded = false;
-	private          DetailTab                  _activeTab       = DetailTab.Details;
-	private          bool                       _contextMenuOpen;
-	private          double                     _contextMenuX;
-	private          double                     _contextMenuY;
-	private          ElementReference           _contextMenuRef;
-	private          ElementReference           _pageRef;
-	private          bool                       _focusContextMenu;
-	private          IJSObjectReference?        _jsModule;
-	private          IJSObjectReference?        _splitterHandle;
-
-	private DownloadTaskView? SelectedTask =>
-		_selectedTaskId is { } id ? _vm.Tasks.FirstOrDefault(task => task.Id == id) : null;
+	private readonly CancellationTokenSource                 _cts                = new();
+	private readonly Lock                                    _changeLock         = new();
+	private readonly HashSet<Guid>                           _pendingChangedIds  = [];
+	private readonly SemaphoreSlim                           _refreshSignal      = new(0, 1);
+	private          DownloadTasksPageViewModel              _vm                 = null!;
+	private          IDisposable?                            _changeSubscription;
+	private          IDisposable?                            _mainDataSubscription;
+	private          bool                                    _disposed;
+	private          Task?                                   _refreshLoop;
+	private          DownloadIntakeActions?                  _intakeActions;
+	private          RssDownloadResult?                      _rssResult;
+	private          bool                                    _statusPanelOpen;
+	private          bool                                    _languagePanelOpen;
+	private          bool                                    _detailsExpanded;
+	private          DetailTab                               _activeTab          = DetailTab.Details;
+	private          bool                                    _contextMenuOpen;
+	private          double                                  _contextMenuX;
+	private          double                                  _contextMenuY;
+	private          ElementReference                        _contextMenuRef;
+	private          ElementReference                        _pageRef;
+	private          ElementReference                        _listPaneRef;
+	private          bool                                    _focusContextMenu;
+	private          bool                                    _pendingOrderOrMembership;
+	private          bool                                    _hasPendingChange;
+	private          bool                                    _isPageHidden;
+	private          bool                                    _dirtyWhileHidden;
+	private          IJSObjectReference?                     _jsModule;
+	private          IJSObjectReference?                     _splitterHandle;
+	private          IJSObjectReference?                     _virtualListHandle;
+	private          DotNetObjectReference<Downloads>?       _selfRef;
 
 	/// <summary>右键菜单保留全部动作；详情头部只显示非异常态动作，恢复按钮统一放在异常提示框。</summary>
 	private RenderFragment<DownloadTaskView> TaskActions => task => @<text>
@@ -616,22 +615,70 @@
 
 	protected override void OnInitialized()
 	{
-		_vm                =  new DownloadTasksPageViewModel(DownloadService, IntakeService, TaskQueries, FilterStore, Logger, FileService);
-		_vm.ResultsChanged += OnResultsChanged;
+		_vm = new DownloadTasksPageViewModel(DownloadService, IntakeService, TaskQueries, FilterStore, Logger,
+		                                     FileService, TimeProvider);
+		_vm.ResultsChanged    += OnResultsChanged;
+		_changeSubscription   =  ChangeNotifier.Subscribe(OnTasksChanged);
+		_mainDataSubscription =  MainDataSyncService.Subscribe(OnMainDataUpdated);
 	}
 
 	/// <summary>后台防抖加载落幕后刷新界面；与事件处理器自身的渲染可能重复，无副作用。</summary>
 	private void OnResultsChanged() => _ = InvokeAsync(StateHasChanged);
 
+	private void OnMainDataUpdated(QbittorrentMainDataSnapshot snapshot) =>
+		_ = InvokeAsync(() =>
+		{
+			if (!_disposed) _vm.ApplyMainDataSnapshot(snapshot);
+		});
+
+	private void OnTasksChanged(DownloadTaskChangedEvent changedEvent)
+	{
+		lock (_changeLock)
+		{
+			_pendingChangedIds.UnionWith(changedEvent.TaskIds);
+			_pendingOrderOrMembership |= changedEvent.AffectsListOrderOrMembership;
+			_hasPendingChange         =  true;
+			if (_isPageHidden)
+			{
+				_dirtyWhileHidden = true;
+				return;
+			}
+		}
+
+		SignalRefresh();
+	}
+
+	private void SignalRefresh()
+	{
+		try
+		{
+			if (_refreshSignal.CurrentCount == 0) _refreshSignal.Release();
+		}
+		catch (ObjectDisposedException)
+		{
+		}
+	}
+
 	protected override async Task OnInitializedAsync()
 	{
 		await _vm.LoadAsync(_cts.Token);
-		_refreshLoop = RefreshLoop();
+		_refreshLoop = RefreshLoopAsync();
 	}
 
 	protected override async Task OnAfterRenderAsync(bool firstRender)
 	{
 		if (firstRender) await InitializeJsAsync();
+		if (_jsModule is not null && _vm.ConsumePendingScrollTopPx() is { } scrollTop)
+		{
+			try
+			{
+				await _jsModule.InvokeVoidAsync("setScrollTop", _listPaneRef, scrollTop);
+			}
+			catch (Exception exception) when (exception is JSDisconnectedException or ObjectDisposedException or JSException)
+			{
+			}
+		}
+
 		if (!_focusContextMenu) return;
 
 		_focusContextMenu = false;
@@ -646,10 +693,60 @@
 			_jsModule =
 				await JsRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/Downloads/Downloads.razor.js");
 			_splitterHandle = await _jsModule.InvokeAsync<IJSObjectReference>("initializeDetailPane", _pageRef);
+			_selfRef        = DotNetObjectReference.Create(this);
+			_virtualListHandle = await _jsModule.InvokeAsync<IJSObjectReference>(
+				"initializeVirtualList", _listPaneRef, _selfRef, DownloadTasksPageViewModel.RowHeightPx);
 		}
 		catch (Exception exception) when (exception is JSDisconnectedException or ObjectDisposedException or JSException)
 		{
 		}
+	}
+
+	[JSInvokable]
+	public async Task OnViewportChangedAsync(int visibleStartIndex, int visibleCount)
+	{
+		try
+		{
+			await _vm.SetViewportAsync(visibleStartIndex, visibleCount, _cts.Token);
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+	}
+
+	[JSInvokable]
+	public Task OnVisibilityChangedAsync(bool hidden)
+	{
+		if (_disposed) return Task.CompletedTask;
+		bool shouldRefreshNow;
+		lock (_changeLock)
+		{
+			_isPageHidden = hidden;
+			if (hidden)
+			{
+				SyncFilePanelPolling();
+				shouldRefreshNow = false;
+			}
+			else
+			{
+				shouldRefreshNow  = _dirtyWhileHidden || _hasPendingChange;
+				_dirtyWhileHidden = false;
+			}
+		}
+
+		if (hidden)
+		{
+			_mainDataSubscription?.Dispose();
+			_mainDataSubscription = null;
+			return Task.CompletedTask;
+		}
+
+		_mainDataSubscription ??= MainDataSyncService.Subscribe(OnMainDataUpdated);
+		SyncFilePanelPolling();
+		// 回到前台立即刷新当前可见窗口；文件面板若处于展开的文件列表 Tab，SyncFilePanelPolling 已立即触发一次同步。
+		SignalRefresh();
+		if (shouldRefreshNow) return InvokeAsync(StateHasChanged);
+		return Task.CompletedTask;
 	}
 
 	private async Task<bool> CopyTextAsync(string text)
@@ -686,26 +783,44 @@
 		_intakeActions?.ClosePanels();
 	}
 
-	/// <summary>页面打开期间限频重新查询持久化状态；页面关闭即停止，不影响后台任务。</summary>
-	private async Task RefreshLoop()
+	/// <summary>串行前台刷新循环：数据库提交通知立即唤醒，15 秒兜底；页面隐藏时暂停。</summary>
+	private async Task RefreshLoopAsync()
 	{
-		_timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
 		try
 		{
-			while (await _timer.WaitForNextTickAsync(_cts.Token))
+			while (!_cts.IsCancellationRequested)
 			{
-				if (_vm.Busy)
+				var triggeredBySignal = await _refreshSignal.WaitAsync(TimeSpan.FromSeconds(15), _cts.Token);
+				if (_cts.IsCancellationRequested) break;
+
+				if (_isPageHidden)
 				{
+					lock (_changeLock) _dirtyWhileHidden = true;
 					continue;
 				}
 
-				await _vm.LoadAsync(_cts.Token);
-				if (_detailsExpanded && _activeTab == DetailTab.Files && SelectedTask is { } task)
-					await _vm.AutoRefreshFilesAsync(task.Id, _cts.Token);
-				StateHasChanged();
+				if (_vm.Busy) continue;
+
+				Guid[] changedIds;
+				bool   affectsOrderOrMembership;
+				bool   hasPendingChange;
+				lock (_changeLock)
+				{
+					hasPendingChange          = _hasPendingChange;
+					affectsOrderOrMembership  = _pendingOrderOrMembership;
+					changedIds                = [.. _pendingChangedIds];
+					_hasPendingChange         = false;
+					_pendingOrderOrMembership = false;
+					_pendingChangedIds.Clear();
+				}
+
+				if (!triggeredBySignal || !hasPendingChange || affectsOrderOrMembership)
+					await InvokeAsync(() => _vm.RefreshFallbackAsync(_cts.Token));
+				else
+					await InvokeAsync(() => _vm.RefreshChangedTasksAsync(changedIds, false, _cts.Token));
 			}
 		}
-		catch (OperationCanceledException)
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
 		{
 		}
 		catch (ObjectDisposedException)
@@ -713,9 +828,12 @@
 		}
 	}
 
+	private void SyncFilePanelPolling() =>
+		_vm.SetFilePanelActive(_detailsExpanded, _activeTab == DetailTab.Files, _vm.SelectedTaskId, _isPageHidden);
+
 	private bool IsSelected(Guid taskId)
 	{
-		return !_vm.BatchMode && _selectedTaskId == taskId;
+		return !_vm.BatchMode && _vm.SelectedTaskId == taskId;
 	}
 
 	/// <summary>点击列表行：仅选中任务，不改变下面板展开/折叠状态；批量模式不联动。</summary>
@@ -723,10 +841,9 @@
 	{
 		if (_vm.BatchMode) return;
 
-		_selectedTaskId  = task.Id;
 		_contextMenuOpen = false;
-		if (_detailsExpanded && _activeTab == DetailTab.Files)
-			await RunOperationAsync(() => _vm.ActivateFilesTabAsync(task.Id, _cts.Token));
+		await RunOperationAsync(() => _vm.SelectTaskAsync(task.Id, _cts.Token));
+		SyncFilePanelPolling();
 	}
 
 	/// <summary>右键菜单的查看入口：选中任务、切到目标页签并展开下面板；批量模式不联动。</summary>
@@ -734,40 +851,36 @@
 	{
 		if (_vm.BatchMode) return;
 
-		_selectedTaskId  = task.Id;
 		_activeTab       = tab;
 		_detailsExpanded = true;
 		_contextMenuOpen = false;
-		if (tab == DetailTab.Files)
-			await RunOperationAsync(() => _vm.ActivateFilesTabAsync(task.Id, _cts.Token));
+		await RunOperationAsync(() => _vm.SelectTaskAsync(task.Id, _cts.Token));
+		SyncFilePanelPolling();
 	}
 
-	private async Task SwitchTabAsync(DetailTab tab)
+	private void SwitchTabAsync(DetailTab tab)
 	{
 		_activeTab       = tab;
 		_detailsExpanded = true;
-		if (tab == DetailTab.Files && SelectedTask is { } task)
-			await RunOperationAsync(() => _vm.ActivateFilesTabAsync(task.Id, _cts.Token));
+		SyncFilePanelPolling();
 	}
 
-	private async Task ToggleDetailsPaneAsync()
+	private void ToggleDetailsPaneAsync()
 	{
 		_detailsExpanded = !_detailsExpanded;
-		if (_detailsExpanded && _activeTab == DetailTab.Files && SelectedTask is { } task)
-			await RunOperationAsync(() => _vm.ActivateFilesTabAsync(task.Id, _cts.Token));
+		SyncFilePanelPolling();
 	}
 
 	private async Task OpenContextMenuAsync(MouseEventArgs e, DownloadTaskView task)
 	{
 		if (_vm.BatchMode) return;
 
-		_selectedTaskId   = task.Id;
 		_contextMenuOpen  = true;
 		_contextMenuX     = e.ClientX;
 		_contextMenuY     = e.ClientY;
 		_focusContextMenu = true;
-		if (_detailsExpanded && _activeTab == DetailTab.Files)
-			await RunOperationAsync(() => _vm.ActivateFilesTabAsync(task.Id, _cts.Token));
+		await RunOperationAsync(() => _vm.SelectTaskAsync(task.Id, _cts.Token));
+		SyncFilePanelPolling();
 	}
 
 	private void CloseContextMenu()
@@ -831,9 +944,10 @@
 		}
 	}
 
-	private Task DeleteAsync(Guid taskId)
+	private async Task DeleteAsync(Guid taskId)
 	{
-		return RunOperationAsync(() => _vm.DeleteAsync(taskId, _cts.Token));
+		await RunOperationAsync(() => _vm.DeleteAsync(taskId, _cts.Token));
+		SyncFilePanelPolling();
 	}
 
 	private async Task OpenBulkDeletePanelAsync()
@@ -852,6 +966,7 @@
 		try
 		{
 			await _vm.ConfirmBulkDeleteAsync(_cts.Token);
+			SyncFilePanelPolling();
 		}
 		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
 		{
@@ -860,7 +975,7 @@
 
 	private async Task HandleIntakeCompletedAsync(DownloadIntakeFeedback feedback)
 	{
-		_rssResult = feedback.RssResult;
+		_rssResult = feedback.Succeeded ? null : feedback.RssResult;
 		var shouldReload = feedback.Succeeded || (feedback.RssResult?.CreatedCount ?? 0) > 0;
 		await RunOperationAsync(() => _vm.ApplyIntakeFeedbackAsync(feedback.Succeeded, feedback.Message, shouldReload,
 		                                                           _cts.Token),
@@ -956,15 +1071,32 @@
 
 	public async ValueTask DisposeAsync()
 	{
+		_disposed = true;
+		_mainDataSubscription?.Dispose();
+		_mainDataSubscription = null;
+		_changeSubscription?.Dispose();
 		_vm.ResultsChanged -= OnResultsChanged;
 		_cts.Cancel();
 		_cts.Dispose();
-		_timer?.Dispose();
+		_refreshSignal.Dispose();
 		_vm.Dispose();
+		if (_virtualListHandle is not null)
+		{
+			try
+			{
+				await _virtualListHandle.InvokeVoidAsync("dispose");
+				await _virtualListHandle.DisposeAsync();
+			}
+			catch (Exception exception) when (exception is JSDisconnectedException or ObjectDisposedException)
+			{
+			}
+		}
+
 		if (_splitterHandle is not null)
 		{
 			try
 			{
+				await _splitterHandle.InvokeVoidAsync("dispose");
 				await _splitterHandle.DisposeAsync();
 			}
 			catch (Exception exception) when (exception is JSDisconnectedException or ObjectDisposedException)
@@ -982,5 +1114,7 @@
 			{
 			}
 		}
+
+		_selfRef?.Dispose();
 	}
 }
