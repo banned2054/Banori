@@ -397,21 +397,25 @@
 
 	@if (_contextMenuOpen && _vm.SelectedTask is { } contextTask)
 	{
-		<div style="position: fixed; inset: 0; z-index: 1079;"
+		<div class="downloads-context-backdrop"
 		     @onclick="CloseContextMenu" @oncontextmenu="CloseContextMenu" @oncontextmenu:preventDefault="true"></div>
-		<div @ref="_contextMenuRef" tabindex="-1" class="dropdown-menu d-block show shadow"
+		<div @ref="_contextMenuRef" tabindex="-1" class="downloads-context-menu" role="menu"
 		     @onclick="CloseContextMenu" @onkeydown="OnContextMenuKeyDown"
-		     style="position: fixed; left: @(_contextMenuX)px; top: @(_contextMenuY)px; z-index: 1080; min-width: 11rem;">
-			<div class="dropdown-header text-truncate">@DownloadStatusTitle(contextTask)</div>
-			<div class="d-grid gap-1 px-2 py-1">
+		     style="left: @(_contextMenuX)px; top: @(_contextMenuY)px;">
+			@if (HasContextTaskActions(contextTask))
+			{
 				@TaskActions(contextTask)
-				<button type="button" class="btn btn-sm btn-outline-secondary"
-				        @onclick="() => OpenTaskTabAsync(contextTask, DetailTab.Details)">查看详细信息</button>
-				<button type="button" class="btn btn-sm btn-outline-secondary"
-				        @onclick="() => OpenTaskTabAsync(contextTask, DetailTab.Files)">查看文件列表</button>
-				<button type="button" class="btn btn-sm btn-outline-danger" disabled="@_vm.Busy"
-				        @onclick="() => OpenDeletePanelAsync(contextTask)">删除</button>
-			</div>
+				<div class="downloads-context-menu-divider" role="separator"></div>
+			}
+			<button type="button" class="downloads-context-menu-item is-danger" role="menuitem" disabled="@_vm.Busy"
+			        @onclick="() => OpenDeletePanelAsync(contextTask)">
+				<svg class="downloads-context-menu-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14"
+				     fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+					<path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/>
+					<path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/>
+				</svg>
+				<span>删除</span>
+			</button>
 		</div>
 	}
 
@@ -567,33 +571,106 @@
 		{
 			// 启动未恢复的人工入口：不重新校验、不隔离、不重新下载。
 			case DownloadTaskStatus.Downloading when task.RunState == DownloadRunStates.FailedRetryable:
-				<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ResumeRunAsync(task.Id)">继续下载</button>
+				<button type="button" class="downloads-context-menu-item" role="menuitem" disabled="@_vm.Busy"
+				        @onclick="() => ResumeRunAsync(task.Id)">
+					<svg class="downloads-context-menu-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14"
+					     fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+						<path d="M10.804 8 5 4.633v6.734zm.792-.696a.802.802 0 0 1 0 1.392l-6.363 3.692C4.713 12.69 4 12.345 4 11.692V4.308c0-.653.713-.998 1.233-.696z"/>
+					</svg>
+					<span>继续下载</span>
+				</button>
 				break;
 			case DownloadTaskStatus.Downloading:
-				<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => PauseAsync(task.Id)">暂停</button>
+				<button type="button" class="downloads-context-menu-item" role="menuitem" disabled="@_vm.Busy"
+				        @onclick="() => PauseAsync(task.Id)">
+					<svg class="downloads-context-menu-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14"
+					     fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+						<path d="M6 3.5a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-1 0V4a.5.5 0 0 1 .5-.5m4 0a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-1 0V4a.5.5 0 0 1 .5-.5"/>
+					</svg>
+					<span>暂停</span>
+				</button>
 				break;
 			case DownloadTaskStatus.Paused when task.Phase == DownloadDisplayPhase.VerificationUnconfirmed:
-				<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ReverifyAsync(task.Id)">重新校验</button>
+				<button type="button" class="downloads-context-menu-item" role="menuitem" disabled="@_vm.Busy"
+				        @onclick="() => ReverifyAsync(task.Id)">
+					<svg class="downloads-context-menu-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14"
+					     fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+						<path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2z"/>
+						<path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466"/>
+					</svg>
+					<span>重新校验</span>
+				</button>
 				break;
 			case DownloadTaskStatus.Paused when task.IsUserPaused:
-				<button class="btn btn-sm btn-outline-secondary" disabled="@_vm.Busy" @onclick="() => ResumeAsync(task.Id)">恢复</button>
+				<button type="button" class="downloads-context-menu-item" role="menuitem" disabled="@_vm.Busy"
+				        @onclick="() => ResumeAsync(task.Id)">
+					<svg class="downloads-context-menu-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14"
+					     fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+						<path d="M10.804 8 5 4.633v6.734zm.792-.696a.802.802 0 0 1 0 1.392l-6.363 3.692C4.713 12.69 4 12.345 4 11.692V4.308c0-.653.713-.998 1.233-.696z"/>
+					</svg>
+					<span>恢复</span>
+				</button>
 				break;
 			case DownloadTaskStatus.Completed when task.IsTorrentMissing:
-				<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RedownloadAsync(task.Id)">重新下载</button>
+				<button type="button" class="downloads-context-menu-item" role="menuitem" disabled="@_vm.Busy"
+				        @onclick="() => RedownloadAsync(task.Id)">
+					<svg class="downloads-context-menu-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14"
+					     fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+						<path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5"/>
+						<path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708z"/>
+					</svg>
+					<span>重新下载</span>
+				</button>
 				break;
 			case DownloadTaskStatus.Completed when task.RunState is DownloadRunStates.FailedRetryable or DownloadRunStates.DownloaderStopped:
-				<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => ResumeRunAsync(task.Id)">恢复做种</button>
+				<button type="button" class="downloads-context-menu-item" role="menuitem" disabled="@_vm.Busy"
+				        @onclick="() => ResumeRunAsync(task.Id)">
+					<svg class="downloads-context-menu-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14"
+					     fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+						<path d="M10.804 8 5 4.633v6.734zm.792-.696a.802.802 0 0 1 0 1.392l-6.363 3.692C4.713 12.69 4 12.345 4 11.692V4.308c0-.653.713-.998 1.233-.696z"/>
+					</svg>
+					<span>恢复做种</span>
+				</button>
 				break;
 			case DownloadTaskStatus.Failed or DownloadTaskStatus.Lost:
-				<button class="btn btn-sm btn-outline-primary" disabled="@_vm.Busy" @onclick="() => RetryAsync(task.Id)">重试</button>
+				<button type="button" class="downloads-context-menu-item" role="menuitem" disabled="@_vm.Busy"
+				        @onclick="() => RetryAsync(task.Id)">
+					<svg class="downloads-context-menu-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14"
+					     fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+						<path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2z"/>
+						<path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466"/>
+					</svg>
+					<span>重试</span>
+				</button>
 				break;
 		}
 
 		@if (task.ArchiveReviewReason is not null && task.Status == DownloadTaskStatus.Completed)
 		{
-			<button class="btn btn-sm btn-outline-warning" disabled="@_vm.Busy" @onclick="() => RetryArchiveAsync(task.Id)">重新核对归档</button>
+			<button type="button" class="downloads-context-menu-item is-warning" role="menuitem" disabled="@_vm.Busy"
+			        @onclick="() => RetryArchiveAsync(task.Id)">
+				<svg class="downloads-context-menu-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14"
+				     fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+					<path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2z"/>
+					<path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466"/>
+				</svg>
+				<span>重新核对归档</span>
+			</button>
 		}
 	</text>;
+
+	private static bool HasContextTaskActions(DownloadTaskView task) =>
+		task switch
+		{
+			{ Status: DownloadTaskStatus.Downloading }                                                                                   => true,
+			{ Status: DownloadTaskStatus.Paused, Phase: DownloadDisplayPhase.VerificationUnconfirmed }                                   => true,
+			{ Status: DownloadTaskStatus.Paused, IsUserPaused: true }                                                                    => true,
+			{ Status: DownloadTaskStatus.Completed, IsTorrentMissing: true }                                                             => true,
+			{ Status: DownloadTaskStatus.Completed, RunState: DownloadRunStates.FailedRetryable or DownloadRunStates.DownloaderStopped } => true,
+			{ Status: DownloadTaskStatus.Completed, ArchiveReviewReason: not null }                                                      => true,
+			{ Status: DownloadTaskStatus.Failed or DownloadTaskStatus.Lost }                                                             => true,
+			_                                                                                                                            => false
+		};
 
 	private RenderFragment<DownloadTaskView> NormalTaskActions => task => @<text>
 		@switch (task.Status)
@@ -682,6 +759,17 @@
 		if (!_focusContextMenu) return;
 
 		_focusContextMenu = false;
+		if (_jsModule is not null)
+		{
+			try
+			{
+				await _jsModule.InvokeVoidAsync("positionContextMenu", _contextMenuRef, _contextMenuX, _contextMenuY);
+			}
+			catch (Exception exception) when (exception is JSDisconnectedException or ObjectDisposedException or JSException)
+			{
+			}
+		}
+
 		await _contextMenuRef.FocusAsync();
 	}
 
@@ -841,18 +929,6 @@
 	{
 		if (_vm.BatchMode) return;
 
-		_contextMenuOpen = false;
-		await RunOperationAsync(() => _vm.SelectTaskAsync(task.Id, _cts.Token));
-		SyncFilePanelPolling();
-	}
-
-	/// <summary>右键菜单的查看入口：选中任务、切到目标页签并展开下面板；批量模式不联动。</summary>
-	private async Task OpenTaskTabAsync(DownloadTaskView task, DetailTab tab)
-	{
-		if (_vm.BatchMode) return;
-
-		_activeTab       = tab;
-		_detailsExpanded = true;
 		_contextMenuOpen = false;
 		await RunOperationAsync(() => _vm.SelectTaskAsync(task.Id, _cts.Token));
 		SyncFilePanelPolling();

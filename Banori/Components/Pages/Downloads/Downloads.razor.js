@@ -187,6 +187,20 @@ export function setScrollTop(listPane, scrollTop) {
     listPane.scrollTop = Math.max(0, scrollTop);
 }
 
+/** 调整右键菜单位置，避免超出视口右边界或底边界。 */
+export function positionContextMenu(menu, clientX, clientY) {
+    if (!menu || typeof menu.getBoundingClientRect !== 'function') return;
+
+    const margin = 8;
+    const rect = menu.getBoundingClientRect();
+    const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+    const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+    const left = Math.min(Math.max(margin, clientX), maxLeft);
+    const top = Math.min(Math.max(margin, clientY), maxTop);
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+}
+
 /** 复制任意文本：优先异步剪贴板 API，非 HTTPS 或不可用时回退隐藏 textarea。 */
 export async function copyText(text) {
     if (typeof text !== 'string') return false;

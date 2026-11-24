@@ -183,6 +183,97 @@
     white-space: nowrap;
 }
 
+.downloads-context-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1079;
+}
+
+.downloads-context-menu {
+    position: fixed;
+    z-index: 1080;
+    min-width: 9.5rem;
+    padding: 0.3rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: 0.55rem;
+    background-color: var(--bs-body-bg);
+    box-shadow: 0 0.5rem 1.25rem rgba(0, 0, 0, 0.28);
+    animation: downloads-context-menu-in 0.1s ease-out;
+}
+
+.downloads-context-menu:focus {
+    outline: none;
+}
+
+.downloads-context-menu-divider {
+    height: 1px;
+    margin: 0.25rem 0.2rem;
+    background-color: var(--bs-border-color);
+}
+
+.downloads-context-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    width: 100%;
+    padding: 0.45rem 0.65rem;
+    border: none;
+    border-radius: 0.375rem;
+    background: transparent;
+    color: var(--bs-body-color);
+    font-size: 0.875rem;
+    line-height: 1.25;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.downloads-context-menu-item:hover:not(:disabled) {
+    background-color: var(--bs-tertiary-bg);
+}
+
+.downloads-context-menu-item:focus-visible {
+    outline: none;
+    background-color: var(--bs-tertiary-bg);
+}
+
+.downloads-context-menu-item:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.downloads-context-menu-item.is-warning {
+    color: var(--bs-warning-text-emphasis);
+}
+
+.downloads-context-menu-item.is-danger {
+    color: var(--bs-danger);
+}
+
+.downloads-context-menu-item.is-danger:hover:not(:disabled),
+.downloads-context-menu-item.is-danger:focus-visible {
+    background-color: var(--bs-danger-bg-subtle);
+    color: var(--bs-danger);
+}
+
+.downloads-context-menu-icon {
+    flex-shrink: 0;
+    opacity: 0.85;
+}
+
+@keyframes downloads-context-menu-in {
+    from {
+        opacity: 0;
+        transform: translateY(-2px) scale(0.98);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
 @media (min-width: 641px) {
     .downloads-page {
         height: calc(100dvh - 5.6rem);
