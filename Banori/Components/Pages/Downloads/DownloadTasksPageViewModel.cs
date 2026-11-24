@@ -1,40 +1,50 @@
 using Banori.Features.Downloads;
+using Banori.Integrations.Qbittorrent;
 
 namespace Banori.Components.Pages.Downloads;
 
-/// <summary>下载任务页状态：任务列表、上传种子与暂停 / 恢复 / 重试操作。随页面组件创建和释放。</summary>
+/// <summary>下载任务页状态：无页码虚拟列表、按任务 ID 独立的详情/草稿与文件同步。</summary>
 public sealed class DownloadTasksPageViewModel(
     DownloadService                     downloadService,
     DownloadIntakeService               intakeService,
     DownloadTaskQueries                 taskQueries,
     DownloadTaskFilterStore             filterStore,
     ILogger<DownloadTasksPageViewModel> logger,
-    IDownloadFileService?               fileService = null) : IDisposable
+    IDownloadFileService?               fileService  = null,
+    TimeProvider?                       timeProvider = null) : IDisposable
 {
-    private readonly Dictionary<Guid, DownloadTaskFilesState> _fileStates     = [];
-    private readonly HashSet<string>                          _languageFilter = [];
+    public const int RowHeightPx          = 38;
+    public const int DefaultViewportCount = 30;
 
-    private readonly HashSet<Guid> _selectedIds = [];
+    private readonly Dictionary<Guid, DownloadTaskFilesState> _fileStates     = [];
+    private readonly Dictionary<Guid, Task>                   _inFlightSyncs  = [];
+    private readonly HashSet<string>                          _languageFilter = [];
+    private readonly HashSet<Guid>                            _selectedIds    = [];
+    private readonly Dictionary<Guid, DownloadTaskView>       _summaryCache   = [];
+    private readonly TimeProvider                             _timeProvider   = timeProvider ?? TimeProvider.System;
 
     // 状态筛选默认全部勾选：全不勾选表示一个状态都不显示，不再用空集合表达“不筛选”。
     private readonly HashSet<DownloadStatusFilterGroup> _statusFilter = DownloadStatusFilter.CreateAllGroups();
 
-    private Guid[] _bulkConfirmationIds = [];
-    private long   _bulkRequestId;
-
-    private bool _deleteFiles;
-
-    /// <summary>面板勾选项：是否连下载器中的种子一起删除。</summary>
-    private bool _deleteFromDownloader;
-
-    private long _deleteRequestId;
-    private long _loadRequestId;
-    private int  _pageNumber = 1;
-
+    private Guid?                    _activeFilePollTaskId;
+    private Guid[]                   _bulkConfirmationIds = [];
+    private long                     _bulkRequestId;
+    private bool                     _deleteFiles;
+    private bool                     _deleteFromDownloader;
+    private long                     _deleteRequestId;
+    private long                         _detailRequestId;
+    private CancellationTokenSource?     _filePollCts;
+    private long                         _filePollGeneration;
+    private bool                         _isPageHidden;
+    private QbittorrentMainDataSnapshot? _latestMainDataSnapshot;
+    private long                         _loadRequestId;
+    private int?                     _pendingScrollTopPx;
+    private int                      _requestedVisibleStart;
     private CancellationTokenSource? _searchDebounceCts;
-
-    private string _searchText = string.Empty;
-    private bool   _settingDeleteOptions;
+    private string                   _searchText = string.Empty;
+    private bool                     _settingDeleteOptions;
+    private long                     _snapshotVersion;
+    private int                      _viewportCount = DefaultViewportCount;
 
     // 已保存的筛选只在页面首次加载时读取，之后由勾选维护，定时刷新不回读；并发加载共用同一次读取。
     private Task? _statusFilterLoadTask;
@@ -45,10 +55,33 @@ public sealed class DownloadTasksPageViewModel(
     // 用户在读取已保存筛选期间改过勾选：读取结果作废，不能把新选择覆盖成旧值。
     private bool _statusFilterTouched;
 
+    /// <summary>当前挂载在 DOM 中的可见区与上下缓冲区任务摘要。</summary>
     public IReadOnlyList<DownloadTaskView> Tasks { get; private set; } = [];
 
+    /// <summary>当前筛选与排序下的完整有序任务 ID 快照。</summary>
+    public IReadOnlyList<Guid> OrderedTaskIds { get; private set; } = [];
+
+    /// <summary>当前视口内可见的任务 ID 切片（不含上下缓冲区，用于「勾选可见行」）。</summary>
+    public IReadOnlyList<Guid> VisibleTaskIds { get; private set; } = [];
+
+    /// <summary>当前选中的任务 ID（跨滚动与筛选独立保留）。</summary>
+    public Guid? SelectedTaskId { get; private set; }
+
+    /// <summary>当前选中任务的独立详情投影；选中行滚出视口后仍可供详情与文件面板使用。</summary>
+    public DownloadTaskView? SelectedTask { get; private set; }
+
+    public int OverscanCount { get; set; } = 10;
+
+    public int VisibleStartIndex { get; private set; }
+    public int VisibleEndIndex   { get; private set; }
+    public int MountedStartIndex { get; private set; }
+    public int MountedEndIndex   { get; private set; }
+
+    public int TopSpacerHeightPx    => MountedStartIndex * RowHeightPx;
+    public int BottomSpacerHeightPx => Math.Max(0, TotalCount - MountedEndIndex) * RowHeightPx;
+
     /// <summary>
-    ///     搜索关键词输入：每次变化重置防抖定时器，停顿后回到第一页重新查询；空白视为不过滤。
+    ///     搜索关键词输入：每次变化重置防抖定时器，停顿后回到顶部重新查询；空白视为不过滤。
     ///     数据库查询在停顿前不会发出，新输入会取消未触发的定时与进行中的查询。
     /// </summary>
     public string SearchText
@@ -70,6 +103,9 @@ public sealed class DownloadTasksPageViewModel(
     internal TimeSpan PendingFileRefreshInterval { get; set; } = TimeSpan.FromSeconds(1);
 
     internal int PendingFileRefreshAttempts { get; set; } = 120;
+
+    /// <summary>展开的文件面板自动同步间隔；生产默认 5 秒，测试可缩短。</summary>
+    internal TimeSpan FileAutoRefreshInterval { get; set; } = TimeSpan.FromSeconds(5);
 
     /// <summary>状态筛选分组多选：默认全部勾选（等于不限制），全不勾选表示一个状态都不显示。</summary>
     public IReadOnlySet<DownloadStatusFilterGroup> StatusFilter => _statusFilter;
@@ -102,20 +138,10 @@ public sealed class DownloadTasksPageViewModel(
             SortDescending = DownloadTaskQueries.DefaultSortDescending(column);
         }
 
-        return ReloadFromFirstPageAsync();
+        return ReloadFromTopAsync();
     }
 
-    /// <summary>分页状态：页码为查询层钳制后的实际值，TotalCount 是筛选后的完整总数而不只当前页。</summary>
-    public int PageNumber { get; private set; } = 1;
-
-    public int PageSize   { get; private set; } = DownloadTaskListFilter.DefaultPageSize;
-    public int TotalCount { get; private set; }
-
-    public int TotalPages => Math.Max(1, (int)Math.Ceiling(TotalCount / (double)PageSize));
-
-    public bool HasPreviousPage => PageNumber > 1;
-
-    public bool HasNextPage => PageNumber < TotalPages;
+    public int TotalCount => OrderedTaskIds.Count;
 
     /// <summary>可选字幕语言（覆盖全部历史任务，空字符串哨兵 = 存在无语言任务），按出现次数降序。</summary>
     public IReadOnlyList<string> AvailableLanguages { get; private set; } = [];
@@ -167,45 +193,408 @@ public sealed class DownloadTasksPageViewModel(
     /// <summary>批量删除预检结果；面板打开时非空。</summary>
     public BulkDeletePrecheck? BulkPrecheck { get; private set; }
 
-    /// <summary>当前勾选的任务 Id；随列表刷新与现存任务取交集，不保留悬挂选择。</summary>
+    /// <summary>当前勾选的任务 Id；跨滚动保留，仅在任务确实删除或用户取消勾选时移除。</summary>
     public IReadOnlyCollection<Guid> SelectedIds => _selectedIds;
 
     public int SelectedCount => _selectedIds.Count;
 
-    // 表头全选只反映当前页：勾选只添加当前页 Id，取消只移除当前页 Id，
-    // 其他页与被筛选隐藏任务的已选状态不受影响；批量操作仍按明确选中的 Id 执行。
-    public bool AllSelected => Tasks.Count > 0 && Tasks.All(task => _selectedIds.Contains(task.Id));
+    /// <summary>表头复选框状态：仅反映当前视口内可见行是否全部选中（不含缓冲区）。</summary>
+    public bool AllSelected => VisibleTaskIds.Count > 0 && VisibleTaskIds.All(_selectedIds.Contains);
 
-    /// <summary>页面组件释放时取消未触发的防抖定时与进行中的文件确认等待。</summary>
+    /// <summary>页面组件释放时取消未触发的防抖定时、文件自动轮询与进行中的文件确认等待。</summary>
     public void Dispose()
     {
         CancelSearchDebounce();
+        StopFilePolling();
         foreach (var state in _fileStates.Values) state.PendingRefreshCancellation?.Cancel();
     }
 
-    /// <summary>后台加载（防抖搜索）完成后的界面刷新回调；页面组件订阅后转 StateHasChanged。</summary>
+    /// <summary>后台加载（防抖搜索、视口加载与文件轮询）完成后的界面刷新回调。</summary>
     public event Action? ResultsChanged;
 
-    public async Task LoadAsync(CancellationToken cancellationToken = default)
+    public int? ConsumePendingScrollTopPx()
+    {
+        var value = _pendingScrollTopPx;
+        _pendingScrollTopPx = null;
+        return value;
+    }
+
+    public DownloadTaskView? GetTaskView(Guid taskId)
+    {
+        if (SelectedTask?.Id == taskId) return SelectedTask;
+        return _summaryCache.GetValueOrDefault(taskId) ?? Tasks.FirstOrDefault(task => task.Id == taskId);
+    }
+
+    public Task LoadAsync(CancellationToken cancellationToken = default) =>
+        LoadCoreAsync(false, cancellationToken);
+
+    public Task RefreshFallbackAsync(CancellationToken cancellationToken = default) =>
+        LoadCoreAsync(true, cancellationToken);
+
+    /// <summary>
+    ///     应用下载器 <c>sync/maindata</c> 实时进度快照：按任务 ID 原地刷新已挂载行与当前选中任务的展示进度，
+    ///     不重查数据库、不改变排序与列表归属、不触发滚动位置重算，并严守业务终态/隔离/缺失边界。
+    /// </summary>
+    public void ApplyMainDataSnapshot(QbittorrentMainDataSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        _latestMainDataSnapshot = snapshot;
+        if (!Loaded) return;
+
+        var mountedSet   = SliceIds(MountedStartIndex, MountedEndIndex).ToHashSet();
+        var mountedDirty = false;
+        foreach (var id in _summaryCache.Keys.ToArray())
+        {
+            var current = _summaryCache[id];
+            var updated = OverlayMainDataProgress(current, snapshot);
+            if (ReferenceEquals(updated, current)) continue;
+            _summaryCache[id] = updated;
+            if (mountedSet.Contains(id)) mountedDirty = true;
+        }
+
+        if (mountedDirty) RebuildMountedTasks();
+
+        var selectedDirty = false;
+        if (SelectedTask is { } selected)
+        {
+            var updatedSelected = OverlayMainDataProgress(selected, snapshot);
+            if (!ReferenceEquals(updatedSelected, selected))
+            {
+                SelectedTask  = updatedSelected;
+                selectedDirty = true;
+            }
+        }
+
+        if (mountedDirty || selectedDirty) ResultsChanged?.Invoke();
+    }
+
+    public async Task RefreshChangedTasksAsync(
+        IReadOnlyCollection<Guid> taskIds, bool affectsListOrderOrMembership,
+        CancellationToken cancellationToken = default)
+    {
+        if (affectsListOrderOrMembership || !Loaded)
+        {
+            await LoadCoreAsync(true, cancellationToken);
+            return;
+        }
+
+        if (taskIds.Count == 0) return;
+
+        var mountedSet       = SliceIds(MountedStartIndex, MountedEndIndex).ToHashSet();
+        var targetMountedIds = taskIds.Where(mountedSet.Contains).Distinct().ToArray();
+        var updatedSelected  = false;
+
+        if (targetMountedIds.Length > 0)
+        {
+            var snapshotVersion = _snapshotVersion;
+            var updated         = await taskQueries.GetSummariesByIdsAsync(targetMountedIds, cancellationToken);
+            if (snapshotVersion != _snapshotVersion) return;
+
+            foreach (var rawItem in updated)
+            {
+                var item = OverlayMainDataProgress(rawItem);
+                _summaryCache[item.Id] = item;
+                if (SelectedTaskId == item.Id)
+                {
+                    SelectedTask    = item;
+                    updatedSelected = true;
+                }
+            }
+
+            RebuildMountedTasks();
+        }
+
+        if (!updatedSelected && SelectedTaskId is { } selectedId && taskIds.Contains(selectedId))
+            await RefreshSelectedDetailAsync(cancellationToken);
+
+        ResultsChanged?.Invoke();
+    }
+
+    public async Task SetViewportAsync(
+        int visibleStartIndex, int visibleCount, CancellationToken cancellationToken = default)
+    {
+        _requestedVisibleStart = Math.Max(0, visibleStartIndex);
+        _viewportCount         = Math.Max(0, visibleCount);
+        if (!Loaded) return;
+
+        var prevMountedStart = MountedStartIndex;
+        var prevMountedEnd   = MountedEndIndex;
+        var prevVisibleStart = VisibleStartIndex;
+        var prevVisibleEnd   = VisibleEndIndex;
+        RecomputeWindowIndices();
+
+        var mountedIds = SliceIds(MountedStartIndex, MountedEndIndex);
+        var missingIds = mountedIds.Where(id => !_summaryCache.ContainsKey(id)).ToArray();
+        if (missingIds.Length == 0)
+        {
+            if (prevMountedStart != MountedStartIndex || prevMountedEnd != MountedEndIndex ||
+                prevVisibleStart != VisibleStartIndex || prevVisibleEnd != VisibleEndIndex)
+            {
+                RebuildMountedTasks();
+                ResultsChanged?.Invoke();
+            }
+
+            return;
+        }
+
+        var snapshotVersion = _snapshotVersion;
+        var fetched         = await taskQueries.GetSummariesByIdsAsync(missingIds, cancellationToken);
+        if (snapshotVersion != _snapshotVersion) return;
+
+        foreach (var rawItem in fetched)
+        {
+            var item = OverlayMainDataProgress(rawItem);
+            _summaryCache[item.Id] = item;
+        }
+
+        TrimSummaryCacheIfNeeded();
+        RebuildMountedTasks();
+        ResultsChanged?.Invoke();
+    }
+
+    public async Task SelectTaskAsync(Guid? taskId, CancellationToken cancellationToken = default)
+    {
+        SelectedTaskId = taskId;
+        var detailRequestId = ++_detailRequestId;
+        if (taskId is not { } id)
+        {
+            SelectedTask = null;
+            ResultsChanged?.Invoke();
+            return;
+        }
+
+        if (_summaryCache.TryGetValue(id, out var cached))
+            SelectedTask = OverlayMainDataProgress(cached);
+
+        var detail = await taskQueries.GetDetailAsync(id, cancellationToken);
+        if (detailRequestId != _detailRequestId || SelectedTaskId != id) return;
+
+        if (detail is null)
+        {
+            SelectedTaskId = null;
+            SelectedTask   = null;
+            RemoveFileState(id);
+        }
+        else
+        {
+            SelectedTask = OverlayMainDataProgress(detail);
+        }
+
+        ResultsChanged?.Invoke();
+    }
+
+    private async Task LoadCoreAsync(bool preserveAnchor, CancellationToken cancellationToken)
     {
         // 请求序号防止慢查询晚到覆盖较新的结果；防抖取消令牌同时中止过期的数据库查询。
-        // 选择集只由用户操作维护，不与当前页求交集：翻页或筛选隐藏的任务保留已选状态。
-        var requestId = ++_loadRequestId;
+        var requestId      = ++_loadRequestId;
+        var anchorIds      = preserveAnchor ? VisibleTaskIds.ToArray() : [];
+        var prevStartIndex = VisibleStartIndex;
+
         await EnsureStatusFilterLoadedAsync(cancellationToken);
-        var page = await taskQueries.ListAsync(BuildFilter(), cancellationToken);
+        var index = await taskQueries.ListIdsAsync(BuildFilter(), cancellationToken);
         if (requestId != _loadRequestId) return;
-        // 查询层钳制越界页后把实际页码同步回内部状态；过期请求已在上方返回，不会覆盖新状态。
-        Tasks              = page.Items;
-        PageNumber         = page.Page;
-        _pageNumber        = page.Page;
-        PageSize           = page.PageSize;
-        TotalCount         = page.TotalCount;
-        AvailableLanguages = page.Languages;
-        var taskIds = Tasks.Select(task => task.Id).ToHashSet();
-        foreach (var id in _fileStates.Keys.Where(id => !taskIds.Contains(id)).ToArray())
-            _fileStates.Remove(id);
+
+        var idsChanged = !OrderedTaskIds.SequenceEqual(index.TaskIds);
+        var nextStart  = _requestedVisibleStart;
+        int? nextScrollTop = null;
+
+        if (preserveAnchor && idsChanged && Loaded)
+        {
+            var anchorNewIndex = FindFirstAnchorIndex(index.TaskIds, anchorIds);
+            if (anchorNewIndex >= 0)
+            {
+                nextStart = anchorNewIndex;
+                if (anchorNewIndex != prevStartIndex) nextScrollTop = anchorNewIndex * RowHeightPx;
+            }
+            else
+            {
+                nextStart     = index.TaskIds.Count == 0 ? 0 : Math.Clamp(prevStartIndex, 0, index.TaskIds.Count - 1);
+                nextScrollTop = nextStart * RowHeightPx;
+            }
+        }
+
+        var window     = ComputeWindow(index.TaskIds, nextStart, _viewportCount, OverscanCount);
+        var mountedIds = SliceIds(index.TaskIds, window.MountedStart, window.MountedEnd);
+        IReadOnlyList<DownloadTaskView> summaries = mountedIds.Length > 0
+            ? await taskQueries.GetSummariesByIdsAsync(mountedIds, cancellationToken)
+            : [];
+        if (requestId != _loadRequestId) return;
+
+        OrderedTaskIds         = index.TaskIds;
+        AvailableLanguages     = index.Languages;
+        _snapshotVersion++;
+        _summaryCache.Clear();
+        foreach (var rawItem in summaries)
+        {
+            var item = OverlayMainDataProgress(rawItem);
+            _summaryCache[item.Id] = item;
+        }
+
+        _requestedVisibleStart = nextStart;
+        if (nextScrollTop is { } scrollTop) _pendingScrollTopPx = scrollTop;
+        VisibleStartIndex      = window.VisibleStart;
+        VisibleEndIndex        = window.VisibleEnd;
+        MountedStartIndex      = window.MountedStart;
+        MountedEndIndex        = window.MountedEnd;
+        VisibleTaskIds         = SliceIds(index.TaskIds, window.VisibleStart, window.VisibleEnd);
+        RebuildMountedTasks();
+        PruneDeletedStateWhenUnfiltered();
+        await RefreshSelectedDetailAsync(cancellationToken);
+        if (requestId != _loadRequestId) return;
+
         Loaded = true;
         ResultsChanged?.Invoke();
+    }
+
+    private async Task RefreshSelectedDetailAsync(CancellationToken cancellationToken)
+    {
+        if (SelectedTaskId is not { } selectedId)
+        {
+            SelectedTask = null;
+            return;
+        }
+
+        if (_summaryCache.TryGetValue(selectedId, out var cached))
+        {
+            SelectedTask = OverlayMainDataProgress(cached);
+            return;
+        }
+
+        var detailRequestId = ++_detailRequestId;
+        var detail          = await taskQueries.GetDetailAsync(selectedId, cancellationToken);
+        if (detailRequestId != _detailRequestId || SelectedTaskId != selectedId) return;
+
+        if (detail is null)
+        {
+            SelectedTaskId = null;
+            SelectedTask   = null;
+            RemoveFileState(selectedId);
+            return;
+        }
+
+        SelectedTask = OverlayMainDataProgress(detail);
+    }
+
+    private DownloadTaskView OverlayMainDataProgress(
+        DownloadTaskView view, QbittorrentMainDataSnapshot? snapshot = null)
+    {
+        snapshot ??= _latestMainDataSnapshot;
+        if (snapshot is null || snapshot.Torrents.Count == 0) return view;
+        if (!CanOverlayLiveProgress(view)) return view;
+
+        var normalizedHash = view.InfoHash.Trim().ToLowerInvariant();
+        if (!snapshot.Torrents.TryGetValue(normalizedHash, out var torrent)) return view;
+        if (torrent.IsMoving ||
+            torrent.Category is not (QbittorrentTorrentCategory.Downloading
+                                    or QbittorrentTorrentCategory.Stopped
+                                    or QbittorrentTorrentCategory.Seeding) ||
+            !double.IsFinite(torrent.Progress))
+            return view;
+
+        var liveProgress = Math.Clamp(torrent.Progress, 0d, 1d);
+        if (view.Progress is { } currentProgress && Math.Abs(currentProgress - liveProgress) <= 1e-6)
+            return view;
+
+        return view with { Progress = liveProgress };
+    }
+
+    private static bool CanOverlayLiveProgress(DownloadTaskView view) =>
+        view.Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused &&
+        !string.IsNullOrWhiteSpace(view.InfoHash)                                  &&
+        !view.IsSelectionTombstone                                                 &&
+        !view.IsTorrentMissing                                                     &&
+        !view.IsSystemPaused                                                       &&
+        view.IsolationState       == DownloadIsolationState.None                   &&
+        view.VerificationStep     is null                                          &&
+        view.LastObservedCategory != QbittorrentTorrentCategory.Checking;
+
+    private void RecomputeWindowIndices()
+    {
+        var window = ComputeWindow(OrderedTaskIds, _requestedVisibleStart, _viewportCount, OverscanCount);
+        VisibleStartIndex = window.VisibleStart;
+        VisibleEndIndex   = window.VisibleEnd;
+        MountedStartIndex = window.MountedStart;
+        MountedEndIndex   = window.MountedEnd;
+        VisibleTaskIds    = SliceIds(OrderedTaskIds, VisibleStartIndex, VisibleEndIndex);
+    }
+
+    private static (int VisibleStart, int VisibleEnd, int MountedStart, int MountedEnd) ComputeWindow(
+        IReadOnlyList<Guid> orderedIds, int requestedStart, int viewportCount, int overscanCount)
+    {
+        var total = orderedIds.Count;
+        if (total == 0) return (0, 0, 0, 0);
+
+        var visibleStart = Math.Clamp(requestedStart, 0, total - 1);
+        var visibleEnd   = Math.Min(total, visibleStart + Math.Max(0, viewportCount));
+        var mountedStart = Math.Max(0, visibleStart - Math.Max(0, overscanCount));
+        var mountedEnd   = Math.Min(total, visibleEnd + Math.Max(0, overscanCount));
+        return (visibleStart, visibleEnd, mountedStart, mountedEnd);
+    }
+
+    private Guid[] SliceIds(int start, int end) => SliceIds(OrderedTaskIds, start, end);
+
+    private static Guid[] SliceIds(IReadOnlyList<Guid> source, int start, int end)
+    {
+        var count = Math.Max(0, end - start);
+        if (count == 0) return [];
+        var result = new Guid[count];
+        for (var i = 0; i < count; i++) result[i] = source[start + i];
+        return result;
+    }
+
+    private void RebuildMountedTasks()
+    {
+        var mountedIds = SliceIds(MountedStartIndex, MountedEndIndex);
+        if (mountedIds.Length == 0)
+        {
+            Tasks = [];
+            return;
+        }
+
+        var items = new List<DownloadTaskView>(mountedIds.Length);
+        foreach (var id in mountedIds)
+            if (_summaryCache.TryGetValue(id, out var view))
+                items.Add(view);
+        Tasks = items;
+    }
+
+    private void TrimSummaryCacheIfNeeded()
+    {
+        if (_summaryCache.Count <= 500) return;
+        var keep = SliceIds(MountedStartIndex, MountedEndIndex).ToHashSet();
+        if (SelectedTaskId is { } selectedId) keep.Add(selectedId);
+        foreach (var id in _summaryCache.Keys.Where(id => !keep.Contains(id)).ToArray())
+            _summaryCache.Remove(id);
+    }
+
+    private void PruneDeletedStateWhenUnfiltered()
+    {
+        if (HasActiveFilters) return;
+        var existing = OrderedTaskIds.ToHashSet();
+        foreach (var id in _fileStates.Keys.Where(id => !existing.Contains(id)).ToArray())
+            RemoveFileState(id);
+        _selectedIds.RemoveWhere(id => !existing.Contains(id));
+    }
+
+    private void RemoveFileState(Guid taskId)
+    {
+        if (!_fileStates.Remove(taskId, out var state)) return;
+        state.SyncGeneration++;
+        state.PendingRefreshCancellation?.Cancel();
+        if (_activeFilePollTaskId == taskId) StopFilePolling();
+    }
+
+    private static int FindFirstAnchorIndex(IReadOnlyList<Guid> orderedIds, IReadOnlyList<Guid> anchorIds)
+    {
+        if (orderedIds.Count == 0 || anchorIds.Count == 0) return -1;
+        var indexById = new Dictionary<Guid, int>(orderedIds.Count);
+        for (var i = 0; i < orderedIds.Count; i++) indexById.TryAdd(orderedIds[i], i);
+
+        foreach (var anchorId in anchorIds)
+            if (indexById.TryGetValue(anchorId, out var index))
+                return index;
+
+        return -1;
     }
 
     private DownloadTaskListFilter BuildFilter() => new()
@@ -214,8 +603,7 @@ public sealed class DownloadTasksPageViewModel(
         StatusGroups   = _statusFilter,
         Languages      = _languageFilter,
         SortColumn     = SortColumn,
-        SortDescending = SortDescending,
-        Page           = _pageNumber
+        SortDescending = SortDescending
     };
 
     /// <summary>
@@ -258,7 +646,7 @@ public sealed class DownloadTasksPageViewModel(
         _statusFilter.Clear();
         _statusFilter.UnionWith(target);
         await SaveStatusFilterAsync();
-        await ReloadFromFirstPageAsync();
+        await ReloadFromTopAsync();
     }
 
     public Task ToggleStatusFilterAsync(DownloadStatusFilterGroup group)
@@ -301,10 +689,10 @@ public sealed class DownloadTasksPageViewModel(
     public async Task ToggleLanguageFilterAsync(string language)
     {
         if (!_languageFilter.Remove(language)) _languageFilter.Add(language);
-        await ReloadFromFirstPageAsync();
+        await ReloadFromTopAsync();
     }
 
-    /// <summary>清空搜索与全部多选筛选，状态回到全选（不限制），回到第一页全量展示。</summary>
+    /// <summary>清空搜索与全部多选筛选，状态回到全选（不限制），回到顶部全量展示。</summary>
     public async Task ClearFiltersAsync()
     {
         var resetStatus = StatusFilterActive;
@@ -315,21 +703,13 @@ public sealed class DownloadTasksPageViewModel(
         _languageFilter.Clear();
         // 状态筛选同样持久化：清除后写回全选，刷新不会恢复成旧的收窄选择。
         if (resetStatus) await SaveStatusFilterAsync();
-        await ReloadFromFirstPageAsync();
+        await ReloadFromTopAsync();
     }
 
-    public async Task GoToPageAsync(int page)
+    private async Task ReloadFromTopAsync()
     {
-        var target = Math.Clamp(page, 1, TotalPages);
-        if (target == _pageNumber && Loaded) return;
-        _pageNumber = target;
-        CancelSearchDebounce();
-        await LoadSafelyAsync(CancellationToken.None);
-    }
-
-    private async Task ReloadFromFirstPageAsync()
-    {
-        _pageNumber = 1;
+        _requestedVisibleStart = 0;
+        _pendingScrollTopPx    = 0;
         CancelSearchDebounce();
         await LoadSafelyAsync(CancellationToken.None);
     }
@@ -337,7 +717,8 @@ public sealed class DownloadTasksPageViewModel(
     /// <summary>搜索输入防抖：停顿后重新查询；新输入取消未触发的旧定时与进行中的查询（配合请求序号双保险）。</summary>
     private void ScheduleSearchReload()
     {
-        _pageNumber = 1;
+        _requestedVisibleStart = 0;
+        _pendingScrollTopPx    = 0;
         CancelSearchDebounce();
         _searchDebounceCts = new CancellationTokenSource();
         _                  = ReloadAfterDelayAsync(_searchDebounceCts.Token);
@@ -403,14 +784,16 @@ public sealed class DownloadTasksPageViewModel(
         state.Loading            = true;
         state.Error              = null;
         state.SilentRefreshError = null;
+        var stateGen = state.SyncGeneration;
         try
         {
             var details = await RequireFileService().ListAsync(taskId, cancellationToken);
-            if (IsCurrentFileState(taskId, state))
+            if (IsCurrentFileState(taskId, state) && stateGen == state.SyncGeneration)
             {
-                state.Details               = details;
-                state.FileOperationPending  = details.HasPendingFileOperation;
-                state.PendingFileWaitPaused = false;
+                state.Details                     = details;
+                state.FileOperationPending        = details.HasPendingFileOperation;
+                state.PendingFileWaitPaused       = false;
+                state.ConfirmationBudgetExhausted = false;
                 foreach (var draft in state.Drafts.Values) draft.InvalidatePreview();
                 StartPendingFileRefresh(taskId, state);
             }
@@ -422,7 +805,8 @@ public sealed class DownloadTasksPageViewModel(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "下载任务 {TaskId} 文件列表加载失败。", taskId);
-            if (IsCurrentFileState(taskId, state)) state.Error = exception.Message;
+            if (IsCurrentFileState(taskId, state) && stateGen == state.SyncGeneration)
+                state.Error = exception.Message;
         }
         finally
         {
@@ -431,13 +815,103 @@ public sealed class DownloadTasksPageViewModel(
     }
 
     /// <summary>
-    ///     切入文件列表 Tab 或在该 Tab 下切换选中任务时调用：若尚无本地清单先调 ListAsync 秒出展示，
-    ///     若允许远端同步则随后静默触发一次 RefreshAsync。
+    ///     控制文件面板的 5 秒串行自动同步：展开且处于文件列表 Tab、页面可见时启动（先立即同步再每 5 秒轮询）；
+    ///     收起、切 Tab、切换任务或页面隐藏时立即取消旧轮询并推进代次，丢弃迟到响应。
     /// </summary>
-    public async Task ActivateFilesTabAsync(Guid taskId, CancellationToken cancellationToken = default)
+    public void SetFilePanelActive(bool expanded, bool isFilesTab, Guid? taskId, bool isPageHidden = false)
     {
-        var task = FindTask(taskId);
+        _isPageHidden = isPageHidden;
+        if (!expanded || !isFilesTab || isPageHidden || taskId is not { } targetId)
+        {
+            StopFilePolling();
+            return;
+        }
+
+        if (_activeFilePollTaskId == targetId && _filePollCts is { IsCancellationRequested: false }) return;
+
+        StopFilePolling();
+        _activeFilePollTaskId = targetId;
+        var cts        = _filePollCts = new CancellationTokenSource();
+        var generation = _filePollGeneration;
+        _ = PollFilesLoopAsync(targetId, generation, cts.Token);
+    }
+
+    public void StopFilePolling()
+    {
+        _activeFilePollTaskId = null;
+        _filePollGeneration++;
+        _filePollCts?.Cancel();
+        _filePollCts?.Dispose();
+        _filePollCts = null;
+    }
+
+    private async Task PollFilesLoopAsync(Guid taskId, long generation, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ActivateFilesTabAsync(taskId, cancellationToken);
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(FileAutoRefreshInterval, cancellationToken);
+                if (cancellationToken.IsCancellationRequested ||
+                    _activeFilePollTaskId != taskId           ||
+                    _filePollGeneration   != generation)
+                    return;
+                await AutoRefreshFilesAsync(taskId, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "下载任务 {TaskId} 文件自动轮询循环异常。", taskId);
+        }
+    }
+
+    /// <summary>
+    ///     切入文件列表 Tab 或在该 Tab 下切换选中任务时调用：若尚无本地清单先调 ListAsync 秒出展示，
+    ///     若允许远端同步则随后静默触发一次远端同步；同一任务 ID 在途读取合并。
+    /// </summary>
+    public Task ActivateFilesTabAsync(Guid taskId, CancellationToken cancellationToken = default) =>
+        RunCoalescedFileSyncAsync(taskId, true, cancellationToken);
+
+    /// <summary>
+    ///     5 秒定时静默同步（含已完成且有明确关联的任务与预算耗尽后的待确认回退观察）：
+    ///     同一任务 ID 在途读取合并，上一次完成后再安排下一次。
+    /// </summary>
+    public Task AutoRefreshFilesAsync(Guid taskId, CancellationToken cancellationToken = default) =>
+        RunCoalescedFileSyncAsync(taskId, false, cancellationToken);
+
+    private async Task RunCoalescedFileSyncAsync(
+        Guid taskId, bool isActivation, CancellationToken cancellationToken)
+    {
+        if (_inFlightSyncs.TryGetValue(taskId, out var inFlight) && !inFlight.IsCompleted)
+        {
+            await inFlight.WaitAsync(cancellationToken);
+            return;
+        }
+
+        var syncTask = RunFileSyncCoreAsync(taskId, isActivation, cancellationToken);
+        _inFlightSyncs[taskId] = syncTask;
+        try
+        {
+            await syncTask;
+        }
+        finally
+        {
+            if (_inFlightSyncs.GetValueOrDefault(taskId) == syncTask) _inFlightSyncs.Remove(taskId);
+        }
+    }
+
+    private async Task RunFileSyncCoreAsync(
+        Guid taskId, bool isActivation, CancellationToken cancellationToken)
+    {
+        var panelGen        = _filePollGeneration;
+        var fromActivePanel = _activeFilePollTaskId == taskId;
+        var task            = await FindTaskOrDetailAsync(taskId, cancellationToken);
         if (task is null) return;
+        if (IsStaleFileSyncTarget(taskId, fromActivePanel, panelGen)) return;
 
         var state = FileState(taskId);
         if (ShouldSkipAutoFileSync(state)) return;
@@ -446,40 +920,16 @@ public sealed class DownloadTasksPageViewModel(
         {
             await LoadFilesAsync(taskId, cancellationToken);
             ResultsChanged?.Invoke();
-            task = FindTask(taskId);
+            if (IsStaleFileSyncTarget(taskId, fromActivePanel, panelGen)) return;
+            task = await FindTaskOrDetailAsync(taskId, cancellationToken);
             if (task is null || !IsCurrentFileState(taskId, state) || state.Details is null) return;
             if (ShouldSkipAutoFileSync(state)) return;
         }
 
-        if (!CanSyncFilesRemotelyOnActivate(task, state)) return;
-        if (task.Status is DownloadTaskStatus.Completed or DownloadTaskStatus.Replaced)
-            state.InitialRemoteSynced = true;
+        if (isActivation && !CanSyncFilesRemotely(task) && !state.FileOperationPending) return;
+        if (!isActivation && !CanSyncFilesRemotely(task) && !state.FileOperationPending) return;
 
-        await RefreshFilesSilentlyAsync(taskId, state, cancellationToken);
-    }
-
-    /// <summary>
-    ///     15 秒定时静默刷新：仅对 Downloading / Paused 且非缺种的活跃任务请求远端，
-    ///     存在草稿、进行中操作或终态/未提交/受阻状态时跳过。
-    /// </summary>
-    public async Task AutoRefreshFilesAsync(Guid taskId, CancellationToken cancellationToken = default)
-    {
-        var task = FindTask(taskId);
-        if (task is null) return;
-
-        var state = FileState(taskId);
-        if (ShouldSkipAutoFileSync(state) || !CanAutoPollFilesRemotely(task)) return;
-
-        if (state.Details is null)
-        {
-            await LoadFilesAsync(taskId, cancellationToken);
-            ResultsChanged?.Invoke();
-            task = FindTask(taskId);
-            if (task is null || !IsCurrentFileState(taskId, state) || state.Details is null) return;
-            if (ShouldSkipAutoFileSync(state) || !CanAutoPollFilesRemotely(task)) return;
-        }
-
-        await RefreshFilesSilentlyAsync(taskId, state, cancellationToken);
+        await RefreshFilesSilentlyAsync(taskId, state, fromActivePanel, panelGen, cancellationToken);
     }
 
     /// <summary>刷新文件：实时查询下载器并按原始种子核对新路径，与展开面板的 ListAsync 加载分开。</summary>
@@ -497,14 +947,17 @@ public sealed class DownloadTasksPageViewModel(
         state.Loading            = true;
         state.Error              = null;
         state.SilentRefreshError = null;
+        var stateGen = state.SyncGeneration;
         try
         {
             var details = await RequireFileService().RefreshAsync(taskId, cancellationToken);
-            if (IsCurrentFileState(taskId, state))
+            if (IsCurrentFileState(taskId, state) && stateGen == state.SyncGeneration)
             {
-                state.Details               = details;
-                state.FileOperationPending  = details.HasPendingFileOperation;
-                state.PendingFileWaitPaused = false;
+                state.Details                     = details;
+                state.FileOperationPending        = details.HasPendingFileOperation;
+                state.PendingFileWaitPaused       = false;
+                state.ConfirmationBudgetExhausted = false;
+                state.LastSyncedAtUtc             = _timeProvider.GetUtcNow();
                 // 刷新后来源路径可能变化，旧预览基于旧路径生成，必须失效。
                 foreach (var draft in state.Drafts.Values) draft.InvalidatePreview();
                 StartPendingFileRefresh(taskId, state);
@@ -516,12 +969,14 @@ public sealed class DownloadTasksPageViewModel(
         }
         catch (TorrentMissingException)
         {
-            if (IsCurrentFileState(taskId, state)) state.Error = "qBittorrent 中已找不到该种子";
+            if (IsCurrentFileState(taskId, state) && stateGen == state.SyncGeneration)
+                state.Error = "qBittorrent 中已找不到该种子";
         }
         catch (Exception exception)
         {
             logger.LogWarning(exception, "下载任务 {TaskId} 文件刷新失败。", taskId);
-            if (IsCurrentFileState(taskId, state)) state.Error = exception.Message;
+            if (IsCurrentFileState(taskId, state) && stateGen == state.SyncGeneration)
+                state.Error = exception.Message;
         }
         finally
         {
@@ -530,31 +985,61 @@ public sealed class DownloadTasksPageViewModel(
     }
 
     private async Task RefreshFilesSilentlyAsync(
-        Guid taskId, DownloadTaskFilesState state, CancellationToken cancellationToken)
+        Guid taskId, DownloadTaskFilesState state, bool fromActivePanel, long panelGen,
+        CancellationToken cancellationToken)
     {
+        var stateGen        = state.SyncGeneration;
+        var observingPending = state.FileOperationPending;
         state.Refreshing         = true;
         state.SilentRefreshError = null;
         ResultsChanged?.Invoke();
         try
         {
-            var details = await RequireFileService().RefreshAsync(taskId, cancellationToken);
-            if (!IsCurrentFileState(taskId, state)) return;
-            // 同步期间用户可能开始编辑或触发了其他文件操作；绝不覆盖或冲掉用户草稿与预览。
-            if (ShouldSkipApplyingSilentRefresh(state)) return;
+            var details = observingPending
+                ? await RequireFileService().ObservePendingAsync(taskId, cancellationToken)
+                : await RequireFileService().RefreshAsync(taskId, cancellationToken);
+            if (!IsCurrentFileState(taskId, state) || stateGen != state.SyncGeneration ||
+                IsStaleFileSyncTarget(taskId, fromActivePanel, panelGen))
+                return;
+
+            // 同步期间用户可能开始编辑或触发了其他非待确认文件操作；绝不覆盖或冲掉普通编辑草稿。
+            if (!observingPending && ShouldSkipApplyingSilentRefresh(state)) return;
 
             state.Details               = details;
             state.FileOperationPending  = details.HasPendingFileOperation;
             state.PendingFileWaitPaused = false;
             state.Error                 = null;
-            StartPendingFileRefresh(taskId, state);
+            state.LastSyncedAtUtc       = _timeProvider.GetUtcNow();
+
+            if (observingPending && !details.HasPendingFileOperation)
+            {
+                state.ConfirmationBudgetExhausted = false;
+                foreach (var draft in state.Drafts.Values) draft.InvalidatePreview();
+                state.Message = "文件操作已确认，路径已自动刷新。";
+            }
+            else if (details.HasPendingFileOperation)
+            {
+                StartPendingFileRefresh(taskId, state);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
+        catch (DownloadLayoutConfirmationException exception)
+        {
+            if (!IsCurrentFileState(taskId, state) || stateGen != state.SyncGeneration ||
+                IsStaleFileSyncTarget(taskId, fromActivePanel, panelGen))
+                return;
+            state.FileOperationPending  = true;
+            state.PendingFileWaitPaused = false;
+            state.Error                 = exception.Message;
+        }
         catch (TorrentMissingException)
         {
-            if (!IsCurrentFileState(taskId, state)) return;
+            if (!IsCurrentFileState(taskId, state) || stateGen != state.SyncGeneration ||
+                IsStaleFileSyncTarget(taskId, fromActivePanel, panelGen))
+                return;
             const string missingMessage = "qBittorrent 中已找不到该种子";
             if (state.Details is null)
                 state.Error = missingMessage;
@@ -564,7 +1049,9 @@ public sealed class DownloadTasksPageViewModel(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "下载任务 {TaskId} 文件后台静默刷新失败。", taskId);
-            if (!IsCurrentFileState(taskId, state)) return;
+            if (!IsCurrentFileState(taskId, state) || stateGen != state.SyncGeneration ||
+                IsStaleFileSyncTarget(taskId, fromActivePanel, panelGen))
+                return;
             if (state.Details is null)
                 state.Error = exception.Message;
             else
@@ -577,15 +1064,23 @@ public sealed class DownloadTasksPageViewModel(
         }
     }
 
-    private DownloadTaskView? FindTask(Guid taskId) =>
-        Tasks.FirstOrDefault(task => task.Id == taskId);
+    private async Task<DownloadTaskView?> FindTaskOrDetailAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        if (GetTaskView(taskId) is { } cached) return cached;
+        return await taskQueries.GetDetailAsync(taskId, cancellationToken);
+    }
+
+    private bool IsStaleFileSyncTarget(Guid taskId, bool fromActivePanel, long panelGen) =>
+        (fromActivePanel && (_activeFilePollTaskId != taskId || _filePollGeneration != panelGen)) ||
+        (!fromActivePanel && _activeFilePollTaskId is { } activeId && activeId != taskId);
 
     private static bool ShouldSkipAutoFileSync(DownloadTaskFilesState state) =>
-        state.Drafts.Count > 0 ||
-        state.Loading          ||
-        state.Busy             ||
-        state.Refreshing       ||
-        state.FileOperationPending;
+        state.Loading                                                    ||
+        state.Busy                                                       ||
+        state.Refreshing                                                 ||
+        state.PendingFileWaitPaused                                      ||
+        state.PendingRefreshCancellation is { IsCancellationRequested: false } ||
+        (!state.FileOperationPending && state.Drafts.Count > 0);
 
     private static bool ShouldSkipApplyingSilentRefresh(DownloadTaskFilesState state) =>
         state.Drafts.Count > 0 ||
@@ -593,21 +1088,10 @@ public sealed class DownloadTasksPageViewModel(
         state.Busy             ||
         state.FileOperationPending;
 
-    private static bool CanSyncFilesRemotelyOnActivate(DownloadTaskView task, DownloadTaskFilesState state)
-    {
-        if (task.IsTorrentMissing) return false;
-        return task.Status switch
-        {
-            DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused => true,
-            DownloadTaskStatus.Completed or DownloadTaskStatus.Replaced =>
-                !task.IsSelectionTombstone && !state.InitialRemoteSynced,
-            _ => false
-        };
-    }
-
-    private static bool CanAutoPollFilesRemotely(DownloadTaskView task) =>
+    private static bool CanSyncFilesRemotely(DownloadTaskView task) =>
         !task.IsTorrentMissing &&
-        task.Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused;
+        !task.IsSelectionTombstone &&
+        task.Status is DownloadTaskStatus.Downloading or DownloadTaskStatus.Paused or DownloadTaskStatus.Completed;
 
     public void BeginFileEdit(Guid taskId, int fileIndex)
     {
@@ -687,9 +1171,11 @@ public sealed class DownloadTasksPageViewModel(
             if (!IsCurrentFileState(taskId, state)) return;
             state.PendingRefreshCancellation?.Cancel();
             state.PendingRefreshCancellation = null;
-            state.Details               = details;
-            state.FileOperationPending = details.HasPendingFileOperation;
-            state.PendingFileWaitPaused = false;
+            state.Details                     = details;
+            state.FileOperationPending        = details.HasPendingFileOperation;
+            state.PendingFileWaitPaused       = false;
+            state.ConfirmationBudgetExhausted = false;
+            if (!state.FileOperationPending) state.LastSyncedAtUtc = _timeProvider.GetUtcNow();
             state.Drafts.Remove(fileIndex);
             // 根目录迁移会影响其他文件的完整路径，需要重新预览，但保留其编辑值。
             foreach (var otherDraft in state.Drafts.Values) otherDraft.InvalidatePreview();
@@ -725,8 +1211,10 @@ public sealed class DownloadTasksPageViewModel(
 
     private void StartPendingFileRefresh(Guid taskId, DownloadTaskFilesState state)
     {
-        if (!state.FileOperationPending ||
-            state.PendingRefreshCancellation is { IsCancellationRequested: false }) return;
+        if (!state.FileOperationPending            ||
+            state.ConfirmationBudgetExhausted      ||
+            state.PendingRefreshCancellation is { IsCancellationRequested: false })
+            return;
         _ = WatchPendingFileOperationAsync(taskId, state);
     }
 
@@ -735,47 +1223,77 @@ public sealed class DownloadTasksPageViewModel(
     {
         var state = FileState(taskId);
         if (!state.FileOperationPending || !state.PendingFileWaitPaused) return;
-        state.PendingFileWaitPaused = false;
-        state.Error                 = null;
-        state.Message               = "修改已提交，正在等待下载器确认，确认后会自动刷新。";
+        state.PendingFileWaitPaused       = false;
+        state.ConfirmationBudgetExhausted = false;
+        state.Error                       = null;
+        state.Message                     = "修改已提交，正在等待下载器确认，确认后会自动刷新。";
         StartPendingFileRefresh(taskId, state);
         ResultsChanged?.Invoke();
     }
 
-    /// <summary>保护期内只查本地清单，确认操作日志清空后再真实刷新一次并恢复按钮。</summary>
+    /// <summary>改名/移动待确认的约 1 秒短间隔观察循环：直接消费 ObservePendingAsync 的确认结果；预算耗尽后回退 5 秒观察。</summary>
     private async Task WatchPendingFileOperationAsync(Guid taskId, DownloadTaskFilesState state)
     {
         var cancellation = state.PendingRefreshCancellation = new CancellationTokenSource();
+        var stateGen     = state.SyncGeneration;
         try
         {
             for (var attempt = 0; attempt < PendingFileRefreshAttempts; attempt++)
             {
                 await Task.Delay(PendingFileRefreshInterval, cancellation.Token);
-                if (!IsCurrentFileState(taskId, state) || !state.FileOperationPending) return;
-                var details = await RequireFileService().ListAsync(taskId, cancellation.Token);
-                if (!IsCurrentFileState(taskId, state) || !state.FileOperationPending) return;
-                if (details.HasPendingFileOperation) continue;
-                await RefreshFilesCoreAsync(taskId, state, cancellation.Token);
-                if (!IsCurrentFileState(taskId, state)) return;
-                // 只有清单确认无待处理、且真实刷新执行过一次之后，才允许手动刷新与再次编辑。
-                state.FileOperationPending = false;
-                state.PendingFileWaitPaused = false;
-                state.Message = state.Error is null ? "文件操作已确认，路径已自动刷新。" : null;
+                if (!IsCurrentFileState(taskId, state) || stateGen != state.SyncGeneration ||
+                    !state.FileOperationPending)
+                    return;
+
+                var details = await RequireFileService().ObservePendingAsync(taskId, cancellation.Token);
+                if (!IsCurrentFileState(taskId, state) || stateGen != state.SyncGeneration ||
+                    !state.FileOperationPending)
+                    return;
+
+                state.Details         = details;
+                state.LastSyncedAtUtc = _timeProvider.GetUtcNow();
+                if (details.HasPendingFileOperation)
+                {
+                    ResultsChanged?.Invoke();
+                    continue;
+                }
+
+                // 后端确认完整计划后，直接采用返回的新布局并开放再次编辑与刷新；保留既有草稿并失效其旧预览。
+                state.FileOperationPending        = false;
+                state.PendingFileWaitPaused       = false;
+                state.ConfirmationBudgetExhausted = false;
+                state.Error                       = null;
+                state.SilentRefreshError          = null;
+                foreach (var draft in state.Drafts.Values) draft.InvalidatePreview();
+                state.Message = "文件操作已确认，路径已自动刷新。";
                 ResultsChanged?.Invoke();
                 return;
             }
 
-            if (IsCurrentFileState(taskId, state) && state.FileOperationPending)
+            if (IsCurrentFileState(taskId, state) && stateGen == state.SyncGeneration && state.FileOperationPending)
                 PauseFileOperationWait(state,
                     "文件操作仍未被下载器确认，自动等待已暂停；请检查下载器后点击“继续等待确认”。");
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
         }
+        catch (DownloadLayoutConfirmationException exception)
+        {
+            // 补发预算耗尽：展示待核对原因并退出 1 秒短间隔，交由 5 秒自动同步继续调用 ObservePendingAsync 观察。
+            if (IsCurrentFileState(taskId, state) && stateGen == state.SyncGeneration)
+            {
+                state.FileOperationPending        = true;
+                state.PendingFileWaitPaused       = false;
+                state.ConfirmationBudgetExhausted = true;
+                state.Error                       = exception.Message;
+                state.Message                     = null;
+                ResultsChanged?.Invoke();
+            }
+        }
         catch (Exception exception)
         {
             logger.LogWarning(exception, "下载任务 {TaskId} 文件操作确认等待失败。", taskId);
-            if (IsCurrentFileState(taskId, state))
+            if (IsCurrentFileState(taskId, state) && stateGen == state.SyncGeneration)
                 PauseFileOperationWait(state,
                     $"等待下载器确认失败：{exception.Message}。自动等待已暂停，请点击“继续等待确认”重试。");
         }
@@ -815,7 +1333,8 @@ public sealed class DownloadTasksPageViewModel(
 
     public void ToggleSelectAll()
     {
-        var visibleIds = Tasks.Select(task => task.Id).ToList();
+        var visibleIds = VisibleTaskIds;
+        if (visibleIds.Count == 0) return;
         if (AllSelected) _selectedIds.ExceptWith(visibleIds);
         else _selectedIds.UnionWith(visibleIds);
         InvalidateBulkPanel();
@@ -890,6 +1409,15 @@ public sealed class DownloadTasksPageViewModel(
             Succeeded = true;
             Message   = $"已删除 {deleted} 个任务。";
             _selectedIds.Clear();
+            foreach (var id in ids)
+            {
+                RemoveFileState(id);
+                if (SelectedTaskId == id)
+                {
+                    SelectedTaskId = null;
+                    SelectedTask   = null;
+                }
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -909,7 +1437,7 @@ public sealed class DownloadTasksPageViewModel(
             Busy = false;
         }
 
-        await LoadAsync(cancellationToken);
+        await RefreshFallbackAsync(cancellationToken);
     }
 
     /// <summary>打开删除面板：记录目标任务并预检下载器中是否存在同 hash 种子。</summary>
@@ -967,8 +1495,17 @@ public sealed class DownloadTasksPageViewModel(
         await RunOperationAsync(taskId, () => downloadService
                                    .DeleteAsync(taskId, deleteFromDownloader, deleteFiles, cancellationToken),
                                 "任务已删除。", cancellationToken);
-        // 单删成功后同步收敛选择集，批量计数不再包含已删任务；选择集不随刷新重建，靠这里保持准确。
-        if (Succeeded) _selectedIds.Remove(taskId);
+        // 单删成功后同步收敛选择集与文件状态，批量计数不再包含已删任务。
+        if (Succeeded)
+        {
+            _selectedIds.Remove(taskId);
+            RemoveFileState(taskId);
+            if (SelectedTaskId == taskId)
+            {
+                SelectedTaskId = null;
+                SelectedTask   = null;
+            }
+        }
     }
 
     /// <summary>上传种子登记：读取浏览器流后交给服务校验与去重，创建即等待提交。</summary>
@@ -1000,13 +1537,13 @@ public sealed class DownloadTasksPageViewModel(
         Message   = message;
     }
 
-    /// <summary>接收统一登记组件的反馈并按需刷新任务列表。</summary>
+    /// <summary>接收统一登记组件的反馈并按需刷新任务列表；成功时不展示提示框，仅清空旧提示。</summary>
     public async Task ApplyIntakeFeedbackAsync(
         bool succeeded, string message, bool shouldReload, CancellationToken cancellationToken = default)
     {
         Succeeded = succeeded;
-        Message   = message;
-        if (shouldReload) await LoadAsync(cancellationToken);
+        Message   = succeeded ? null : message;
+        if (shouldReload) await RefreshFallbackAsync(cancellationToken);
     }
 
     public async Task PauseAsync(Guid taskId, CancellationToken cancellationToken = default)
@@ -1030,7 +1567,6 @@ public sealed class DownloadTasksPageViewModel(
     /// <summary>种子丢失后重新下载：沿用原决策与命名快照重新提交，完成记录与逐集归属不变。</summary>
     public async Task RedownloadAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
-        if (_fileStates.TryGetValue(taskId, out var state)) state.InitialRemoteSynced = false;
         await RunOperationAsync(taskId, () => downloadService.RetryAsync(taskId, cancellationToken),
                                 "已重新提交下载，等待下载器确认。", cancellationToken);
     }
@@ -1101,28 +1637,28 @@ public sealed class DownloadTasksPageViewModel(
             Busy = false;
         }
 
-        await LoadAsync(cancellationToken);
+        await RefreshFallbackAsync(cancellationToken);
     }
 }
 
 /// <summary>仅属于页面生命周期的文件详情与编辑草稿。</summary>
 public sealed class DownloadTaskFilesState
 {
-    public bool    Expanded             { get; internal set; }
-    public bool    Loading              { get; internal set; }
-    public bool    Refreshing           { get; internal set; }
-    public bool    Busy                 { get; internal set; }
-    public string? Error                { get; internal set; }
-    public string? SilentRefreshError   { get; internal set; }
-    public string? Message              { get; internal set; }
-    public bool    FileOperationPending { get; internal set; }
+    public bool            Expanded             { get; internal set; }
+    public bool            Loading              { get; internal set; }
+    public bool            Refreshing           { get; internal set; }
+    public bool            Busy                 { get; internal set; }
+    public string?         Error                { get; internal set; }
+    public string?         SilentRefreshError   { get; internal set; }
+    public string?         Message              { get; internal set; }
+    public bool            FileOperationPending { get; internal set; }
+    public DateTimeOffset? LastSyncedAtUtc      { get; internal set; }
 
     /// <summary>超时或轮询失败后自动等待暂停；仍待确认时界面提供“继续等待确认”入口。</summary>
     public bool PendingFileWaitPaused { get; internal set; }
 
-    /// <summary>终态任务是否已在当前页面周期内按需同步过一次远端文件清单。</summary>
-    public bool InitialRemoteSynced { get; internal set; }
-
+    internal bool                     ConfirmationBudgetExhausted { get; set; }
+    internal long                     SyncGeneration              { get; set; }
     internal CancellationTokenSource? PendingRefreshCancellation { get; set; }
 
     public DownloadTaskFilesView?                 Details { get; internal set; }
