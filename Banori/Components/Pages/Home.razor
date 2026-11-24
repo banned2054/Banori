@@ -15,7 +15,7 @@
 
 @if (_intakeFeedback is not null)
 {
-	<div class="alert @(_intakeFeedback.Succeeded ? "alert-success" : "alert-danger")" role="status">
+	<div class="alert alert-danger" role="status">
 		<div>@_intakeFeedback.Message</div>
 		<DownloadIntakeRssDetails Result="_intakeFeedback.RssResult"/>
 	</div>
@@ -75,7 +75,7 @@
 
 	private async Task HandleIntakeCompletedAsync(DownloadIntakeFeedback feedback)
 	{
-		_intakeFeedback = feedback;
+		_intakeFeedback = feedback.Succeeded ? null : feedback;
 		if (feedback.Succeeded || (feedback.RssResult?.CreatedCount ?? 0) > 0)
 			_snapshot = await DashboardService.GetSnapshotAsync();
 	}
