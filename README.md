@@ -41,7 +41,7 @@
 - **通知与代理** — 支持 Telegram、Gotify 通知与投递记录，统一管理各服务使用的命名代理。
 - **数据库** — 默认使用 SQLite，也可配置 MySQL。
 
-设置页可分别配置普通种子名、合集种子名和种子内文件名。合集模板留空沿用普通种子模板，集数由包内可识别的视频生成；字幕、附件不计入，缺集按逗号分段。范围前缀与位数可自行指定：`{episode:Eee-Eee}` 输出 `E01-E06`，`{episode:ee-ee}` 输出 `01-06`，`E{episode:ee-ee}` 输出 `E01-06`；`{ani.episode:…}` 同样适用。缺集时 `{episode:Eee-Eee}` 可输出 `E01-E02,E04-E06`。模板在创建任务时保存为快照，修改配置不会重新命名已经登记或完成的任务。
+设置页可分别配置普通种子名、合集种子名和种子内文件名。合集模板留空沿用普通种子模板，集数由包内可识别的视频生成；字幕、附件不计入，缺集按逗号分段。范围前缀与位数可自行指定：`{episode:Eee-Eee}` 输出 `E01-E06`，`{episode:ee-ee}` 输出 `01-06`，`E{episode:ee-ee}` 输出 `E01-06`；`{ani.episode:…}` 同样适用。缺集时 `{episode:Eee-Eee}` 可输出 `E01-E02,E04-E06`。种子名模板（普通/合集）为全局实时规则，修改保存后会按单集与合集分流同步更新已有任务在 qBittorrent 中的种子名；文件名模板同样按当前配置实时生效，作用于后续预览、改名与归档。
 
 ## 🐳 Docker 部署
 
@@ -80,13 +80,13 @@ docker compose pull
 docker compose up -d
 ```
 
-数据库结构会在启动时自动更新，无需手动迁移。0.5.1 无数据库结构迁移；不要让新旧实例同时写入同一数据库。回退时恢复升级前的数据库和配套配置、密钥，不能只切换回旧镜像。各版本的具体变化与验收情况见 [更新日志](Docs/CHANGELOG.md)。
+数据库结构会在启动时自动更新，无需手动迁移。0.6.0 为下载任务新增待同步种子改名标记字段（SQLite 与 MySQL 迁移）；不要让新旧实例同时写入同一数据库。回退时恢复升级前的数据库和配套配置、密钥，不能只切换回旧镜像。各版本的具体变化与验收情况见 [更新日志](Docs/CHANGELOG.md)。
 
-GitHub Actions 在发布 GitHub Release 或手动运行 `Publish container image` 工作流时构建并推送镜像；普通分支 push 或单独推送标签不会触发发布。Release 按 Git 标签名生成同名版本镜像（本项目使用 `v*`，例如 `v0.5.1`），并按 [metadata-action 的默认标签规则](https://github.com/docker/metadata-action#latest-tag) 同时更新 `latest`；在默认分支手动运行也会更新 `latest`。工作流还会生成 `sha-` 前缀的提交标签。例如：
+GitHub Actions 在发布 GitHub Release 或手动运行 `Publish container image` 工作流时构建并推送镜像；普通分支 push 或单独推送标签不会触发发布。Release 按 Git 标签名生成同名版本镜像（本项目使用 `v*`，例如 `v0.6.0`），并按 [metadata-action 的默认标签规则](https://github.com/docker/metadata-action#latest-tag) 同时更新 `latest`；在默认分支手动运行也会更新 `latest`。工作流还会生成 `sha-` 前缀的提交标签。例如：
 
 ```text
 ghcr.io/banned2054/banori:latest
-ghcr.io/banned2054/banori:v0.5.1
+ghcr.io/banned2054/banori:v0.6.0
 ```
 
 ### 数据持久化
