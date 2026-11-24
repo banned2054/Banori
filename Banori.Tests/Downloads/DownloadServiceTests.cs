@@ -31,7 +31,7 @@ namespace Banori.Tests.Downloads;
 /// </summary>
 public sealed partial class DownloadServiceTests
 {
-    private const string NamingV1 = "测试作品 E01 [Sc]";
+    private const string NamingV1 = "[Anime]测试作品 E01 mikan";
     private const string NamingV2 = "测试作品 E01 v2 [Sc]";
 
     /// <summary>喵萌奶茶屋式发布名的解析后系列标题（与命名快照同口径）。</summary>
@@ -737,7 +737,7 @@ public sealed partial class DownloadServiceTests
         var ingredients =
             Assert.IsType<TorrentNamingIngredients>(TorrentNamingIngredients.FromJson(registered.NamingIngredients));
         Assert.Equal("12", ingredients.EpisodeText);
-        Assert.Equal("{title}", ingredients.Template);
+        Assert.Null(ingredients.Template);
         Assert.Null(ingredients.FileTemplate);
         await using var db = await harness.CreateDbContextAsync();
         var originals = await db.DownloadTaskFiles.AsNoTracking().Where(file => file.DownloadTaskId == taskId)
@@ -2429,6 +2429,7 @@ public sealed partial class DownloadServiceTests
     public async Task Reconcile_CorrectsSubject484623EpisodeForSingleFileUsingFileVersion()
     {
         using var harness = await CreateHarnessAsync();
+        await harness.SaveFileNamingTemplateAsync("{title} E{episode} {version} [{group}]");
         await SeedSubjectAsync(harness, 484623);
         var itemId = await SeedAcceptedItemAsync(harness, "subject-484623-single", "Test Anime - 14 v2",
                                                  "测试作品 E14 v2 [Sc]", 2, 14, subjectId : 484623);
@@ -2449,6 +2450,7 @@ public sealed partial class DownloadServiceTests
     public async Task Reconcile_CorrectsSubject484623EpisodeRangeForMultiFileNames()
     {
         using var harness = await CreateHarnessAsync();
+        await harness.SaveFileNamingTemplateAsync("{title} E{episode} {version} [{group}]");
         await SeedSubjectAsync(harness, 484623);
         var itemId = await SeedAcceptedItemAsync(harness, "subject-484623-range", "Test Anime - 14-15",
                                                  "测试作品 E14-E15 [Sc]", 1, 14, subjectId : 484623);
@@ -2549,7 +2551,8 @@ public sealed partial class DownloadServiceTests
         using var harness  = await CreateHarnessAsync();
         var       template = new string('中', 140) + " {title} E{episode}";
         await harness.SaveNamingTemplateAsync(template);
-        var taskId = await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语")));
+        var longTitle = $"【喵萌奶茶屋】★07月新番★[{new string('中', 140)}][12][1080p][简日双语].mp4";
+        var taskId    = await harness.CreateUploadAsync(TestTorrentBytes.Create(longTitle), subjectId : 42);
         var task   = await harness.GetTaskAsync(taskId);
         Assert.Equal(149, task.NamingSnapshot.Length);
         Assert.True(task.NamingIngredients!.Length > 1000);
@@ -2630,7 +2633,7 @@ public sealed partial class DownloadServiceTests
         Assert.Equal("测试作品", ingredients.BangumiNameCn);
         Assert.Equal(42, ingredients.BangumiId);
         Assert.False(string.IsNullOrWhiteSpace(ingredients.AniTitle));
-        Assert.Equal(seedTemplate, ingredients.Template);
+        Assert.Null(ingredients.Template);     // 种子名模板是全局实时规则，不随任务落库。
         Assert.Null(ingredients.FileTemplate); // 文件模板是全局实时规则，不随任务落库。
 
         var hash = TestTorrentBytes.InfoHashOf(title);
@@ -2701,7 +2704,7 @@ public sealed partial class DownloadServiceTests
         Assert.Equal("Test Subject", ingredients.BangumiName);
         Assert.Equal("测试作品", ingredients.BangumiNameCn);
         Assert.Equal(string.Empty, ingredients.EpisodeText);
-        Assert.Equal(ReleaseNamePreviewPolicy.DefaultTemplate, ingredients.Template);
+        Assert.Null(ingredients.Template);
         Assert.Null(ingredients.FileTemplate);
     }
 
@@ -3821,9 +3824,9 @@ public sealed partial class DownloadServiceTests
         await db.SaveChangesAsync();
     }
 
-    /// <summary>与命名预览同源生成的命名要素：渲染结果必须恰好等于 naming（"测试作品 E01 [Sc]" 形态）。</summary>
+    /// <summary>与默认命名模板同源生成的命名要素（不落库 Template，由全局实时模板渲染）。</summary>
     private static string BuildNamingIngredients(decimal episode, int version) =>
-        new TorrentNamingIngredients("{title} E{episode} {version} [{group}]", "测试作品",
+        new TorrentNamingIngredients(null, "测试作品",
                                      ReleaseNamePreviewPolicy.FormatEpisodeText(episode), version, "Sc",
                                      null).ToJson();
 

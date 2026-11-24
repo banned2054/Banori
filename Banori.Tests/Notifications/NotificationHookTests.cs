@@ -24,7 +24,7 @@ namespace Banori.Tests.Notifications;
 /// </summary>
 public sealed class NotificationHookTests
 {
-    private const string NamingV1 = "测试作品 E01 [Sc]";
+    private const string NamingV1 = "[Anime]测试作品 E01";
 
     private static readonly DateTimeOffset Timestamp = new(2026, 9, 27, 8, 0, 0, TimeSpan.Zero);
 
@@ -265,7 +265,7 @@ public sealed class NotificationHookTests
                 MediaType = "SingleEpisode", Episode = 1, Version = 1, Group = "S1",
                 Language = "Sc", Resolution = "R1080P", SubjectId = 42, Reason = "测试决策。",
                 NamingPreview = NamingV1,
-                NamingIngredients = new TorrentNamingIngredients("{title} E{episode} [{group}]", "测试作品",
+                NamingIngredients = new TorrentNamingIngredients(null, "测试作品",
                                                                  "01", 1, "Sc", null).ToJson(),
                 EvaluatedAtUtc = Timestamp
             });

@@ -35,10 +35,11 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(expectedName, registered.NamingSnapshot);
         var ingredients = TorrentNamingIngredients.FromJson(registered.NamingIngredients)!;
         Assert.Equal("01-E06", ingredients.EpisodeText);
+        Assert.Null(ingredients.Template);     // 种子名模板是全局实时规则，不随任务快照保存。
         Assert.Null(ingredients.FileTemplate); // 文件模板是全局实时规则，不随任务快照保存。
         if (entryPoint != "subscription") Assert.Null(registered.Episode);
 
-        // 登记后配置变更不能覆盖快照；真实完成链仍用合集名，文件继续逐集命名。
+        // 登记后未触发模板变更通知前，提交沿用登记时渲染的名称；完成改名按当前全局模板实时渲染，文件继续逐集命名。
         await templates.SaveCollectionTemplateAsync("Changed {title}");
         var originalPaths = paths.Select(path => CollectionTitle + "/" + path).ToArray();
         harness.Store.FileIdentities[registered.InfoHash] = originalPaths.Select((path, index) =>
@@ -48,8 +49,10 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(expectedName, Assert.Single(harness.Store.AddCalls).Rename);
         CompleteTorrent(harness, registered.InfoHash);
         await harness.ReconcileAsync();
-        Assert.Equal(DownloadTaskStatus.Completed, (await harness.GetTaskAsync(taskId)).Status);
-        Assert.Equal(expectedName, Assert.Single(harness.Store.RenameCalls).Name);
+        var completed = await harness.GetTaskAsync(taskId);
+        Assert.Equal(DownloadTaskStatus.Completed, completed.Status);
+        Assert.Equal("Changed 测试作品", completed.NamingSnapshot);
+        Assert.Equal("Changed 测试作品", Assert.Single(harness.Store.RenameCalls).Name);
         await using var db = await harness.CreateDbContextAsync();
         var videos = await db.DownloadTaskFiles.Where(file => file.DownloadTaskId == taskId &&
                                                               file.Kind           == DownloadFileKind.Anime)

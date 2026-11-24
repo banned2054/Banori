@@ -84,14 +84,14 @@ public sealed partial class DownloadServiceTests
             Assert.Equal(oldSnapshot, item.NamingPreview);
             Assert.Equal(invalidIngredients, item.NamingIngredients);
 
-            // 模拟重新评估补齐要素；后续登记不再使用旧的错误快照。
-            var ingredients = new TorrentNamingIngredients("{title} E{episode} {source} {site.source}",
-                                                           "测试作品", "01", 1, "Sc", "mikan");
+            // 模拟重新评估补齐要素；后续登记不再使用旧的错误快照，按当前全局模板实时渲染。
+            var ingredients = new TorrentNamingIngredients(null, "测试作品", "01", 1, "Sc", "mikan");
             item.NamingIngredients = ingredients.ToJson();
             item.NamingPreview     = "测试作品 E01 mikan mikan";
             await db.SaveChangesAsync();
         }
 
+        await harness.SaveNamingTemplateAsync("{title} E{episode} {source} {site.source}");
         var taskId = await harness.CreateDownloadAsync(itemId);
         var task   = await harness.GetTaskAsync(taskId);
         Assert.Equal("mikan", task.SiteSource);
