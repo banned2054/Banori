@@ -144,6 +144,15 @@ public interface IQbittorrentSession : IAsyncDisposable
     Task DeleteTorrentsAsync(
         IReadOnlyCollection<string> infoHashes, bool deleteFiles, CancellationToken cancellationToken = default);
 
+    /// <summary>批量设置种子的分享率与做种时长限制（-2 = 使用全局，-1 = 无限制，>= 0 = 具体阈值）。</summary>
+    Task SetShareLimitsAsync(
+        IReadOnlyCollection<string> infoHashes,
+        double                      ratioLimit,
+        int                         seedingTimeLimitMinutes,
+        int                         inactiveSeedingTimeLimitMinutes,
+        CancellationToken           cancellationToken = default) =>
+        Task.CompletedTask;
+
     /// <summary>按 rid 拉取 <c>api/v2/sync/maindata</c> 全量或增量同步数据。</summary>
     Task<QbittorrentMainDataDelta> SyncMainDataAsync(long rid, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("当前 qBittorrent 会话实现不支持 sync/maindata 增量同步。");

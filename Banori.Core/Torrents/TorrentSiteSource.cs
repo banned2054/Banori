@@ -11,6 +11,9 @@ public static class TorrentSiteSource
     /// <summary>上传种子 tracker 未命中任何分类（含仅公共 tracker）时的统一来源。</summary>
     public const string FallbackLabel = "other";
 
+    /// <summary>系统内全部规范来源分组（按 PT 做种站优先排列）。</summary>
+    public static readonly IReadOnlyList<string> AllLabels = ["byrbt", "u2", "tjupt", "mikan", "anibt", FallbackLabel];
+
     /// <summary>RSS 站点主机映射；未列入的主机（含子域）返回 null，不取首段域名标签充当来源。</summary>
     private static readonly Dictionary<string, string> FeedHosts = new(StringComparer.OrdinalIgnoreCase)
     {

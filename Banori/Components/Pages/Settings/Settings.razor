@@ -22,6 +22,7 @@
 <nav class="settings-tabs nav nav-tabs flex-nowrap overflow-x-auto mb-4" aria-label="设置分组">
 	<a class="nav-link text-nowrap @(IsTab(DownloaderTab) ? "active" : null)" href="/settings/downloader">下载器</a>
 	<a class="nav-link text-nowrap @(IsTab(NamingTab) ? "active" : null)" href="/settings/naming">目录与命名</a>
+	<a class="nav-link text-nowrap @(IsTab(ShareLimitsTab) ? "active" : null)" href="/settings/share-limits">分享率配置</a>
 	<a class="nav-link text-nowrap @(IsTab(SelectionRulesTab) ? "active" : null)" href="/settings/selection-rules">择优规则</a>
 	<a class="nav-link text-nowrap @(IsTab(NotificationsTab) ? "active" : null)" href="/settings/notifications">通知渠道</a>
 	<a class="nav-link text-nowrap @(IsTab(ProxiesTab) ? "active" : null)" href="/settings/proxies">网络代理</a>
@@ -41,7 +42,7 @@
 	</div>
 }
 
-@if (!_vm.Loaded && !IsTab(SelectionRulesTab) && !IsTab(ProxiesTab))
+@if (!_vm.Loaded && !IsTab(SelectionRulesTab) && !IsTab(ProxiesTab) && !IsTab(ShareLimitsTab))
 {
 	<p>正在加载…</p>
 }
@@ -415,6 +416,10 @@ else
 			<p class="text-body-secondary small mb-3">命名的代理可被订阅、qBittorrent 下载器与通知渠道选用；密码加密保存。改动会即时反映到各处的代理下拉。</p>
 			<ProxyManager OnChanged="ReloadProxiesAsync"/>
 			break;
+
+		case ShareLimitsTab:
+			<ShareLimitsManager/>
+			break;
 	}
 }
 
@@ -422,6 +427,7 @@ else
 
 	private const string DownloaderTab     = "downloader";
 	private const string NamingTab         = "naming";
+	private const string ShareLimitsTab    = "share-limits";
 	private const string SelectionRulesTab = "selection-rules";
 	private const string NotificationsTab  = "notifications";
 	private const string ProxiesTab        = "proxies";
@@ -508,6 +514,7 @@ else
 		tab?.Trim().ToLowerInvariant() switch
 		{
 			NamingTab         => NamingTab,
+			ShareLimitsTab    => ShareLimitsTab,
 			SelectionRulesTab => SelectionRulesTab,
 			NotificationsTab  => NotificationsTab,
 			ProxiesTab        => ProxiesTab,

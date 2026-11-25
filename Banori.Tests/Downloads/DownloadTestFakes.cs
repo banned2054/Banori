@@ -166,6 +166,9 @@ public sealed class FakeTorrentStore
     public List<string>                                                         RecheckCalls      { get; } = [];
     public List<string>                                                         ReannounceCalls   { get; } = [];
 
+    public List<(IReadOnlyList<string> Hashes, double RatioLimit, int SeedingTimeLimitMinutes,
+                 int InactiveSeedingTimeLimitMinutes)> ShareLimitCalls { get; } = [];
+
     /// <summary>测试显式播种的可导出种子字节（qBittorrent /export 的内存对应物）；未播种视为导出失败。</summary>
     public Dictionary<string, byte[]> ExportedTorrents { get; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -666,6 +669,18 @@ public sealed class FakeQbittorrentSession(FakeTorrentStore store) : IQbittorren
         IReadOnlyCollection<string> infoHashes, bool deleteFiles, CancellationToken cancellationToken = default)
     {
         foreach (var infoHash in infoHashes) DeleteTorrentAsync(infoHash, deleteFiles, cancellationToken);
+        return Task.CompletedTask;
+    }
+
+    public Task SetShareLimitsAsync(
+        IReadOnlyCollection<string> infoHashes,
+        double                      ratioLimit,
+        int                         seedingTimeLimitMinutes,
+        int                         inactiveSeedingTimeLimitMinutes,
+        CancellationToken           cancellationToken = default)
+    {
+        store.ShareLimitCalls.Add((infoHashes.Select(hash => hash.Trim().ToLowerInvariant()).ToArray(),
+                                   ratioLimit, seedingTimeLimitMinutes, inactiveSeedingTimeLimitMinutes));
         return Task.CompletedTask;
     }
 

@@ -178,6 +178,7 @@ internal class Program
         builder.Services.AddScoped<IApplicationSettingStore, EfApplicationSettingStore>();
         builder.Services.AddScoped<NamingTemplateStore>();
         builder.Services.AddScoped<DownloadDirectorySettingsStore>();
+        builder.Services.AddScoped<ShareLimitSettingsStore>();
         builder.Services.AddScoped<DownloadSubmissionPathValidator>();
         builder.Services.AddSingleton<DownloadFileClassificationPolicy>();
         builder.Services.AddScoped<ManageQbittorrentSettings>();

@@ -40,7 +40,8 @@ public sealed partial class DownloadService(
     DownloadIntakeService?                  intakeService           = null,
     DownloadTaskChangeNotifier?             changeNotifier          = null,
     NamingTemplateStore?                    namingTemplateStore     = null,
-    ReconcilePulse?                         reconcilePulse          = null)
+    ReconcilePulse?                         reconcilePulse          = null,
+    ShareLimitSettingsStore?                shareLimitSettingsStore = null)
 {
     /// <summary>响应丢失后的自动重新提交上限；达到上限视为提交失败，等待人工重试。</summary>
     public const int MaxAutoSubmitAttempts = 5;
@@ -1598,6 +1599,8 @@ public sealed partial class DownloadService(
             response = await session.AddTorrentAsync(task.TorrentFile, addRoot,
                                                      TagsFor(task), task.NamingSnapshot,
                                                      true, cancellationToken);
+            if (string.Equals(response.Trim(), "Ok.", StringComparison.OrdinalIgnoreCase))
+                await ApplyConfiguredShareLimitAsync(session, task.InfoHash, task.SiteSource, cancellationToken);
         }
         catch (Exception exception) when (exception is QbittorrentLoginFailedException
                                                     or QbittorrentUnauthorizedException
@@ -3480,6 +3483,8 @@ public sealed partial class DownloadService(
                     {
                         response = await session.AddTorrentAsync(task.TorrentFile, targetRoot, TagsFor(task),
                                                                  task.NamingSnapshot, true, ct);
+                        if (string.Equals(response.Trim(), "Ok.", StringComparison.OrdinalIgnoreCase))
+                            await ApplyConfiguredShareLimitAsync(session, task.InfoHash, task.SiteSource, ct);
                     }
                     catch (Exception exception) when (exception is QbittorrentBadRequestException
                                                                 or QbittorrentNotFoundException)
@@ -3637,6 +3642,8 @@ public sealed partial class DownloadService(
         if (!string.IsNullOrWhiteSpace(siteSource) &&
             !snapshot.Tags.Contains(siteSource, StringComparer.OrdinalIgnoreCase))
             await session.AddTagAsync(task.InfoHash, siteSource, cancellationToken);
+
+        await ApplyConfiguredShareLimitAsync(session, task.InfoHash, siteSource, cancellationToken);
 
         var staging = false;
         if (downloadFileService is not null)

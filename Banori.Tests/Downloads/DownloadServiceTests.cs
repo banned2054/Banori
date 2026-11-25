@@ -3943,6 +3943,7 @@ public sealed partial class DownloadServiceTests
         services.AddScoped<ManageSelectionRuleSettings>();
         services.AddScoped<ISelectionRuleProvider, SettingsSelectionRuleProvider>();
         services.AddScoped<NamingTemplateStore>();
+        services.AddScoped<ShareLimitSettingsStore>();
         services.AddSingleton<DownloadCoordinationGate>();
         // 原有收尾用例保留未注册文件服务的兼容 fallback；新目录集成用例单独启用。
         services.AddScoped<DownloadDirectorySettingsStore>();

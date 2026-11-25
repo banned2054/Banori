@@ -4,6 +4,7 @@ using Banned.Qbittorrent.Models.Enums;
 using Banned.Qbittorrent.Models.Requests;
 using Banned.Qbittorrent.Models.Torrent;
 using Banned.Qbittorrent.Utils;
+using System.Globalization;
 using System.Text.Json;
 
 namespace Banori.Integrations.Qbittorrent;
@@ -190,13 +191,41 @@ public sealed class QbittorrentSession(
         client.Torrent.DeleteTorrents(infoHashes.Select(NormalizeHash).ToList(), deleteFiles,
                                       cancellationToken);
 
+    public async Task SetShareLimitsAsync(
+        IReadOnlyCollection<string> infoHashes,
+        double                      ratioLimit,
+        int                         seedingTimeLimitMinutes,
+        int                         inactiveSeedingTimeLimitMinutes,
+        CancellationToken           cancellationToken = default)
+    {
+        var hashes = infoHashes.Select(NormalizeHash)
+                               .Where(hash => hash.Length > 0)
+                               .Distinct(StringComparer.Ordinal)
+                               .ToArray();
+        if (hashes.Length == 0) return;
+
+        if (_ownedHttpClient is null)
+            throw new InvalidOperationException("当前 qBittorrent 会话未持有 HttpClient，无法调用 torrents/setShareLimits。");
+
+        var requestUri = BuildApiUri(_baseUrl, _ownedHttpClient.BaseAddress, "api/v2/torrents/setShareLimits");
+        using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["hashes"]                   = string.Join('|', hashes),
+            ["ratioLimit"]               = ratioLimit.ToString("0.##", CultureInfo.InvariantCulture),
+            ["seedingTimeLimit"]         = seedingTimeLimitMinutes.ToString(CultureInfo.InvariantCulture),
+            ["inactiveSeedingTimeLimit"] = inactiveSeedingTimeLimitMinutes.ToString(CultureInfo.InvariantCulture)
+        });
+        using var response = await _ownedHttpClient.PostAsync(requestUri, content, cancellationToken);
+        response.EnsureSuccessStatusCode();
+    }
+
     public async Task<QbittorrentMainDataDelta> SyncMainDataAsync(
         long rid, CancellationToken cancellationToken = default)
     {
         if (_ownedHttpClient is null)
             throw new InvalidOperationException("当前 qBittorrent 会话未持有 HttpClient，无法调用 sync/maindata。");
 
-        var requestUri = BuildSyncMainDataUri(_baseUrl, _ownedHttpClient.BaseAddress, rid);
+        var requestUri = BuildApiUri(_baseUrl, _ownedHttpClient.BaseAddress, $"api/v2/sync/maindata?rid={rid}");
         using var response = await _ownedHttpClient.GetAsync(requestUri, cancellationToken);
         response.EnsureSuccessStatusCode();
         var payload = await response.Content.ReadAsByteArrayAsync(cancellationToken);
@@ -279,21 +308,21 @@ public sealed class QbittorrentSession(
         return new QbittorrentTorrentDelta(name, category, rawState, isMoving, progress, totalSize, savePath);
     }
 
-    private static string BuildSyncMainDataUri(string? baseUrl, Uri? clientBaseAddress, long rid)
+    private static string BuildApiUri(string? baseUrl, Uri? clientBaseAddress, string relativePath)
     {
         if (!string.IsNullOrWhiteSpace(baseUrl))
         {
             var normalizedBase = baseUrl.Trim().TrimEnd('/');
-            return $"{normalizedBase}/api/v2/sync/maindata?rid={rid}";
+            return $"{normalizedBase}/{relativePath}";
         }
 
         if (clientBaseAddress is not null)
         {
             var normalizedBase = clientBaseAddress.ToString().TrimEnd('/');
-            return $"{normalizedBase}/api/v2/sync/maindata?rid={rid}";
+            return $"{normalizedBase}/{relativePath}";
         }
 
-        throw new InvalidOperationException("SyncMainDataAsync 需要已配置的 BaseUrl。");
+        throw new InvalidOperationException("qBittorrent 会话缺少已配置的 BaseUrl。");
     }
 
     public ValueTask DisposeAsync()

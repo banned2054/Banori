@@ -1,0 +1,249 @@
+@using Banori.Features.Downloads
+@implements IDisposable
+
+@inject ShareLimitSettingsStore           ShareLimitStore
+@inject DownloadService                   DownloadService
+@inject ILogger<ShareLimitsPageViewModel> Logger
+
+<p class="text-body-secondary small mb-3">
+	按站点来源分组配置 qBittorrent 分享限制。保存后立即全局生效：新提交的种子自动应用对应策略，已有种子也会同步更新；未分配给任何配置的站点来源沿用 qBittorrent 全局分享限制。
+</p>
+
+@if (!_vm.Loaded)
+{
+	<p>正在加载…</p>
+}
+else
+{
+	<div class="card share-limits-card">
+		<div class="card-body">
+			<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+				<label for="share-limit-profile-select" class="form-label mb-0 fw-semibold">配置方案</label>
+				<select id="share-limit-profile-select" class="form-select form-select-sm share-limits-select"
+				        disabled="@(_vm.Saving || _vm.Profiles.Count == 0)"
+				        value="@SelectedProfileValue"
+				        @onchange="OnProfileChanged">
+					@if (_vm.Profiles.Count == 0)
+					{
+						<option value="">暂无已创建的配置</option>
+					}
+					else
+					{
+						@if (_vm.IsCreatingNew)
+						{
+							<option value="__new__">（正在新建配置）</option>
+						}
+						@foreach (var profile in _vm.Profiles)
+						{
+							<option value="@profile.Id">@FormatProfileOption(profile)</option>
+						}
+					}
+				</select>
+				<button type="button" class="btn btn-sm btn-outline-primary" disabled="@_vm.Saving"
+				        @onclick="_vm.BeginCreate">
+					新建配置
+				</button>
+				@if (!_vm.IsCreatingNew && _vm.SelectedProfileId is not null)
+				{
+					<button type="button" class="btn btn-sm btn-outline-danger" disabled="@_vm.Saving"
+					        @onclick="DeleteSelectedAsync">
+						删除配置
+					</button>
+				}
+			</div>
+
+			@if (!_vm.HasActiveEditor)
+			{
+				<div class="text-body-secondary small py-2">
+					当前尚未创建分享率配置，所有站点来源默认使用 qBittorrent 全局分享限制。点击上方「新建配置」开始创建。
+				</div>
+			}
+			else
+			{
+				<hr class="my-3"/>
+
+				<div class="mb-3">
+					<label for="share-limit-name" class="form-label">配置名称</label>
+					<input id="share-limit-name" type="text" class="form-control share-limits-name-input"
+					       maxlength="60" placeholder="例如：PT 无限做种"
+					       @bind="_vm.Draft.Name"/>
+				</div>
+
+				<div class="mb-4">
+					<span class="form-label d-block">分享限制</span>
+					<div class="form-check mb-2">
+						<input class="form-check-input" type="radio" id="share-limit-global" name="share-limit-mode"
+						       checked="@(_vm.Draft.Mode == TorrentShareLimitMode.UseGlobal)"
+						       @onchange="@(() => _vm.Draft.Mode = TorrentShareLimitMode.UseGlobal)"/>
+						<label class="form-check-label" for="share-limit-global">使用全局分享限制</label>
+					</div>
+					<div class="form-check mb-2">
+						<input class="form-check-input" type="radio" id="share-limit-unlimited" name="share-limit-mode"
+						       checked="@(_vm.Draft.Mode == TorrentShareLimitMode.Unlimited)"
+						       @onchange="@(() => _vm.Draft.Mode = TorrentShareLimitMode.Unlimited)"/>
+						<label class="form-check-label" for="share-limit-unlimited">设置为无分享限制</label>
+					</div>
+					<div class="form-check mb-2">
+						<input class="form-check-input" type="radio" id="share-limit-custom" name="share-limit-mode"
+						       checked="@(_vm.Draft.Mode == TorrentShareLimitMode.Custom)"
+						       @onchange="@(() => _vm.Draft.Mode = TorrentShareLimitMode.Custom)"/>
+						<label class="form-check-label" for="share-limit-custom">设置分享限制为</label>
+					</div>
+
+					@{
+						var customMode = _vm.Draft.Mode == TorrentShareLimitMode.Custom;
+					}
+					<div class="share-limits-custom-grid ms-4">
+						<div class="share-limits-custom-row">
+							<div class="form-check mb-0">
+								<input class="form-check-input" type="checkbox" id="share-limit-ratio-enabled"
+								       disabled="@(!customMode)"
+								       @bind="_vm.Draft.RatioLimitEnabled"/>
+								<label class="form-check-label" for="share-limit-ratio-enabled">比率</label>
+							</div>
+							<input type="number" class="form-control form-control-sm share-limits-number"
+							       min="0" step="0.01"
+							       disabled="@(!customMode || !_vm.Draft.RatioLimitEnabled)"
+							       @bind="_vm.Draft.RatioLimit"/>
+						</div>
+
+						<div class="share-limits-custom-row">
+							<div class="form-check mb-0">
+								<input class="form-check-input" type="checkbox" id="share-limit-total-enabled"
+								       disabled="@(!customMode)"
+								       @bind="_vm.Draft.SeedingTimeLimitEnabled"/>
+								<label class="form-check-label" for="share-limit-total-enabled">总分钟</label>
+							</div>
+							<input type="number" class="form-control form-control-sm share-limits-number"
+							       min="0" step="1"
+							       disabled="@(!customMode || !_vm.Draft.SeedingTimeLimitEnabled)"
+							       @bind="_vm.Draft.SeedingTimeLimitMinutes"/>
+						</div>
+
+						<div class="share-limits-custom-row">
+							<div class="form-check mb-0">
+								<input class="form-check-input" type="checkbox" id="share-limit-inactive-enabled"
+								       disabled="@(!customMode)"
+								       @bind="_vm.Draft.InactiveSeedingTimeLimitEnabled"/>
+								<label class="form-check-label" for="share-limit-inactive-enabled">不活跃分钟</label>
+							</div>
+							<input type="number" class="form-control form-control-sm share-limits-number"
+							       min="0" step="1"
+							       disabled="@(!customMode || !_vm.Draft.InactiveSeedingTimeLimitEnabled)"
+							       @bind="_vm.Draft.InactiveSeedingTimeLimitMinutes"/>
+						</div>
+					</div>
+				</div>
+
+				<div class="mb-4">
+					<span class="form-label d-block">应用分组（站点来源）</span>
+					<div class="share-limits-groups">
+						@foreach (var source in _vm.AllSiteSources)
+						{
+							var owner    = _vm.OwnerOfSiteSource(source);
+							var disabled = owner is not null;
+							var checkedValue = _vm.IsSiteSourceSelected(source);
+							<label class="share-limits-group-item @(checkedValue ? "is-selected" : null) @(disabled ? "is-claimed" : null)">
+								<input class="form-check-input mt-0" type="checkbox"
+								       checked="@checkedValue"
+								       disabled="@disabled"
+								       @onchange="e => _vm.ToggleSiteSource(source, e.Value is true)"/>
+								<span class="fw-semibold">@source</span>
+								@if (owner is not null)
+								{
+									<span class="small text-body-secondary">已归属「@owner」</span>
+								}
+							</label>
+						}
+					</div>
+					<div class="form-text">每个站点来源只能归属一个配置；未分配任何配置的分组默认沿用 qBittorrent 全局分享限制。</div>
+				</div>
+
+				<div class="d-flex flex-wrap gap-2">
+					<button type="button" class="btn btn-primary" disabled="@_vm.Saving" @onclick="SaveAsync">
+						@(_vm.Saving ? "正在保存并同步…" : "保存并全局生效")
+					</button>
+					@if (_vm.IsCreatingNew && _vm.Profiles.Count > 0)
+					{
+						<button type="button" class="btn btn-outline-secondary" disabled="@_vm.Saving"
+						        @onclick="_vm.CancelCreate">
+							取消
+						</button>
+					}
+				</div>
+			}
+		</div>
+	</div>
+
+	@if (!string.IsNullOrEmpty(_vm.StatusMessage))
+	{
+		<div class="alert @(_vm.HasError ? "alert-danger" : "alert-success") share-limits-card mt-3" role="status">
+			@_vm.StatusMessage
+		</div>
+	}
+}
+
+@code {
+	private readonly CancellationTokenSource  _cts = new();
+	private          ShareLimitsPageViewModel _vm  = null!;
+
+	private string SelectedProfileValue =>
+		_vm.IsCreatingNew
+			? "__new__"
+			: _vm.SelectedProfileId?.ToString() ?? string.Empty;
+
+	protected override void OnInitialized()
+	{
+		_vm = new ShareLimitsPageViewModel(ShareLimitStore, Logger, DownloadService);
+	}
+
+	protected override async Task OnInitializedAsync()
+	{
+		try
+		{
+			await _vm.LoadAsync(_cts.Token);
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+	}
+
+	private void OnProfileChanged(ChangeEventArgs e)
+	{
+		var raw = e.Value?.ToString();
+		if (Guid.TryParse(raw, out var id)) _vm.SelectProfile(id);
+	}
+
+	private async Task SaveAsync()
+	{
+		try
+		{
+			await _vm.SaveCurrentAsync(_cts.Token);
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+	}
+
+	private async Task DeleteSelectedAsync()
+	{
+		try
+		{
+			await _vm.DeleteSelectedAsync(_cts.Token);
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+		}
+	}
+
+	private static string FormatProfileOption(ShareLimitProfile profile) =>
+		profile.SiteSources.Count > 0
+			? $"{profile.Name}（{string.Join("、", profile.SiteSources)}）"
+			: $"{profile.Name}（未分配分组）";
+
+	public void Dispose()
+	{
+		_cts.Cancel();
+		_cts.Dispose();
+	}
+}

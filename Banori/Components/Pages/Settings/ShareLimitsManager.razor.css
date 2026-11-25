@@ -1,0 +1,60 @@
+.share-limits-card {
+    max-width: 48rem;
+}
+
+.share-limits-select {
+    width: auto;
+    min-width: 15rem;
+    max-width: 100%;
+}
+
+.share-limits-name-input {
+    max-width: 24rem;
+}
+
+.share-limits-custom-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-width: 22rem;
+}
+
+.share-limits-custom-row {
+    display: grid;
+    grid-template-columns: 7.5rem 1fr;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.share-limits-number {
+    max-width: 10rem;
+}
+
+.share-limits-groups {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.share-limits-group-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.35rem 0.65rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--bs-border-radius);
+    cursor: pointer;
+    user-select: none;
+    transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.share-limits-group-item.is-selected {
+    border-color: var(--bs-primary);
+    background-color: rgba(var(--bs-primary-rgb), 0.08);
+}
+
+.share-limits-group-item.is-claimed {
+    opacity: 0.65;
+    cursor: not-allowed;
+    background-color: var(--bs-tertiary-bg);
+}
