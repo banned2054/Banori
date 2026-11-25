@@ -801,12 +801,11 @@ public sealed class FakeFeedSourceReader : IFeedSourceReader
 /// <summary>构造确定性的最小 .torrent 字节；name 不同则 info-hash 不同，announce 可注入 tracker 供站点判定测试。</summary>
 public static class TestTorrentBytes
 {
-    public static byte[] Create(string name = "Test Anime - 01", string? announce = null)
+    public static byte[] Create(string name = "Test Anime - 01", string? announce = null,
+                                int    length = 1024,            int     pieceLength = 16384)
     {
-        const int length       = 1024;
-        const int pieceLength  = 16384;
-        var       announceText = announce ?? "http://tracker.example/announce";
-        var       pieces       = new string('0', (length + pieceLength - 1) / pieceLength * 20);
+        var announceText = announce ?? "http://tracker.example/announce";
+        var pieces       = new string('0', (length + pieceLength - 1) / pieceLength * 20);
         return Encoding.UTF8.GetBytes($"d8:announce{Encode(announceText)}"             +
                                       $"4:infod6:lengthi{length}e4:name{Encode(name)}" +
                                       $"12:piece lengthi{pieceLength}e6:pieces{Encode(pieces)}ee");

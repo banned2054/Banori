@@ -173,6 +173,40 @@ public sealed class CandidateRankingPolicyTests
     }
 
     [Fact]
+    public void Select_Independent_PerDimensionFallback_RespectsMatchedDimensionAndFirstComeFirstServed()
+    {
+        var policy = new CandidateRankingPolicy();
+
+        // 语言优先：未知组 + 简日（语言在榜）严格优于 未知组 + 繁中（语言不在榜）。
+        var unknownGroupJpSc = Candidate("UnknownA", EnumLanguage.JpSc, stableId : "guid:unknown-a-jpsc");
+        var unknownGroupTc   = Candidate("UnknownB", EnumLanguage.Tc, stableId : "guid:unknown-b-tc");
+        var langFirst        = policy.Select([unknownGroupTc, unknownGroupJpSc],
+                                             IndependentConfig(SelectionDimensionOrder.LanguageFirst));
+        Assert.Equal(unknownGroupJpSc.FeedItemId, langFirst.Winner!.FeedItemId);
+
+        // 语言优先且语言同为简日时：在榜字幕组 > 不在榜字幕组；都不在榜则先到先得（保留现任）。
+        var listedGroupJpSc = Candidate("ANi", EnumLanguage.JpSc, stableId : "guid:ani-jpsc");
+        var listedWins = policy.Select([unknownGroupJpSc, listedGroupJpSc],
+                                       IndependentConfig(SelectionDimensionOrder.LanguageFirst),
+                                       unknownGroupJpSc.FeedItemId);
+        Assert.Equal(listedGroupJpSc.FeedItemId, listedWins.Winner!.FeedItemId);
+
+        var otherUnknownJpScV2 = Candidate("UnknownC", EnumLanguage.JpSc, version : 2,
+                                           stableId : "guid:unknown-c-jpsc-v2");
+        var bothUnlistedKeepIncumbent = policy.Select([otherUnknownJpScV2, unknownGroupJpSc],
+                                                      IndependentConfig(SelectionDimensionOrder.LanguageFirst),
+                                                      unknownGroupJpSc.FeedItemId);
+        // 都不在榜且跨组：版本不跨组生效，保留现任（先到先得）。
+        Assert.Equal(unknownGroupJpSc.FeedItemId, bothUnlistedKeepIncumbent.Winner!.FeedItemId);
+
+        // 字幕组优先：在榜字幕组 + 不在榜语言 严格优于 不在榜字幕组 + 在榜语言。
+        var listedGroupUnknownLang = Candidate("ANi", EnumLanguage.Tc, stableId : "guid:ani-tc");
+        var groupFirst = policy.Select([unknownGroupJpSc, listedGroupUnknownLang],
+                                       IndependentConfig(SelectionDimensionOrder.GroupFirst));
+        Assert.Equal(listedGroupUnknownLang.FeedItemId, groupFirst.Winner!.FeedItemId);
+    }
+
+    [Fact]
     public void Select_SamePriority_KeepsCurrentWinner()
     {
         var existing = Candidate("LoliHouse", EnumLanguage.JpSc, stableId : "guid:existing",
@@ -342,11 +376,11 @@ public sealed class CandidateRankingPolicyTests
         var byGroup = policy.Select([zuluV9, alphaV1], IndependentConfig());
         Assert.Equal("Zulu", byGroup.Winner!.Group);
 
-        // 跨语言同理：Sc 单集不得靠语言枚举名字典序压过同组 Tc 合集。
+        // 跨语言同理（同处于未命中或通配同级层内）：单集不得靠语言枚举名字典序压过同组其他语言合集。
         var scV1 = Candidate("Sakurato", EnumLanguage.Sc, stableId : "guid:sc-v1", packageVideoFileCount : 1);
         var tcV9 = Candidate("Sakurato", EnumLanguage.Tc, 9, stableId : "guid:tc-v9",
                              packageVideoFileCount : 9);
-        var byLanguage = policy.Select([tcV9, scV1], IndependentConfig());
+        var byLanguage = policy.Select([tcV9, scV1], SameTierConfig());
         Assert.Equal(EnumLanguage.Tc, byLanguage.Winner!.Language);
 
         // 版本仍只在同组同语言的分区内比较：Zulu 分区内 v9 小包压过 v2 大包，不与 Alpha 的分区混排。

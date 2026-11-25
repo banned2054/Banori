@@ -394,7 +394,9 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(SourceScopes.Other, SourceScopes.FromSiteSource(upload.SiteSource));
         Assert.Equal(SourceScopes.Unknown, SourceScopes.FromFeedHost("self.example.org"));
 
-        harness.FeedReader.Items.Add(RssItem("unknown-host", NekoTitle("简日双语"),
+        var rssTitle = NekoTitle("简日双语").Replace(".mp4", ".mkv", StringComparison.Ordinal);
+        harness.TorrentNames["unknown-host"] = rssTitle;
+        harness.FeedReader.Items.Add(RssItem("unknown-host", rssTitle,
                                              "https://self.example.org/torrents/unknown-host.torrent"));
         var result = await harness.CreateFromRssFeedAsync("https://self.example.org/rss", subjectId : 42);
 
@@ -2924,9 +2926,11 @@ public sealed partial class DownloadServiceTests
         var firstId =
             await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语"),
                                                                     "https://tracker.byr.pt/announce.php"));
+        // 同组同语言同版本跨源共存，但文件大小不同不触发复用，用于验证归档目标路径冲突保护。
         var secondId =
-            await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("繁日双语"),
-                                                                    "https://tracker-campus.tjupt.org/announce.php"));
+            await harness.CreateUploadAsync(TestTorrentBytes.Create(NekoTitle("简日双语"),
+                                                                    "https://tracker-campus.tjupt.org/announce.php",
+                                                                    length : 2048));
         var first  = await harness.GetTaskAsync(firstId);
         var second = await harness.GetTaskAsync(secondId);
         await harness.ReconcileAsync();

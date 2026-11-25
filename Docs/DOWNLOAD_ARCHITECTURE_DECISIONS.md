@@ -10,7 +10,7 @@
 |---|---|
 | 来源作用域 `SourceScope` | 竞争键域：已知来源小写标签、`(unknown)`（未知 RSS）、`other`（未知上传）、`(legacy)`（迁移旧行） |
 | 展示标签 `SiteSource` | 任务上的站点标签，用于展示、命名 `{source}` 与 qB tag；不等于竞争键 |
-| 临时目录 | 替换暂存根 `.tasks/{taskId}`；只有存在同来源低优先级待替换时才使用 |
+| 临时目录 | 替换暂存根 `.tasks/{taskId}`；存在待替换旧版（含跨来源被顶替的旧版）时使用 |
 | 复用校验 | 停止态受控映射 + recheck 证据（请求前基线、pieces 掉落、完成见证）；路径+大小只是候选线索 |
 | `RecheckApplied` | 基线 `pieces_have>0` 且请求后掉 0 → 本轮 recheck 确已作用于该 hash 的最可靠证据 |
 | 现任/待完成 | `EpisodeVersion` 的 `IncumbentVideoFileId` 与 `PendingVideoFileId`，只在同一 `SourceScope` 行内读写 |
@@ -45,7 +45,7 @@
 
 **影响**
 
-- 所有竞争读点（登记、完成切换、复用提前切换、迁让、职责/退休）只读写同源行；跨来源旧行被隔离到 `(legacy)`，新来源不会继承其 Pending/Incumbent。
+- **跨来源全局择优与同组同语言同版本共存（2026-11-25 更新）**：`EpisodeVersion` 保持 `(SubjectId, Episode, SourceScope)` 唯一键不变，但登记裁决不再跳过异源占用者——仅当跨来源双方**同字幕组（忽略大小写且非空）、同语言、同修订版本且同初始正片数**时允许共存（各自维护自己的 `SourceScope` 行并走跨源复用）；其余跨源情况按全局内容规则裁决（独立模式采用分维兜底：每维内在榜按序 > 不在榜，两维均平级则先到先得；版本号只在同组同语言内有效，跨组无效），胜出方把 `PendingVideoFileId` 写入被顶替的异源旧版行，完成或复用证实后统一迁让、切换并退场。
 - 旧任务按自身 `SiteSource` 派生作用域（为空时派生 `(unknown)`），读不到遗留 `(legacy)` 行的 Pending/Incumbent，完成时会另建新行；无法证明来源的槽保留 `(legacy)` 并报告，是否为终态待业务 U4 定案。
 - MySQL 实机升级、真实旧库的回填分布仍未验证。
 

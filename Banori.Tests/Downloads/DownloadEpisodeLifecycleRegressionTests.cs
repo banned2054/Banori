@@ -1,3 +1,6 @@
+using Banned.AniParser.Models.Enums;
+using Banori.Core.Rules.Selection;
+using Banori.Core.Torrents;
 using Banori.Data;
 using Banori.Features.Downloads;
 using Microsoft.EntityFrameworkCore;
@@ -9,7 +12,7 @@ public sealed partial class DownloadServiceTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task EpisodeVersionGuard_SameSourceVersionSwitches_CrossSourceDoesNot(bool crossSource)
+    public async Task EpisodeVersionGuard_SameGroupSameLanguageVersionUpgrade_SwitchesAcrossSources(bool crossSource)
     {
         using var h = await CreateHarnessAsync();
         await h.SaveSelectionRulesAsync(NekoRules());
@@ -26,23 +29,20 @@ public sealed partial class DownloadServiceTests
         Assert.NotNull(initial);
         Assert.Equal(oldFile, initial.IncumbentVideoFileId);
 
-        // v3 挑战者只有来源不同：同源走版本对决，跨源（u2）互不竞争。
+        // 同组同语言 v3 挑战者：无论同源还是跨源（u2）都构成版本升级，挂 Pending 并在完成后顶替旧版。
         var v3       = NekoTitle("简日双语", episode : 12).Replace("[12]", "[12v3]");
         var announce = crossSource ? "https://daydream.dmhy.best/announce" : "https://tracker.byr.pt/announce.php";
         var nextId   = await h.CreateUploadAsync(TestTorrentBytes.Create(v3, announce));
         var nextFile = await FindAnimeFileIdAsync(h, nextId);
 
+        var pending = await FindSourceEpisodeVersionAsync(h, 12, "byrbt");
+        Assert.Equal(oldFile, pending!.IncumbentVideoFileId);
+        Assert.Equal(nextFile, pending.PendingVideoFileId);
         if (crossSource)
         {
-            // 跨源不写 byrbt 的 Pending，也不登记 u2 的现任；旧任务不被跨源版本守卫顶替。
-            Assert.Null((await FindSourceEpisodeVersionAsync(h, 12, "byrbt"))!.PendingVideoFileId);
-            Assert.Null(await FindSourceEpisodeVersionAsync(h, 12, "u2"));
-        }
-        else
-        {
-            var pending = await FindSourceEpisodeVersionAsync(h, 12, "byrbt");
-            Assert.Equal(oldFile, pending!.IncumbentVideoFileId);
-            Assert.Equal(nextFile, pending.PendingVideoFileId);
+            var u2Pending = await FindSourceEpisodeVersionAsync(h, 12, "u2");
+            Assert.NotNull(u2Pending);
+            Assert.Equal(nextFile, u2Pending.PendingVideoFileId);
         }
 
         await h.ReconcileAsync();
@@ -51,63 +51,52 @@ public sealed partial class DownloadServiceTests
 
         Assert.Equal(DownloadTaskStatus.Completed, (await h.GetTaskAsync(nextId)).Status);
         var switched = await FindSourceEpisodeVersionAsync(h, 12, "byrbt");
+        Assert.Equal(nextFile, switched!.IncumbentVideoFileId);
+        Assert.Equal(oldFile, switched.SupersededVideoFileId);
+        Assert.Null(switched.PendingVideoFileId);
+        Assert.Equal(DownloadTaskStatus.Replaced, (await h.GetTaskAsync(oldId)).Status);
         if (crossSource)
         {
-            // 跨源完成只写自己的 u2 行：byrbt 现任、任务状态与承接来源都不受影响。
-            Assert.Equal(oldFile, switched!.IncumbentVideoFileId);
-            Assert.Null(switched.PendingVideoFileId);
-            Assert.Null(switched.SupersededVideoFileId);
-            Assert.Equal(DownloadTaskStatus.Completed, (await h.GetTaskAsync(oldId)).Status);
             var u2Row = await FindSourceEpisodeVersionAsync(h, 12, "u2");
             Assert.NotNull(u2Row);
             Assert.Equal(nextFile, u2Row.IncumbentVideoFileId);
-            Assert.Null(u2Row.SupersededVideoFileId);
-        }
-        else
-        {
-            // 同源：登记在案的待完成优胜完成后切换现任，旧现任保留为承接来源，旧任务职责耗尽退场。
-            Assert.Equal(nextFile, switched!.IncumbentVideoFileId);
-            Assert.Equal(oldFile, switched.SupersededVideoFileId);
-            Assert.Null(switched.PendingVideoFileId);
-            Assert.Equal(DownloadTaskStatus.Replaced, (await h.GetTaskAsync(oldId)).Status);
+            Assert.Null(u2Row.PendingVideoFileId);
         }
     }
 
     [Fact]
-    public async Task EpisodeVersionGuard_TwoSourcesCompleteAndSwitchIndependently()
+    public async Task EpisodeVersionGuard_TwoSourcesSameGroupLanguageVersion_CoexistAndUpgradeTogether()
     {
         using var h = await CreateHarnessAsync();
         await h.SaveSelectionRulesAsync(NekoRules());
 
-        async Task<Guid> CompleteAsync(string name, string announce)
+        async Task<Guid> CompleteAsync(byte[] torrentBytes)
         {
-            var taskId = await h.CreateUploadAsync(TestTorrentBytes.Create(name, announce));
+            var taskId = await h.CreateUploadAsync(torrentBytes);
             await h.ReconcileAsync();
             CompleteTorrent(h, (await h.GetTaskAsync(taskId)).InfoHash);
             await h.ReconcileAsync();
             return taskId;
         }
 
-        // 两个来源各有一份第 12 集任务并完成：各自成行，互不覆盖。
-        // 文件名语言不同保证两个任务的 info-hash 不同；命名模板只取标题与集数，归档目标仍同集。
-        var byrbtV1 = await CompleteAsync(NekoTitle("简日双语", episode : 12),
-                                          "https://tracker.byr.pt/announce.php");
-        var u2V1 = await CompleteAsync(NekoTitle("繁日双语", episode : 12),
-                                       "https://daydream.dmhy.best/announce");
+        // 两个来源同组同语言同版本（不同封装/info-hash）允许共存并各自成行。
+        var byrbtV1 = await CompleteAsync(TestTorrentBytes.Create(NekoTitle("简日双语", episode : 12),
+                                                                  "https://tracker.byr.pt/announce.php"));
+        var u2V1 = await CompleteAsync(TestTorrentBytes.Create(
+            NekoTitle("简日双语", episode : 12).Replace(".mp4", ".mkv", StringComparison.Ordinal),
+            "https://daydream.dmhy.best/announce"));
         var byrbtV1File = await FindAnimeFileIdAsync(h, byrbtV1);
         var u2V1File    = await FindAnimeFileIdAsync(h, u2V1);
         Assert.Equal(byrbtV1File, (await FindSourceEpisodeVersionAsync(h, 12, "byrbt"))!.IncumbentVideoFileId);
         Assert.Equal(u2V1File, (await FindSourceEpisodeVersionAsync(h, 12, "u2"))!.IncumbentVideoFileId);
+        Assert.Equal(DownloadTaskStatus.Completed, (await h.GetTaskAsync(byrbtV1)).Status);
+        Assert.Equal(DownloadTaskStatus.Completed, (await h.GetTaskAsync(u2V1)).Status);
 
-        // 两个来源再各登记一份 v2 并完成：同源版本切换只改自己的行。
+        // 新来同组同语言 v2：同时顶替 byrbt 与 u2 的旧 v1，完成后两者一并退场。
         var byrbtV2 = await h.CreateUploadAsync(TestTorrentBytes.Create(
             NekoTitle("简日双语", episode : 12).Replace("[12]", "[12v2]"),
             "https://tracker.byr.pt/announce.php"));
-        var u2V2 = await h.CreateUploadAsync(TestTorrentBytes.Create(
-            NekoTitle("繁日双语", episode : 12).Replace("[12]", "[12v2]"),
-            "https://daydream.dmhy.best/announce"));
         var byrbtV2File = await FindAnimeFileIdAsync(h, byrbtV2);
-        var u2V2File    = await FindAnimeFileIdAsync(h, u2V2);
         await h.ReconcileAsync();
 
         CompleteTorrent(h, (await h.GetTaskAsync(byrbtV2)).InfoHash);
@@ -116,24 +105,13 @@ public sealed partial class DownloadServiceTests
         Assert.Equal(byrbtV2File, byrbtSwitched!.IncumbentVideoFileId);
         Assert.Equal(byrbtV1File, byrbtSwitched.SupersededVideoFileId);
         Assert.Null(byrbtSwitched.PendingVideoFileId);
-        var u2Pending = await FindSourceEpisodeVersionAsync(h, 12, "u2");
-        Assert.Equal(u2V1File, u2Pending!.IncumbentVideoFileId);
-        Assert.Equal(u2V2File, u2Pending.PendingVideoFileId);
-        Assert.Null(u2Pending.SupersededVideoFileId);
-
-        CompleteTorrent(h, (await h.GetTaskAsync(u2V2)).InfoHash);
-        await h.ReconcileAsync();
         var u2Switched = await FindSourceEpisodeVersionAsync(h, 12, "u2");
-        Assert.Equal(u2V2File, u2Switched!.IncumbentVideoFileId);
+        Assert.Equal(byrbtV2File, u2Switched!.IncumbentVideoFileId);
         Assert.Equal(u2V1File, u2Switched.SupersededVideoFileId);
         Assert.Null(u2Switched.PendingVideoFileId);
-        var byrbtFinal = await FindSourceEpisodeVersionAsync(h, 12, "byrbt");
-        Assert.Equal(byrbtV2File, byrbtFinal!.IncumbentVideoFileId);
-        Assert.Equal(byrbtV1File, byrbtFinal.SupersededVideoFileId);
         Assert.Equal(DownloadTaskStatus.Replaced, (await h.GetTaskAsync(byrbtV1)).Status);
         Assert.Equal(DownloadTaskStatus.Replaced, (await h.GetTaskAsync(u2V1)).Status);
         Assert.Equal(DownloadTaskStatus.Completed, (await h.GetTaskAsync(byrbtV2)).Status);
-        Assert.Equal(DownloadTaskStatus.Completed, (await h.GetTaskAsync(u2V2)).Status);
     }
 
     [Fact]
@@ -142,6 +120,7 @@ public sealed partial class DownloadServiceTests
         using var h = await CreateHarnessAsync();
         await h.SaveSelectionRulesAsync(NekoRules());
 
+        // 同组同语言同版本跨源共存，删除其中一源任务不误清另一源的现任与职责。
         var byrbtId = await h.CreateUploadAsync(TestTorrentBytes.Create(
             NekoTitle("简日双语", episode : 12), "https://tracker.byr.pt/announce.php"));
         await h.ReconcileAsync();
@@ -149,7 +128,8 @@ public sealed partial class DownloadServiceTests
         await h.ReconcileAsync();
 
         var u2Id = await h.CreateUploadAsync(TestTorrentBytes.Create(
-            NekoTitle("繁日双语", episode : 12), "https://daydream.dmhy.best/announce"));
+            NekoTitle("简日双语", episode : 12).Replace(".mp4", ".mkv", StringComparison.Ordinal),
+            "https://daydream.dmhy.best/announce"));
         await h.ReconcileAsync();
         CompleteTorrent(h, (await h.GetTaskAsync(u2Id)).InfoHash);
         await h.ReconcileAsync();
@@ -173,13 +153,13 @@ public sealed partial class DownloadServiceTests
     }
 
     [Fact]
-    public async Task EpisodeVersionGuard_ReuseVerificationEarlySwitch_OnlySameSourcePending()
+    public async Task EpisodeVersionGuard_ReuseVerificationEarlySwitch_SwitchesRegisteredCrossSourcePending()
     {
         using var h = await CreateHarnessAsync(enableFileArchive : true);
         await h.SaveSelectionRulesAsync(NekoRules());
         await h.SaveFileNamingTemplateAsync("{title} E{episode}");
 
-        // byrbt 第 12 集完成并归档到正式目标；u2 新包同名同大小，构成跨源复用候选。
+        // byrbt 第 12 集单集完成并归档到正式目标；u2 合集包（E12+E13）跨源胜出并复用 E12。
         var byrbtId = await h.CreateUploadAsync(TestTorrentBytes.Create(
             NekoTitle("简日双语", episode : 12), "https://tracker.byr.pt/announce.php"));
         await h.ReconcileAsync();
@@ -193,20 +173,9 @@ public sealed partial class DownloadServiceTests
         var u2File = await FindAnimeFileIdAsync(h, u2Id);
         Assert.NotNull(u2File);
 
-        // 模拟旧单行语义可能留下的跨源污染：byrbt 行的 Pending 指向本任务文件；
-        // 同时给 u2 自己的登记行一个待完成优胜。提前切换应只处理同源（u2）行。
-        await using (var db = await h.CreateDbContextAsync())
-        {
-            var byrbtRow = await db.EpisodeVersions.SingleAsync(row => row.SubjectId   == 42 &&
-                                                                       row.Episode     == 12 &&
-                                                                       row.SourceScope == "byrbt");
-            byrbtRow.PendingVideoFileId = u2File;
-            db.EpisodeVersions.Add(new EpisodeVersion
-            {
-                SubjectId = 42, Episode = 12, SourceScope = "u2", PendingVideoFileId = u2File
-            });
-            await db.SaveChangesAsync();
-        }
+        // 登记期已自动把 u2File 挂为 byrbt 与 u2 两行的 PendingVideoFileId。
+        Assert.Equal(u2File, (await FindSourceEpisodeVersionAsync(h, 12, "byrbt"))!.PendingVideoFileId);
+        Assert.Equal(u2File, (await FindSourceEpisodeVersionAsync(h, 12, "u2"))!.PendingVideoFileId);
 
         // 复用校验链：候选根停止添加 → 受控映射改名 onto byrbt 成片 → recheck 证实同内容。
         h.Store.RecheckBehavior = FakeRecheckBehavior.EnterChecking;
@@ -218,19 +187,115 @@ public sealed partial class DownloadServiceTests
                                           .Select(file => file with { Progress = file.Index == 0 ? 1.0 : 0.0 })
                                           .ToList();
         h.Store.FinishRecheck(u2Hash);
-        await h.ReconcileAsync(); // 结论轮：候选通过 → 只提前切换 u2 行。
+        await h.ReconcileAsync(); // 结论轮：候选通过 → 提前切换 u2 与被顶替的 byrbt 行，旧单集退场。
 
         var switched = await FindSourceEpisodeVersionAsync(h, 12, "u2");
         Assert.NotNull(switched);
         Assert.Equal(u2File, switched.IncumbentVideoFileId);
         Assert.Null(switched.PendingVideoFileId);
-        var untouched = await FindSourceEpisodeVersionAsync(h, 12, "byrbt");
-        Assert.NotNull(untouched);
-        Assert.Equal(byrbtFile, untouched.IncumbentVideoFileId);
-        Assert.Equal(u2File, untouched.PendingVideoFileId);
-        Assert.Null(untouched.SupersededVideoFileId);
+        var retired = await FindSourceEpisodeVersionAsync(h, 12, "byrbt");
+        Assert.NotNull(retired);
+        Assert.Equal(u2File, retired.IncumbentVideoFileId);
+        Assert.Null(retired.PendingVideoFileId);
+        Assert.Equal(byrbtFile, retired.SupersededVideoFileId);
+        Assert.Equal(DownloadTaskStatus.Replaced, (await h.GetTaskAsync(byrbtId)).Status);
         // 第 13 集尚未下载完：提前切换不是整包完成，任务仍在下载。
         Assert.Equal(DownloadTaskStatus.Downloading, (await h.GetTaskAsync(u2Id)).Status);
+    }
+
+    [Fact]
+    public async Task CrossSourcePriority_OtherLowerGroupReplacedByMikanHigherGroup_AndReverseRejected()
+    {
+        using var h = await CreateHarnessAsync(enableFileArchive : true);
+        await h.SaveSelectionRulesAsync(new SelectionRuleConfig
+        {
+            Mode               = SelectionMode.Independent,
+            GroupOrder         = ["喵萌奶茶屋", "ANi"],
+            LanguageOrder      = [EnumLanguage.JpSc, EnumLanguage.Sc],
+            DimensionOrder     = SelectionDimensionOrder.GroupFirst,
+            CombinedEntries    = [],
+            LanguageMatch      = LanguageMatchMode.Exact,
+            Unmatched          = UnmatchedPolicy.NeedsReview,
+            AllowedResolutions = [EnumResolution.R1080P]
+        });
+
+        // 1. other 先上传低优字幕组（ANi）并完成。
+        var aniTitle = "[ANi] 测试作品 - 12 [1080P][Baha][WEB-DL][AAC AVC][CHT].mp4";
+        var otherId  = await h.CreateUploadAsync(TestTorrentBytes.Create(aniTitle), subjectId : 42);
+        await h.ReconcileAsync();
+        CompleteTorrent(h, (await h.GetTaskAsync(otherId)).InfoHash);
+        await h.ReconcileAsync();
+        Assert.Equal(DownloadTaskStatus.Completed, (await h.GetTaskAsync(otherId)).Status);
+
+        // 2. mikan 来了高优字幕组（喵萌奶茶屋）：跨源顶替 other，挂 Pending、走临时目录并在完成后退掉 other。
+        var nekoTitle = NekoTitle("简日双语", episode : 12);
+        h.TorrentNames["mikan-neko-12"] = nekoTitle;
+        h.FeedReader.Items.Add(RssItem("mikan-neko-12", nekoTitle, "https://mikanani.me/Download/mikan-neko-12.torrent"));
+        var rssResult = await h.CreateFromRssFeedAsync("https://mikanani.me/RSS/Bangumi", subjectId : 42);
+        Assert.Equal(1, rssResult.CreatedCount);
+        var mikanId   = rssResult.Items.Single().TaskId!.Value;
+        var mikanFile = await FindAnimeFileIdAsync(h, mikanId);
+
+        Assert.Equal(mikanFile, (await FindSourceEpisodeVersionAsync(h, 12, SourceScopes.Other))!.PendingVideoFileId);
+        await h.ReconcileAsync();
+        Assert.Contains(".tasks/", (await h.GetTaskAsync(mikanId)).SavePath, StringComparison.Ordinal);
+
+        CompleteTorrent(h, (await h.GetTaskAsync(mikanId)).InfoHash);
+        await h.ReconcileAsync();
+        Assert.Equal(DownloadTaskStatus.Completed, (await h.GetTaskAsync(mikanId)).Status);
+        Assert.Equal(DownloadTaskStatus.Replaced, (await h.GetTaskAsync(otherId)).Status);
+
+        // 3. 反向：已有高优 mikan 时，再上传低优 other（ANi）应直接落选拒绝。
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.CreateUploadAsync(TestTorrentBytes.Create(aniTitle, length : 2048), subjectId : 42));
+    }
+
+    [Fact]
+    public async Task CrossSourcePriority_UnlistedOther_ReplacedByListedMikan_AndCrossGroupVersionIgnored()
+    {
+        using var h = await CreateHarnessAsync();
+        await h.SaveSelectionRulesAsync(new SelectionRuleConfig
+        {
+            Mode               = SelectionMode.Independent,
+            GroupOrder         = ["ANi"],
+            LanguageOrder      = [EnumLanguage.JpSc],
+            DimensionOrder     = SelectionDimensionOrder.GroupFirst,
+            CombinedEntries    = [],
+            LanguageMatch      = LanguageMatchMode.Exact,
+            Unmatched          = UnmatchedPolicy.NeedsReview,
+            AllowedResolutions = [EnumResolution.R1080P]
+        });
+
+        // 1. 手动上传未在榜字幕组 A（喵萌奶茶屋 v1）作为 other 现任。
+        var unlistedA = NekoTitle("简日双语", episode : 12);
+        var aId       = await h.CreateUploadAsync(TestTorrentBytes.Create(unlistedA), subjectId : 42);
+        var aTask     = await h.GetTaskAsync(aId);
+        Assert.Equal(12m, aTask.Episode);
+        await h.ReconcileAsync();
+        CompleteTorrent(h, aTask.InfoHash);
+        await h.ReconcileAsync();
+
+        // 2. 跨来源（u2）来了未在榜字幕组 B（漫猫字幕组 v2）：版本只在同组同语言有效，跨组无效且都不在榜 → 先到先得，B 落选。
+        var unlistedBV2 = "[Comicat][test anime][12v2][1080p][简日双语][mp4].mp4";
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.CreateUploadAsync(TestTorrentBytes.Create(unlistedBV2, "https://daydream.dmhy.best/announce"),
+                                subjectId : 42));
+        Assert.Equal(DownloadTaskStatus.Completed, (await h.GetTaskAsync(aId)).Status);
+
+        // 3. 即使规则是 NeedsReview，mikan 来了在榜字幕组（ANi）仍应跨源顶替未在榜的 other。
+        var listedTitle = "[ANi] 测试作品 - 12 [1080P][Baha][WEB-DL][AAC AVC][CHT].mp4";
+        h.TorrentNames["mikan-listed-12"] = listedTitle;
+        h.FeedReader.Items.Add(RssItem("mikan-listed-12", listedTitle,
+                                       "https://mikanani.me/Download/mikan-listed-12.torrent"));
+        var rssResult = await h.CreateFromRssFeedAsync("https://mikanani.me/RSS/Bangumi", subjectId : 42);
+        Assert.Equal(1, rssResult.CreatedCount);
+        var mikanId = rssResult.Items.Single().TaskId!.Value;
+        await h.ReconcileAsync();
+        CompleteTorrent(h, (await h.GetTaskAsync(mikanId)).InfoHash);
+        await h.ReconcileAsync();
+
+        Assert.Equal(DownloadTaskStatus.Completed, (await h.GetTaskAsync(mikanId)).Status);
+        Assert.Equal(DownloadTaskStatus.Replaced, (await h.GetTaskAsync(aId)).Status);
     }
 
     [Fact]

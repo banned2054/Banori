@@ -159,18 +159,33 @@ public sealed class CandidateRankingPolicy
         var groupRank    = FindGroupRank(candidate.Group, config);
         var languageRank = FindLanguageRank(candidate.Language, config);
 
-        if (groupRank is null && languageRank is null)
-            return DescribeUnmatched(config, "字幕组与语言均未列入规则");
+        if (groupRank is null || languageRank is null)
+        {
+            var detail = (groupRank, languageRank) switch
+            {
+                (null, null) => "字幕组与语言均未列入规则",
+                (null, _)    => $"字幕组“{candidate.Group}”未列入规则",
+                _            => $"语言 {candidate.Language} 未列入规则"
+            };
+            if (config.Unmatched == UnmatchedPolicy.NeedsReview)
+                return DescribeUnmatched(config, detail);
 
-        if (groupRank is null)
-            return DescribeUnmatched(config, $"字幕组“{candidate.Group}”未列入规则");
+            var stride        = Math.Max(1000, Math.Max(config.GroupOrder.Count, config.LanguageOrder.Count) + 2);
+            var unmatchedRank = stride - 1;
+            var effectiveGroup    = groupRank    ?? unmatchedRank;
+            var effectiveLanguage = languageRank ?? unmatchedRank;
+            var fallbackPriority = config.DimensionOrder == SelectionDimensionOrder.GroupFirst
+                ? effectiveGroup    * stride + effectiveLanguage
+                : effectiveLanguage * stride + effectiveGroup;
+            return (fallbackPriority,
+                    $"{detail}，按分维兜底顺序参与竞争（规则版本 {config.Version}）。",
+                    null);
+        }
 
-        if (languageRank is null)
-            return DescribeUnmatched(config, $"语言 {candidate.Language} 未列入规则");
-
+        var matchedStride = Math.Max(1000, Math.Max(config.GroupOrder.Count, config.LanguageOrder.Count) + 2);
         var priority = config.DimensionOrder == SelectionDimensionOrder.GroupFirst
-            ? groupRank.Value    * 1000 + languageRank.Value
-            : languageRank.Value * 1000 + groupRank.Value;
+            ? groupRank.Value    * matchedStride + languageRank.Value
+            : languageRank.Value * matchedStride + groupRank.Value;
         var basis =
             $"{(config.DimensionOrder == SelectionDimensionOrder.GroupFirst ? "先字幕组" : "先语言")}" +
             $"：字幕组序 {groupRank + 1}（{candidate.Group}），语言序 {languageRank + 1}（{candidate.Language}），修订 v{candidate.Version}";

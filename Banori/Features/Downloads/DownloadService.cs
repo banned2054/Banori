@@ -1297,7 +1297,7 @@ public sealed partial class DownloadService(
 
         var fileIds = videos.Select(file => file.Id).ToHashSet();
         var rows = await db.EpisodeVersions
-                           .Where(row => row.SubjectId == subjectId && row.SourceScope == sourceScope)
+                           .Where(row => row.SubjectId == subjectId)
                            .ToListAsync(cancellationToken);
         var incumbentFileIds = rows.Where(row => row.IncumbentVideoFileId is not null)
                                    .Select(row => row.IncumbentVideoFileId!.Value)
@@ -1310,7 +1310,8 @@ public sealed partial class DownloadService(
         var incumbentGuards =
             new Dictionary<Guid, (int Version, DownloadTaskStatus Status, Guid? ReplacedByTaskId,
                 string? Group, EnumLanguage? Language)>();
-        foreach (var row in rows.Where(row => row.IncumbentVideoFileId is not null))
+        foreach (var row in rows.Where(row => row.SourceScope          == sourceScope &&
+                                              row.IncumbentVideoFileId is not null))
         {
             var fileId = row.IncumbentVideoFileId!.Value;
             var owner  = incumbentOwners.FirstOrDefault(candidate => candidate.Files.Any(file => file.Id == fileId));
@@ -1325,7 +1326,8 @@ public sealed partial class DownloadService(
         var retiredOwnerIds = new List<Guid>();
         foreach (var (episode, video) in byEpisode)
         {
-            var row = rows.FirstOrDefault(row => row.Episode == episode);
+            var row = rows.FirstOrDefault(item => item.Episode == episode && item.SourceScope == sourceScope);
+            var switchOwnRow = true;
             if (row is null)
             {
                 row = new EpisodeVersion { SubjectId = subjectId, Episode = episode, SourceScope = sourceScope };
@@ -1348,22 +1350,46 @@ public sealed partial class DownloadService(
                                                                          task, video, episode, taskFiles),
                                                                      guard.Group, guard.Language,
                                                                      group, language))
-                    continue;
+                    switchOwnRow = false;
             }
 
-            if (row.IncumbentVideoFileId is { } previousIncumbent && previousIncumbent != video.Id)
+            if (switchOwnRow)
             {
-                row.SupersededVideoFileId = previousIncumbent;
-                var previousOwner = incumbentOwners.FirstOrDefault(owner =>
-                                                                       owner.Files.Any(file => file.Id ==
-                                                                           previousIncumbent));
-                if (previousOwner is not null) retiredOwnerIds.Add(previousOwner.Id);
+                if (row.IncumbentVideoFileId is { } previousIncumbent && previousIncumbent != video.Id)
+                {
+                    row.SupersededVideoFileId = previousIncumbent;
+                    var previousOwner = incumbentOwners.FirstOrDefault(owner =>
+                                                                           owner.Files.Any(file => file.Id ==
+                                                                               previousIncumbent));
+                    if (previousOwner is not null) retiredOwnerIds.Add(previousOwner.Id);
+                }
+
+                row.IncumbentVideoFileId = video.Id;
+                if (row.PendingVideoFileId is { } ownPending && fileIds.Contains(ownPending))
+                    row.PendingVideoFileId = null;
+                row.UpdatedAtUtc = timeProvider.GetUtcNow();
             }
 
-            row.IncumbentVideoFileId = video.Id;
-            if (row.PendingVideoFileId is { } ownPending && fileIds.Contains(ownPending))
-                row.PendingVideoFileId = null;
-            row.UpdatedAtUtc = timeProvider.GetUtcNow();
+            // 跨来源顶替切换：只切换登记期明确挂了本任务 PendingVideoFileId 的异源旧版行，
+            // 未挂 Pending 的同组同语言同版本跨源共存行保持不动。
+            foreach (var crossRow in rows.Where(item => item.Episode            == episode    &&
+                                                        item.SourceScope        != sourceScope &&
+                                                        item.PendingVideoFileId is { } pendingId &&
+                                                        fileIds.Contains(pendingId)))
+            {
+                if (crossRow.IncumbentVideoFileId is { } previousCross && previousCross != video.Id)
+                {
+                    crossRow.SupersededVideoFileId = previousCross;
+                    var previousOwner = incumbentOwners.FirstOrDefault(owner =>
+                                                                           owner.Files.Any(file => file.Id ==
+                                                                               previousCross));
+                    if (previousOwner is not null) retiredOwnerIds.Add(previousOwner.Id);
+                }
+
+                crossRow.IncumbentVideoFileId = video.Id;
+                crossRow.PendingVideoFileId   = null;
+                crossRow.UpdatedAtUtc         = timeProvider.GetUtcNow();
+            }
         }
 
         // 冗余退出评估：被顶替的旧现任职责可能就此全部耗尽——已完成旧任务不再豁免（设计
@@ -3198,8 +3224,7 @@ public sealed partial class DownloadService(
             var retiredOwnerIds = new List<Guid>();
             if (tracked.SubjectId is { } verificationSubjectId)
             {
-                // 复用校验只切换本任务来源登记的待完成优胜；其他来源的 Pending 与现任不参与。
-                var sourceScope = SourceScopes.FromSiteSource(tracked.SiteSource);
+                // 复用校验只切换登记期明确挂了本任务 PendingVideoFileId 的行（含跨源升级旧版行）。
                 var verifiedFileIds = tracked.Files
                                              .Where(file => file.VerificationOutcome ==
                                                             DownloadFileVerificationOutcomes.ReusedVerified)
@@ -3207,7 +3232,6 @@ public sealed partial class DownloadService(
                                              .ToHashSet();
                 var pendingRows = await db.EpisodeVersions
                                           .Where(row => row.SubjectId          == verificationSubjectId &&
-                                                        row.SourceScope        == sourceScope           &&
                                                         row.PendingVideoFileId != null)
                                           .ToListAsync(ct);
                 var previousIncumbents = new List<Guid>();

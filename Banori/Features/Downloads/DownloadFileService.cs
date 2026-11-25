@@ -843,11 +843,10 @@ public sealed class DownloadFileService(
 
         if (myVideoIds.Count > 0 && task.SubjectId is { } subjectId)
         {
-            // 只把本任务来源的 Pending 对应现任列入迁让对象；跨来源的登记行互不顶替。
-            var sourceScope = SourceScopes.FromSiteSource(task.SiteSource);
+            // 按本任务登记在案的 PendingVideoFileId 查找待迁让现任（含跨来源升级顶替的旧版行；
+            // 同组同语言同版本跨源共存的任务不会被挂 Pending，互不干扰）。
             var incumbentFileIds = await db.EpisodeVersions.AsNoTracking()
-                                           .Where(row => row.SubjectId          == subjectId   &&
-                                                         row.SourceScope        == sourceScope &&
+                                           .Where(row => row.SubjectId          == subjectId &&
                                                          row.PendingVideoFileId != null)
                                            .ToListAsync(ct);
             var wanted = incumbentFileIds

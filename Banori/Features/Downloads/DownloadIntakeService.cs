@@ -694,7 +694,11 @@ public sealed class DownloadIntakeService(
                                 .FirstOrDefaultAsync(cancellationToken);
         if (subjectId is null)
             // 无法互认 Subject 时不再按标题兜底对决：宁可重复登记，不凭猜测淘汰候选。
-            return scopes.Select(scope => new EpisodeVerdict(scope.Episode, true, null, null, false, null)).ToList();
+            return scopes.Select(scope => new EpisodeVerdict(scope.Episode, true, null, null, false, null, [])).ToList();
+
+        // 登记期对已入库任务按分维兜底比较：即使订阅规则设为 NeedsReview，在榜高优资源仍可
+        // 顶替手动上传的不在榜资源；都不在榜时先到先得（保留现任）。
+        var arbitrationConfig = config with { Unmatched = UnmatchedPolicy.LowestPriority };
 
         var occupants = await db.DownloadTasks.AsNoTracking()
                                 .Include(task => task.Files)
@@ -708,17 +712,17 @@ public sealed class DownloadIntakeService(
 
         EpisodeVerdict ArbitrateScope(EpisodeScope scope)
         {
-            var candidates = new List<(Guid TaskId, string Naming, EpisodeCandidate Candidate, bool Completed,
-                Guid? VideoFileId)>();
-            // 登记期已完成现任候选：版本守卫（同组同语言升级）与已确认优胜的规则升级（可跨组/
-            // 跨语言）都记入每集登记表，供完成期迁让与现任切换；它们不参与规则对决，旧任务本身
-            // 不动。跨来源占用者不在本集竞争域内，绝不能写入本来源的登记表。
-            var registryIncumbents = new List<(Guid TaskId, string Naming, int Version, DateTimeOffset CreatedAtUtc,
-                Guid VideoFileId)>();
+            var candidates = new List<(Guid TaskId, string SourceScope, string Naming, EpisodeCandidate Candidate,
+                bool Completed, Guid? VideoFileId)>();
+            // 登记期已完成现任候选：同源订阅条目间仍由评估/择优链治理，版本守卫（同组同语言升级）
+            // 与已确认优胜的规则升级记入每集登记表供完成期迁让与现任切换。
+            var registryIncumbents = new List<(Guid TaskId, string SourceScope, string Naming, int Version,
+                DateTimeOffset CreatedAtUtc, Guid VideoFileId)>();
             foreach (var occupant in occupants)
             {
                 if (occupant.InfoHash == infoHash) continue;
-                if (OccupantSourceScope(occupant) != sourceScope) continue;
+                var occupantScope = OccupantSourceScope(occupant);
+                var sameSource    = occupantScope == sourceScope;
 
                 var covered = CoveringFiles(occupant, scope.Episode);
                 var carrier = covered.FirstOrDefault(file => file.Kind == DownloadFileKind.Anime) ??
@@ -732,12 +736,11 @@ public sealed class DownloadIntakeService(
                                         aniParser.Parse(DownloadEpisodeResolver.FileName(
                                                             carrier.OriginalRelativePath)),
                                         scope, carrier.Id);
-                var exemptionApplies = exemptSubjectId is not null && occupant.FeedItemId != null &&
-                                       occupant.SubjectId                                 == exemptSubjectId;
-                // 版本守卫只在同组同语言内成立；订阅条目的规则升级另由“已确认优胜 + 规则严格更优”
-                // 判定，仍要求同来源、同 Subject、同集、已完成且未被声明替换，并只记入登记表——
-                // 旧成片保留到新版本完成，再由完成链迁让与逐集切换。
+                var exemptionApplies = sameSource && exemptSubjectId is not null && occupant.FeedItemId != null &&
+                                       occupant.SubjectId == exemptSubjectId;
+                // 同源订阅条目的版本守卫与已确认优胜规则升级：旧成片保留到新版本完成再迁让切换。
                 var versionGuardEligible =
+                    sameSource &&
                     DownloadTaskLookups.IsTakeoverEligibleIncumbent(occupant.Status, occupant.ReplacedByTaskId,
                                                                     incumbentVersion, scope.Incoming.Version,
                                                                     incumbentCandidate?.Group,
@@ -749,13 +752,14 @@ public sealed class DownloadIntakeService(
                                           occupant.Status == DownloadTaskStatus.Completed &&
                                           occupant.ReplacedByTaskId is null               &&
                                           incumbentCandidate is not null                  &&
-                                          rankingPolicy.IsStrictlyPreferred(scope.Incoming, incumbentCandidate, config);
+                                          rankingPolicy.IsStrictlyPreferred(scope.Incoming, incumbentCandidate,
+                                                                            arbitrationConfig);
                 if ((versionGuardEligible || ruleUpgradeEligible) && carrier is not null)
-                    registryIncumbents.Add((occupant.Id, occupant.NamingSnapshot, incumbentVersion,
+                    registryIncumbents.Add((occupant.Id, occupantScope, occupant.NamingSnapshot, incumbentVersion,
                                             occupant.CreatedAtUtc, carrier.Id));
 
-                // 同 Subject 豁免只覆盖订阅条目任务（其替换由评估/择优/版本守卫链治理）；
-                // RSS/上传任务（无 FeedItem）即使同 Subject 也参与跨路径裁决。
+                // 同 Subject 豁免只覆盖同源订阅条目任务；跨来源（含不同 RSS 源与上传任务）一律
+                // 参与全局内容择优，仅同组同语言同版本允许跨源共存复用。
                 if (exemptionApplies) continue;
                 if (occupant.SubjectId is null)
                 {
@@ -766,53 +770,71 @@ public sealed class DownloadIntakeService(
                     if (taskSeriesKey.Length == 0 || taskSeriesKey != seriesKey) continue;
                 }
 
-                var covered2 = CoveringFiles(occupant, scope.Episode);
-                if (covered2.Count == 0) continue;
+                if (covered.Count == 0) continue;
 
-                var video = covered2.FirstOrDefault(file => file.Kind == DownloadFileKind.Anime);
+                var video = covered.FirstOrDefault(file => file.Kind == DownloadFileKind.Anime);
                 var parse = video is null
                     ? null
                     : aniParser.Parse(DownloadEpisodeResolver.FileName(video.OriginalRelativePath));
-                candidates.Add((occupant.Id, occupant.NamingSnapshot,
-                                OccupantCandidate(occupant, parse, scope, video?.Id),
+                var occupantCandidate = OccupantCandidate(occupant, parse, scope, video?.Id);
+                if (!sameSource && CanCoexistCrossSource(scope.Incoming, occupantCandidate)) continue;
+
+                candidates.Add((occupant.Id, occupantScope, occupant.NamingSnapshot, occupantCandidate,
                                 occupant.Status == DownloadTaskStatus.Completed,
-                                video?.Id ?? covered2.FirstOrDefault()?.Id));
+                                video?.Id ?? covered.FirstOrDefault()?.Id));
             }
 
             if (candidates.Count == 0)
             {
-                // 无同源占用者：缺集胜出不写登记表；登记期版本守卫命中的已完成现任除外。
+                // 无对决占用者：缺集或仅存在同组同语言同版本跨源共存者，不写登记表；
+                // 登记期版本守卫命中的同源已完成现任除外。
                 var guardIncumbent = registryIncumbents.OrderByDescending(item => item.Version)
                                                        .ThenByDescending(item => item.CreatedAtUtc)
                                                        .FirstOrDefault();
                 return guardIncumbent.TaskId != Guid.Empty
                     ? new EpisodeVerdict(scope.Episode, true, guardIncumbent.TaskId,
-                                         guardIncumbent.Naming, true, guardIncumbent.VideoFileId)
-                    : new EpisodeVerdict(scope.Episode, true, null, null, false, null);
+                                         guardIncumbent.Naming, true, guardIncumbent.VideoFileId,
+                                         [
+                                             new SupersededIncumbent(guardIncumbent.TaskId,
+                                                                     guardIncumbent.SourceScope,
+                                                                     guardIncumbent.Naming, true,
+                                                                     guardIncumbent.VideoFileId)
+                                         ])
+                    : new EpisodeVerdict(scope.Episode, true, null, null, false, null, []);
             }
 
-            // 多个占用者（历史并存）先按规则内部选出最强现任，再与新候选一对一对决。
+            // 多个占用者（含跨来源共存旧版）先按规则内部选出最强现任，再与新候选一对一对决。
             var incumbent = candidates.Count == 1
                 ? candidates[0]
                 : candidates.First(value => value.TaskId == (rankingPolicy
                                                             .Select(candidates.Select(item => item.Candidate).ToList(),
-                                                                    config).Winner ?? candidates[0].Candidate)
+                                                                    arbitrationConfig).Winner ??
+                                                             candidates[0].Candidate)
                                       .FeedItemId);
-            var verdict      = rankingPolicy.Select([incumbent.Candidate, scope.Incoming], config, incumbent.TaskId);
+            var verdict      = rankingPolicy.Select([incumbent.Candidate, scope.Incoming], arbitrationConfig, incumbent.TaskId);
             var incomingWins = verdict.Winner?.FeedItemId == scope.Incoming.FeedItemId;
-            return incomingWins
-                ? new EpisodeVerdict(scope.Episode, true, incumbent.TaskId, incumbent.Naming,
-                                     incumbent.Completed, incumbent.VideoFileId)
-                : new EpisodeVerdict(scope.Episode, false, incumbent.TaskId, incumbent.Naming,
-                                     incumbent.Completed, incumbent.VideoFileId);
+            if (!incomingWins)
+                return new EpisodeVerdict(scope.Episode, false, incumbent.TaskId, incumbent.Naming,
+                                          incumbent.Completed, incumbent.VideoFileId, []);
+
+            var superseded = new List<SupersededIncumbent>(candidates.Count + registryIncumbents.Count);
+            var seenIds    = new HashSet<Guid>();
+            foreach (var item in candidates)
+                if (seenIds.Add(item.TaskId))
+                    superseded.Add(new SupersededIncumbent(item.TaskId, item.SourceScope, item.Naming,
+                                                           item.Completed, item.VideoFileId));
+            foreach (var item in registryIncumbents)
+                if (seenIds.Add(item.TaskId))
+                    superseded.Add(new SupersededIncumbent(item.TaskId, item.SourceScope, item.Naming,
+                                                           true, item.VideoFileId));
+            return new EpisodeVerdict(scope.Episode, true, incumbent.TaskId, incumbent.Naming,
+                                      incumbent.Completed, incumbent.VideoFileId, superseded);
         }
 
         // 第一阶段：常规逐集择优，常规胜出者始终保留，不参与承接剔除。
         var baselineVerdicts = scopes.Select(ArbitrateScope).ToList();
-        // 只读本来源的逐集登记：跨来源现任、Pending 与职责都不进入本任务的承接判定。
         var registryRows = await db.EpisodeVersions.AsNoTracking()
-                                   .Where(row => row.SubjectId   == subjectId   &&
-                                                 row.SourceScope == sourceScope)
+                                   .Where(row => row.SubjectId == subjectId)
                                    .ToListAsync(cancellationToken);
         var selectedKeys = task.Files
                                .Where(file => file.Kind != DownloadFileKind.Seed && file.IsSelectedForDownload)
@@ -828,8 +850,17 @@ public sealed class DownloadIntakeService(
             var scope = scopes.First(item => item.Episode == verdict.Episode);
             if (IsContainmentTakeover(incumbentId, verdict.IncumbentVideoFileId, scope, occupants, registryRows,
                                       selectedKeys))
+            {
+                var incumbentTask  = occupants.First(item => item.Id == incumbentId);
+                var incumbentScope = OccupantSourceScope(incumbentTask);
                 takeovers.Add(new EpisodeVerdict(verdict.Episode, true, incumbentId, verdict.IncumbentNaming, true,
-                                                 verdict.IncumbentVideoFileId));
+                                                 verdict.IncumbentVideoFileId,
+                                                 [
+                                                     new SupersededIncumbent(incumbentId, incumbentScope,
+                                                                             verdict.IncumbentNaming!, true,
+                                                                             verdict.IncumbentVideoFileId)
+                                                 ]));
+            }
         }
 
         // 有界单调剔除：每轮先按仍保留的裁决整体重建最终承担集合（常规落选与已剔除承接集的
@@ -870,9 +901,20 @@ public sealed class DownloadIntakeService(
     }
 
     /// <summary>
+    ///     跨来源共存条件：仅限同字幕组（忽略大小写且非空）、同语言、同修订版本且同初始正片数；
+    ///     满足时允许跨源共存并走跨源复用辅种，不互相顶替。版本只在同组同语言内比较，跨组无效。
+    /// </summary>
+    private static bool CanCoexistCrossSource(EpisodeCandidate incoming, EpisodeCandidate occupant) =>
+        !string.IsNullOrWhiteSpace(incoming.Group)                                        &&
+        !string.IsNullOrWhiteSpace(occupant.Group)                                        &&
+        string.Equals(incoming.Group, occupant.Group, StringComparison.OrdinalIgnoreCase) &&
+        incoming.Language              == occupant.Language                               &&
+        incoming.Version               == occupant.Version                                &&
+        incoming.PackageVideoFileCount == occupant.PackageVideoFileCount;
+
+    /// <summary>
     ///     占用者的真实竞争来源：订阅条目任务优先取条目落库的 SourceScope（只有迁移前 legacy 行才
-    ///     回退展示标签推导）；上传/RSS 任务没有条目来源，只能按标签推导。界面的 mikan 标签不单独
-    ///     作为同源依据，来源不同的旧任务不得进入本来源的规则对决或登记表。
+    ///     回退展示标签推导）；上传/RSS 任务没有条目来源，只能按标签推导。
     /// </summary>
     private static string OccupantSourceScope(DownloadTask occupant)
     {
@@ -903,12 +945,13 @@ public sealed class DownloadIntakeService(
             return false;
 
         var incumbentFiles = incumbent.Files.ToList();
+        var incumbentScope = OccupantSourceScope(incumbent);
         var ownFileIds     = incumbent.Files.Select(file => file.Id).ToHashSet();
         var incumbentDuties = incumbent.Files
                                        .Where(file =>
                                                   DownloadTaskLookups.FileHoldsResidualDuty(aniParser, incumbent, file,
                                                       incumbentFiles, registryRows,
-                                                      ownFileIds, episodeResolver.EpisodeOf))
+                                                      ownFileIds, episodeResolver.EpisodeOf, incumbentScope))
                                        .Select(ManifestKey).ToList();
         if (incumbentDuties.Any(key => !incomingCarriedKeys.Contains(key))) return false;
 
@@ -1022,69 +1065,98 @@ public sealed class DownloadIntakeService(
     {
         if (task.SubjectId is not { } subjectId) return;
         List<EpisodeVersion>? registryRows = null;
-        foreach (var verdict in verdicts.Where(verdict => verdict.Winner))
+        foreach (var verdict in verdicts.Where(verdict => verdict.Winner && verdict.SupersededIncumbents.Count > 0))
         {
-            // 缺集胜出（无占用者）不写登记表：没有承接关系，现任在完成时直接落表；
-            // 跨来源占用者不参与对决，其现任不能被本任务的登记悄悄顶掉。
-            if (verdict.IncumbentTaskId is null) continue;
-
             var scope = scopes.FirstOrDefault(item => item.Episode == verdict.Episode);
             var winnerFile = scope?.VideoFiles.FirstOrDefault(file => file.Kind == DownloadFileKind.Anime) ??
                              scope?.VideoFiles.FirstOrDefault();
             if (winnerFile is null) continue;
 
-            var row = await db.EpisodeVersions
-                              .SingleOrDefaultAsync(value => value.SubjectId   == subjectId   &&
-                                                             value.Episode     == verdict.Episode &&
-                                                             value.SourceScope == sourceScope, cancellationToken);
-            if (row is null)
+            var touchedScopes = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var superseded in verdict.SupersededIncumbents)
             {
-                row = new EpisodeVersion
+                var row = await db.EpisodeVersions
+                                  .SingleOrDefaultAsync(value => value.SubjectId   == subjectId       &&
+                                                                 value.Episode     == verdict.Episode &&
+                                                                 value.SourceScope == superseded.SourceScope,
+                                                        cancellationToken);
+                if (row is null)
                 {
-                    SubjectId = subjectId, Episode = verdict.Episode, SourceScope = sourceScope
-                };
-                db.EpisodeVersions.Add(row);
+                    row = new EpisodeVersion
+                    {
+                        SubjectId   = subjectId,
+                        Episode     = verdict.Episode,
+                        SourceScope = superseded.SourceScope
+                    };
+                    db.EpisodeVersions.Add(row);
+                    registryRows?.Add(row);
+                }
+
+                if (superseded is { Completed: true, VideoFileId: { } incumbentVideoFileId })
+                    row.IncumbentVideoFileId = incumbentVideoFileId;
+                row.PendingVideoFileId = winnerFile.Id;
+                row.MediaType          = scope!.Incoming.MediaType;
+                row.UpdatedAtUtc       = timeProvider.GetUtcNow();
+                touchedScopes.Add(superseded.SourceScope);
+
+                if (superseded.Completed) continue;
+
+                var incumbent = await db.DownloadTasks.Include(value => value.Files)
+                                        .SingleOrDefaultAsync(value => value.Id == superseded.TaskId,
+                                                              cancellationToken);
+                if (incumbent is null ||
+                    incumbent.Status is DownloadTaskStatus.Replaced or DownloadTaskStatus.Failed
+                                                                    or DownloadTaskStatus.Lost) continue;
+
+                foreach (var file in CoveringFiles(incumbent, verdict.Episode))
+                {
+                    file.IsSelectedForDownload = false;
+                    if (file.VerificationOutcome == DownloadFileVerificationOutcomes.ReusedVerified)
+                        file.VerificationOutcome = DownloadFileVerificationOutcomes.ReuseUnverified;
+                    file.SelectionReason    = $"已被更优任务替代：{task.NamingSnapshot}";
+                    file.SupersededByTaskId = task.Id;
+                    file.UpdatedAtUtc       = timeProvider.GetUtcNow();
+                }
+
+                DownloadTaskLookups.RefreshSelectedTotals(incumbent);
+                incumbent.SelectionSyncPending = true;
+                registryRows ??= await db.EpisodeVersions
+                                         .Where(value => value.SubjectId == subjectId)
+                                         .ToListAsync(cancellationToken);
+                if (DownloadTaskLookups.HasResidualDuties(aniParser, incumbent, incumbent.Files.ToList(), registryRows,
+                                                          episodeResolver.EpisodeOf, superseded.SourceScope))
+                    continue;
+
+                incumbent.Status           =   DownloadTaskStatus.Replaced;
+                incumbent.ReplacedByTaskId =   task.Id;
+                task.ReplacesTaskId        ??= incumbent.Id;
+                logger.LogInformation("任务 {TaskId} 的全部职责已被更高优先级任务 {NewTaskId} 承接，整任务翻转被替换。",
+                                      incumbent.Id, task.Id);
             }
 
-            if (verdict is { IncumbentCompleted: true, IncumbentVideoFileId: { } incumbentVideoFileId })
-                row.IncumbentVideoFileId = incumbentVideoFileId;
-            row.PendingVideoFileId = winnerFile.Id;
-            row.MediaType          = scope!.Incoming.MediaType;
-            row.UpdatedAtUtc       = timeProvider.GetUtcNow();
-
-            if (verdict.IncumbentTaskId is not { } incumbentTaskId || verdict.IncumbentCompleted) continue;
-
-            var incumbent = await db.DownloadTasks.Include(value => value.Files)
-                                    .SingleOrDefaultAsync(value => value.Id == incumbentTaskId, cancellationToken);
-            if (incumbent is null ||
-                incumbent.Status is DownloadTaskStatus.Replaced or DownloadTaskStatus.Failed
-                                                                or DownloadTaskStatus.Lost) continue;
-
-            foreach (var file in CoveringFiles(incumbent, verdict.Episode))
+            if (!touchedScopes.Contains(sourceScope))
             {
-                file.IsSelectedForDownload = false;
-                if (file.VerificationOutcome == DownloadFileVerificationOutcomes.ReusedVerified)
-                    file.VerificationOutcome = DownloadFileVerificationOutcomes.ReuseUnverified;
-                file.SelectionReason    = $"已被更优任务替代：{task.NamingSnapshot}";
-                file.SupersededByTaskId = task.Id;
-                file.UpdatedAtUtc       = timeProvider.GetUtcNow();
+                var ownRow = await db.EpisodeVersions
+                                     .SingleOrDefaultAsync(value => value.SubjectId   == subjectId       &&
+                                                                    value.Episode     == verdict.Episode &&
+                                                                    value.SourceScope == sourceScope,
+                                                           cancellationToken);
+                if (ownRow is null)
+                {
+                    ownRow = new EpisodeVersion
+                    {
+                        SubjectId   = subjectId,
+                        Episode     = verdict.Episode,
+                        SourceScope = sourceScope
+                    };
+                    db.EpisodeVersions.Add(ownRow);
+                    registryRows?.Add(ownRow);
+                }
+
+                ownRow.PendingVideoFileId = winnerFile.Id;
+                ownRow.MediaType          = scope!.Incoming.MediaType;
+                ownRow.UpdatedAtUtc       = timeProvider.GetUtcNow();
             }
-
-            DownloadTaskLookups.RefreshSelectedTotals(incumbent);
-            incumbent.SelectionSyncPending = true;
-            registryRows ??= await db.EpisodeVersions
-                                     .Where(value => value.SubjectId   == subjectId   &&
-                                                     value.SourceScope == sourceScope)
-                                     .ToListAsync(cancellationToken);
-            if (DownloadTaskLookups.HasResidualDuties(aniParser, incumbent, incumbent.Files.ToList(), registryRows,
-                                                      episodeResolver.EpisodeOf))
-                continue;
-
-            incumbent.Status           =   DownloadTaskStatus.Replaced;
-            incumbent.ReplacedByTaskId =   task.Id;
-            task.ReplacesTaskId        ??= incumbent.Id;
-            logger.LogInformation("任务 {TaskId} 的全部职责已被更高优先级任务 {NewTaskId} 承接，整任务翻转被替换。",
-                                  incumbent.Id, task.Id);
         }
     }
 
@@ -1705,17 +1777,26 @@ public sealed class DownloadIntakeService(
         EpisodeCandidate                Incoming,
         IReadOnlyList<DownloadTaskFile> VideoFiles);
 
+    /// <summary>被本集新任务顶替的既有占用者摘要（含其真实来源作用域，供跨来源登记与退场）。</summary>
+    private sealed record SupersededIncumbent(
+        Guid   TaskId,
+        string SourceScope,
+        string Naming,
+        bool   Completed,
+        Guid?  VideoFileId);
+
     /// <summary>
     ///     逐集裁决结论：胜出（含无占用者的缺集）或落选。占用者信息供落选原因、未完成占用者的
     ///     承接侧效应与每集登记表使用；IncumbentVideoFileId 仅已完成占用者有意义（其胜者正片）。
     /// </summary>
     private sealed record EpisodeVerdict(
-        decimal Episode,
-        bool    Winner,
-        Guid?   IncumbentTaskId,
-        string? IncumbentNaming,
-        bool    IncumbentCompleted,
-        Guid?   IncumbentVideoFileId);
+        decimal                            Episode,
+        bool                               Winner,
+        Guid?                              IncumbentTaskId,
+        string?                            IncumbentNaming,
+        bool                               IncumbentCompleted,
+        Guid?                              IncumbentVideoFileId,
+        IReadOnlyList<SupersededIncumbent> SupersededIncumbents);
 
     /// <summary>包内文件集分析结果：择优落选文件的路径到原因映射、标题解析失败时可充当任务身份的胜者解析，与每集包内胜者的解析。</summary>
     private sealed record TorrentFileAnalysis(
