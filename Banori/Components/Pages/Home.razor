@@ -1,9 +1,13 @@
 @page "/"
+@using System.Globalization
 @using Banori.Components.Shared
 @using Banori.Features.Dashboard
+@using Banori.Features.FeedItems
+@using Banori.Features.Subscriptions
 @rendermode InteractiveServer
 @attribute [Authorize]
 @inject DashboardQueries DashboardService
+@inject FeedItemQueries  FeedItemQueries
 
 @* 总览页：下载登记浮层在 DownloadIntakeActions 组件内，页面展示反馈提示与仪表盘快照。 *@
 
@@ -50,13 +54,19 @@
 		</div>
 	</div>
 	<div class="col-md-3">
-		<div class="card h-100">
-			<div class="card-body">
-				<h2 class="h5">待处理</h2>
+		<button type="button"
+		        class="card h-100 w-100 text-start home-attention-card @(_showAttentionItems ? "is-active" : null)"
+		        aria-expanded="@_showAttentionItems"
+		        @onclick="ToggleAttentionItemsAsync">
+			<div class="card-body w-100">
+				<div class="d-flex justify-content-between align-items-baseline gap-2">
+					<h2 class="h5 mb-2">待处理</h2>
+					<span class="small text-body-secondary">@(_showAttentionItems ? "收起" : "查看")</span>
+				</div>
 				<p class="display-6 mb-1">@(_snapshot?.NeedsAttentionItems ?? 0)</p>
 				<p class="text-body-secondary mb-0">无法解析、关联失败或多集合集</p>
 			</div>
-		</div>
+		</button>
 	</div>
 </div>
 
@@ -64,9 +74,101 @@
 	队列中任务：@(_snapshot?.PendingWorkItems ?? 0) · 最近刷新：@(_snapshot?.LastRefreshAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "尚未刷新")
 </div>
 
+@if (_showAttentionItems)
+{
+	<div class="card mt-3">
+		<div class="card-header d-flex justify-content-between align-items-center gap-2">
+			<div class="d-flex align-items-center gap-2">
+				<h2 class="h6 mb-0">待处理 RSS 条目</h2>
+				@if (_attentionItems is not null)
+				{
+					<span class="badge text-bg-secondary">@_attentionItems.Count</span>
+				}
+			</div>
+			<div class="d-flex align-items-center gap-2">
+				<button type="button" class="btn btn-sm btn-outline-secondary" disabled="@_loadingAttentionItems"
+				        @onclick="LoadAttentionItemsAsync">
+					@(_loadingAttentionItems ? "刷新中…" : "刷新")
+				</button>
+				<button type="button" class="btn btn-sm btn-outline-secondary" @onclick="CloseAttentionItems">收起</button>
+			</div>
+		</div>
+		<div class="card-body">
+			@if (_loadingAttentionItems && _attentionItems is null)
+			{
+				<p class="text-body-secondary mb-0">正在加载待处理条目…</p>
+			}
+			else if (!string.IsNullOrEmpty(_attentionError))
+			{
+				<div class="alert alert-danger mb-0" role="alert">@_attentionError</div>
+			}
+			else if (_attentionItems is null || _attentionItems.Count == 0)
+			{
+				<p class="text-body-secondary mb-0">当前没有待处理的 RSS 条目。</p>
+			}
+			else
+			{
+				<div class="table-responsive">
+					<table class="table table-sm align-middle mb-0">
+						<thead>
+						<tr>
+							<th style="width: 5rem;">状态</th>
+							<th>条目与订阅</th>
+							<th>待处理原因</th>
+							<th style="width: 9.5rem;">时间</th>
+						</tr>
+						</thead>
+						<tbody>
+						@foreach (var item in _attentionItems)
+						{
+							var time = (item.PublishedAtUtc ?? item.FirstSeenAtUtc).ToLocalTime();
+							<tr>
+								<td>
+									<span class="badge @(item.Status == FeedItemStatus.Failed ? "text-bg-danger" : "text-bg-warning")">
+										@(item.Status == FeedItemStatus.Failed ? "失败" : "待确认")
+									</span>
+								</td>
+								<td>
+									<div class="fw-semibold text-break">
+										@if (IsHttpUrl(item.Link))
+										{
+											<a href="@item.Link" target="_blank" rel="noopener noreferrer">@item.Title</a>
+										}
+										else
+										{
+											@item.Title
+										}
+									</div>
+									<div class="small text-body-secondary">
+										订阅：@item.SubscriptionName
+										@if (!string.IsNullOrWhiteSpace(item.SubjectName))
+										{
+											<span> · 关联：@item.SubjectName</span>
+										}
+									</div>
+								</td>
+								<td class="small text-break">@item.Reason</td>
+								<td class="small text-body-secondary text-nowrap"
+								    title="@time.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)">
+									@time.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)
+								</td>
+							</tr>
+						}
+						</tbody>
+					</table>
+				</div>
+			}
+		</div>
+	</div>
+}
+
 @code {
-	private DashboardSnapshot?      _snapshot;
-	private DownloadIntakeFeedback? _intakeFeedback;
+	private DashboardSnapshot?           _snapshot;
+	private DownloadIntakeFeedback?      _intakeFeedback;
+	private bool                         _showAttentionItems;
+	private bool                         _loadingAttentionItems;
+	private string?                      _attentionError;
+	private IReadOnlyList<FeedItemView>? _attentionItems;
 
 	protected override async Task OnInitializedAsync()
 	{
@@ -77,7 +179,46 @@
 	{
 		_intakeFeedback = feedback.Succeeded ? null : feedback;
 		if (feedback.Succeeded || (feedback.RssResult?.CreatedCount ?? 0) > 0)
+		{
 			_snapshot = await DashboardService.GetSnapshotAsync();
+			if (_showAttentionItems) await LoadAttentionItemsAsync();
+		}
 	}
 
+	private async Task ToggleAttentionItemsAsync()
+	{
+		if (_showAttentionItems)
+		{
+			_showAttentionItems = false;
+			return;
+		}
+
+		_showAttentionItems = true;
+		await LoadAttentionItemsAsync();
+	}
+
+	private void CloseAttentionItems() => _showAttentionItems = false;
+
+	private async Task LoadAttentionItemsAsync()
+	{
+		_loadingAttentionItems = true;
+		_attentionError        = null;
+		try
+		{
+			_attentionItems = await FeedItemQueries.ListNeedsAttentionAsync();
+			_snapshot       = await DashboardService.GetSnapshotAsync();
+		}
+		catch (Exception exception)
+		{
+			_attentionError = $"加载待处理条目失败：{exception.Message}";
+		}
+		finally
+		{
+			_loadingAttentionItems = false;
+		}
+	}
+
+	private static bool IsHttpUrl(string? value) =>
+		Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+		uri.Scheme is "http" or "https";
 }

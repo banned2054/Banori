@@ -1,0 +1,14 @@
+.home-attention-card {
+    padding: 0;
+    cursor: pointer;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.home-attention-card:hover {
+    border-color: var(--bs-primary);
+}
+
+.home-attention-card.is-active {
+    border-color: var(--bs-primary);
+    box-shadow: 0 0 0 0.15rem rgba(var(--bs-primary-rgb), 0.2);
+}
