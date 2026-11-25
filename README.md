@@ -35,7 +35,7 @@
 - **订阅与刷新** — 管理 Mikan（含 `mikanani.me`、`mikanime.tv`）、AniBT RSS，定时刷新并去重入库；RSS 地址加密保存。
 - **条目评估** — 解析条目信息、关联 Bangumi，并展示筛选理由与命名预览。
 - **下载管理** — 支持 RSS 链接、本地种子和已有种子接管；下载前确认文件选择与命名，按所选内容跟踪进度，展示等待原因、复用结果和恢复操作。种子从下载器丢失后自动巡检确认，支持受控重下。
-- **逐集择优** — 同一来源内的单集与合集跨包比较版本，不同来源独立竞争，按每集分配下载职责；新版本完成后切换，删除承接方时按关系回退。
+- **逐集择优** — 跨来源全局比较单集与合集版本，按每集分配下载职责，同字幕组同语言同版本允许跨来源共存与辅种；新版本完成后切换，删除承接方时按关系回退。
 - **数据复用** — 通过 qBittorrent 校验已有文件，确认后复用或交叉做种；不能确认时保留原数据并独立下载。
 - **整理归档** — 按命名模板整理媒体文件与随行字幕；归档受阻时展示原因并支持重新核对，冗余种子自动移除且保留磁盘文件。
 - **通知与代理** — 支持 Telegram、Gotify 通知与投递记录，统一管理各服务使用的命名代理。
@@ -80,13 +80,13 @@ docker compose pull
 docker compose up -d
 ```
 
-数据库结构会在启动时自动更新，无需手动迁移。0.6.0 为下载任务新增待同步种子改名标记字段（SQLite 与 MySQL 迁移）；不要让新旧实例同时写入同一数据库。回退时恢复升级前的数据库和配套配置、密钥，不能只切换回旧镜像。各版本的具体变化与验收情况见 [更新日志](Docs/CHANGELOG.md)。
+数据库结构会在启动时自动更新，无需手动迁移。0.6.1 无数据库结构迁移；不要让新旧实例同时写入同一数据库。回退时恢复升级前的数据库和配套配置、密钥，不能只切换回旧镜像。各版本的具体变化与验收情况见 [更新日志](Docs/CHANGELOG.md)。
 
-GitHub Actions 在发布 GitHub Release 或手动运行 `Publish container image` 工作流时构建并推送镜像；普通分支 push 或单独推送标签不会触发发布。Release 按 Git 标签名生成同名版本镜像（本项目使用 `v*`，例如 `v0.6.0`），并按 [metadata-action 的默认标签规则](https://github.com/docker/metadata-action#latest-tag) 同时更新 `latest`；在默认分支手动运行也会更新 `latest`。工作流还会生成 `sha-` 前缀的提交标签。例如：
+GitHub Actions 在发布 GitHub Release 或手动运行 `Publish container image` 工作流时构建并推送镜像；普通分支 push 或单独推送标签不会触发发布。Release 按 Git 标签名生成同名版本镜像（本项目使用 `v*`，例如 `v0.6.1`），并按 [metadata-action 的默认标签规则](https://github.com/docker/metadata-action#latest-tag) 同时更新 `latest`；在默认分支手动运行也会更新 `latest`。工作流还会生成 `sha-` 前缀的提交标签。例如：
 
 ```text
 ghcr.io/banned2054/banori:latest
-ghcr.io/banned2054/banori:v0.6.0
+ghcr.io/banned2054/banori:v0.6.1
 ```
 
 ### 数据持久化
