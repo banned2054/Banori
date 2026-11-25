@@ -28,12 +28,66 @@
     min-height: 0;
 }
 
+.downloads-list-pane:focus {
+    outline: none;
+}
+
 .downloads-page[data-batch-mode="false"] .downloads-list-pane tbody tr.downloads-row {
     cursor: pointer;
 }
 
 .downloads-list-pane .table {
     margin-bottom: 0;
+}
+
+.downloads-table {
+    width: 100%;
+    min-width: 75rem;
+    table-layout: fixed;
+}
+
+.downloads-page[data-batch-mode="true"] .downloads-table {
+    min-width: 77.25rem;
+}
+
+.downloads-table col.downloads-col-select {
+    width: 2.25rem;
+}
+
+.downloads-table col.downloads-col-episode {
+    width: 5.5rem;
+}
+
+.downloads-table col.downloads-col-version {
+    width: 4.25rem;
+}
+
+.downloads-table col.downloads-col-group {
+    width: 9.5rem;
+}
+
+.downloads-table col.downloads-col-language {
+    width: 4.75rem;
+}
+
+.downloads-table col.downloads-col-site {
+    width: 5.5rem;
+}
+
+.downloads-table col.downloads-col-status {
+    width: 9.5rem;
+}
+
+.downloads-table col.downloads-col-progress {
+    width: 8.5rem;
+}
+
+.downloads-table col.downloads-col-created {
+    width: 7.25rem;
+}
+
+.downloads-table col.downloads-col-completed {
+    width: 6.75rem;
 }
 
 .downloads-table tbody tr.downloads-row {
@@ -44,6 +98,8 @@
     height: 38px;
     padding-top: 0.25rem;
     padding-bottom: 0.25rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
     vertical-align: middle;
 }
@@ -54,6 +110,8 @@
 }
 
 .downloads-table thead th {
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
 }
 
@@ -79,8 +137,8 @@
 
 .downloads-table .downloads-anime-title {
     display: block;
-    min-width: 10rem;
-    max-width: clamp(11rem, 22vw, 24rem);
+    width: 100%;
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -88,7 +146,8 @@
 
 .downloads-table .downloads-group-title {
     display: block;
-    max-width: 9rem;
+    width: 100%;
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -110,11 +169,6 @@
 .downloads-table .downloads-created-cell,
 .downloads-table .downloads-completed-cell {
     font-variant-numeric: tabular-nums;
-}
-
-.downloads-table .downloads-progress-cell {
-    min-width: 8.5rem;
-    width: 8.5rem;
 }
 
 .downloads-table .downloads-progress-wrap {

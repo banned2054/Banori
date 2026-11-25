@@ -111,7 +111,7 @@
 	}
 
 	<div class="downloads-workspace">
-		<div class="downloads-list-pane" @ref="_listPaneRef">
+		<div class="downloads-list-pane" @ref="_listPaneRef" tabindex="0">
 			@if (!_vm.Loaded)
 			{
 				<p class="p-3">正在加载…</p>
@@ -123,11 +123,27 @@
 			else
 			{
 				<table class="table table-sm align-middle downloads-table">
+					<colgroup>
+						@if (_vm.BatchMode)
+						{
+							<col class="downloads-col-select"/>
+						}
+						<col class="downloads-col-anime"/>
+						<col class="downloads-col-episode"/>
+						<col class="downloads-col-version"/>
+						<col class="downloads-col-group"/>
+						<col class="downloads-col-language"/>
+						<col class="downloads-col-site"/>
+						<col class="downloads-col-status"/>
+						<col class="downloads-col-progress"/>
+						<col class="downloads-col-created"/>
+						<col class="downloads-col-completed"/>
+					</colgroup>
 					<thead>
 					<tr>
 						@if (_vm.BatchMode)
 						{
-							<th style="width: 1rem;">
+							<th class="downloads-select-cell">
 								<input type="checkbox" class="form-check-input mt-0" aria-label="勾选可见行" title="勾选可见行"
 								       checked="@_vm.AllSelected" @onchange="_vm.ToggleSelectAll"/>
 							</th>
@@ -389,7 +405,7 @@
 
 	@if (!string.IsNullOrEmpty(_vm.Message))
 	{
-		<div class="alert @(_vm.Succeeded ? "alert-success" : "alert-danger") downloads-message mt-3" role="status">
+		<div class="alert alert-danger downloads-message mt-3" role="status">
 			<div>@_vm.Message</div>
 			<DownloadIntakeRssDetails Result="_rssResult"/>
 		</div>
@@ -799,6 +815,30 @@
 		}
 		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
 		{
+		}
+	}
+
+	[JSInvokable]
+	public async Task<int?> OnListKeyDownAsync(int delta)
+	{
+		if (_disposed || _vm.BatchMode || _contextMenuOpen ||
+		    _vm.DeleteTarget is not null || _vm.BulkDeletePanelOpen)
+			return null;
+
+		try
+		{
+			var targetIndex = await _vm.MoveSelectionAsync(delta, _cts.Token);
+			if (targetIndex is not null)
+			{
+				SyncFilePanelPolling();
+				await InvokeAsync(StateHasChanged);
+			}
+
+			return targetIndex;
+		}
+		catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+		{
+			return null;
 		}
 	}
 

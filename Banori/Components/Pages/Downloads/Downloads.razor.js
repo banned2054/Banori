@@ -153,12 +153,37 @@ export function initializeVirtualList(listPane, dotNetRef, rowHeightPx) {
         scheduleReport();
     }
 
+    function onKeyDown(event) {
+        if (disposed || event.defaultPrevented) return;
+        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+
+        const page = listPane.closest('.downloads-page');
+        if (page?.dataset.batchMode === 'true') return;
+
+        const target = event.target;
+        if (target instanceof HTMLElement &&
+            target.closest('input, textarea, select, [contenteditable="true"]')) {
+            return;
+        }
+
+        event.preventDefault();
+        const delta = event.key === 'ArrowDown' ? 1 : -1;
+        dotNetRef.invokeMethodAsync('OnListKeyDownAsync', delta)
+            .then(rowIndex => {
+                if (disposed || typeof rowIndex !== 'number') return;
+                ensureRowVisible(listPane, rowIndex, rowHeightPx);
+            })
+            .catch(() => {});
+    }
+
     function onVisibilityChange() {
         if (disposed) return;
         dotNetRef.invokeMethodAsync('OnVisibilityChangedAsync', document.visibilityState === 'hidden').catch(() => {});
     }
 
     listPane.addEventListener('scroll', onScroll, { passive: true });
+    listPane.addEventListener('keydown', onKeyDown);
     document.addEventListener('visibilitychange', onVisibilityChange);
 
     let resizeObserver = null;
@@ -175,10 +200,33 @@ export function initializeVirtualList(listPane, dotNetRef, rowHeightPx) {
             disposed = true;
             if (rafId !== 0) cancelAnimationFrame(rafId);
             listPane.removeEventListener('scroll', onScroll);
+            listPane.removeEventListener('keydown', onKeyDown);
             document.removeEventListener('visibilitychange', onVisibilityChange);
             if (resizeObserver) resizeObserver.disconnect();
         }
     };
+}
+
+/** 键盘切换选中行后，若目标行超出当前可视区，仅滚动到刚好可见的位置。 */
+export function ensureRowVisible(listPane, rowIndex, rowHeightPx) {
+    if (!listPane || !Number.isInteger(rowIndex) || rowIndex < 0 || !Number.isFinite(rowHeightPx) || rowHeightPx <= 0) {
+        return;
+    }
+
+    const thead = listPane.querySelector('thead');
+    const headerHeight = thead ? thead.getBoundingClientRect().height : 0;
+    const bodyHeight = Math.max(0, listPane.clientHeight - headerHeight);
+    if (bodyHeight <= 0) return;
+
+    const rowTop = rowIndex * rowHeightPx;
+    const rowBottom = rowTop + rowHeightPx;
+    const viewTop = listPane.scrollTop;
+    const viewBottom = viewTop + bodyHeight;
+    if (rowTop < viewTop) {
+        listPane.scrollTop = rowTop;
+    } else if (rowBottom > viewBottom) {
+        listPane.scrollTop = Math.max(0, rowBottom - bodyHeight);
+    }
 }
 
 /** 同步设置列表容器滚动位置（回顶或后台更新按锚点恢复）。 */

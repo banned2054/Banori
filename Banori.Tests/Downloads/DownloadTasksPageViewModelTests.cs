@@ -344,7 +344,7 @@ public sealed class DownloadTasksPageViewModelTests
 
         Assert.False(vm.Busy);
         Assert.True(vm.Succeeded);
-        Assert.Equal("已重新发起校验，等待下载器确认。", vm.Message);
+        Assert.Null(vm.Message);
         var reloaded = await harness.GetTaskAsync(task.Id);
         Assert.Equal(DownloadTaskStatus.Downloading, reloaded.Status);
         Assert.Equal(DownloadVerificationStep.Requested,
@@ -614,12 +614,54 @@ public sealed class DownloadTasksPageViewModelTests
 
         Assert.Multiple(() => Assert.False(vm.Busy),
                         () => Assert.True(vm.Succeeded),
-                        () => Assert.Equal("已重新提交下载，等待下载器确认。", vm.Message),
+                        () => Assert.Null(vm.Message),
                         () => Assert.False(vm.Tasks.Single().IsTorrentMissing));
         var reloaded = await harness.GetTaskAsync(task.Id);
         Assert.Multiple(() => Assert.Equal(DownloadTaskStatus.PendingSubmit, reloaded.Status),
                         () => Assert.Equal(DownloadTaskListTestSeed.At(1), reloaded.CompletedAtUtc),
                         () => Assert.Null(reloaded.TorrentMissingAtUtc));
+    }
+
+    [Fact]
+    public async Task MoveSelectionAsync_StepsAcrossOrderedTasksAndClampsAtBoundaries()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        await DownloadTaskListTestSeed.SeedAsync(harness,
+        [
+            DownloadTaskListTestSeed.NewTask("KeyNav - A", DownloadTaskListTestSeed.At(0)),
+            DownloadTaskListTestSeed.NewTask("KeyNav - B", DownloadTaskListTestSeed.At(1)),
+            DownloadTaskListTestSeed.NewTask("KeyNav - C", DownloadTaskListTestSeed.At(2))
+        ]);
+        var vm = CreateViewModel(harness);
+        await vm.LoadAsync();
+        var ids = vm.OrderedTaskIds;
+
+        // 未选中时按下方向键选中首项，继续下移依次选中并停在末项。
+        Assert.Equal(0, await vm.MoveSelectionAsync(1));
+        Assert.Equal(ids[0], vm.SelectedTaskId);
+
+        Assert.Equal(1, await vm.MoveSelectionAsync(1));
+        Assert.Equal(ids[1], vm.SelectedTaskId);
+
+        Assert.Equal(2, await vm.MoveSelectionAsync(1));
+        Assert.Equal(ids[2], vm.SelectedTaskId);
+
+        Assert.Equal(2, await vm.MoveSelectionAsync(1));
+        Assert.Equal(ids[2], vm.SelectedTaskId);
+
+        // 上移返回前一项，并停在首项；批量模式下忽略键盘选择。
+        Assert.Equal(1, await vm.MoveSelectionAsync(-1));
+        Assert.Equal(ids[1], vm.SelectedTaskId);
+
+        Assert.Equal(0, await vm.MoveSelectionAsync(-1));
+        Assert.Equal(ids[0], vm.SelectedTaskId);
+
+        Assert.Equal(0, await vm.MoveSelectionAsync(-1));
+        Assert.Equal(ids[0], vm.SelectedTaskId);
+
+        vm.ToggleBatchMode();
+        Assert.Null(await vm.MoveSelectionAsync(1));
+        Assert.Equal(ids[0], vm.SelectedTaskId);
     }
 
     private static async Task WaitForFilterAsync(DownloadTasksPageViewModel vm, Func<bool> condition)

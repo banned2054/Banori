@@ -128,7 +128,7 @@ public sealed class DownloadTaskFilesTests
         Assert.Equal(1, service.ApplyCalls);
         Assert.Empty(vm.FileState(id).Drafts);
         Assert.Equal("NewRoot/renamed.mkv", vm.FileState(id).Details!.Files[0].CurrentPath);
-        Assert.Equal("修改已提交，文件位置以下载器确认结果为准。", vm.FileState(id).Message);
+        Assert.Null(vm.FileState(id).Message);
     }
 
     [Fact]
@@ -308,7 +308,7 @@ public sealed class DownloadTaskFilesTests
         Assert.Equal(0, service.RefreshCalls);
         Assert.Same(confirmed, state.Details);
         Assert.Null(state.Error);
-        Assert.Contains("自动刷新", state.Message);
+        Assert.Null(state.Message);
         Assert.False(state.PendingFileWaitPaused);
 
         // 确认并直接采用 ObservePendingAsync 的布局后，显式刷新入口即恢复可用。
@@ -357,7 +357,7 @@ public sealed class DownloadTaskFilesTests
         Assert.Equal(0, service.RefreshCalls);
         Assert.Same(confirmed, state.Details);
         Assert.Null(state.Error);
-        Assert.Contains("自动刷新", state.Message);
+        Assert.Null(state.Message);
         Assert.False(state.PendingFileWaitPaused);
     }
 
@@ -397,7 +397,7 @@ public sealed class DownloadTaskFilesTests
 
         Assert.Same(confirmed, state.Details);
         Assert.Null(state.Error);
-        Assert.Contains("自动刷新", state.Message);
+        Assert.Null(state.Message);
         Assert.False(state.PendingFileWaitPaused);
     }
 

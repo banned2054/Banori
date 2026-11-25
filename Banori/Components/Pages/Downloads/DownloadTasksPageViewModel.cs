@@ -383,6 +383,36 @@ public sealed class DownloadTasksPageViewModel(
         ResultsChanged?.Invoke();
     }
 
+    /// <summary>按上下方向键在当前有序任务列表中移动选中行；批量模式或空列表时忽略。返回目标行索引以便滚入可视区。</summary>
+    public async Task<int?> MoveSelectionAsync(int delta, CancellationToken cancellationToken = default)
+    {
+        if (BatchMode || OrderedTaskIds.Count == 0 || delta == 0) return null;
+
+        var currentIndex = SelectedTaskId is { } selectedId ? FindTaskIndex(selectedId) : -1;
+        int targetIndex;
+        if (currentIndex < 0)
+            targetIndex = delta > 0
+                ? Math.Clamp(VisibleStartIndex, 0, OrderedTaskIds.Count - 1)
+                : Math.Clamp(VisibleEndIndex > VisibleStartIndex ? VisibleEndIndex - 1 : OrderedTaskIds.Count - 1,
+                             0, OrderedTaskIds.Count - 1);
+        else
+            targetIndex = Math.Clamp(currentIndex + delta, 0, OrderedTaskIds.Count - 1);
+
+        var targetId = OrderedTaskIds[targetIndex];
+        if (SelectedTaskId != targetId) await SelectTaskAsync(targetId, cancellationToken);
+        return targetIndex;
+    }
+
+    private int FindTaskIndex(Guid taskId)
+    {
+        for (var i = 0; i < OrderedTaskIds.Count; i++)
+        {
+            if (OrderedTaskIds[i] == taskId) return i;
+        }
+
+        return -1;
+    }
+
     private async Task LoadCoreAsync(bool preserveAnchor, CancellationToken cancellationToken)
     {
         // 请求序号防止慢查询晚到覆盖较新的结果；防抖取消令牌同时中止过期的数据库查询。
@@ -1015,7 +1045,7 @@ public sealed class DownloadTasksPageViewModel(
             {
                 state.ConfirmationBudgetExhausted = false;
                 foreach (var draft in state.Drafts.Values) draft.InvalidatePreview();
-                state.Message = "文件操作已确认，路径已自动刷新。";
+                state.Message = null;
             }
             else if (details.HasPendingFileOperation)
             {
@@ -1181,7 +1211,7 @@ public sealed class DownloadTasksPageViewModel(
             foreach (var otherDraft in state.Drafts.Values) otherDraft.InvalidatePreview();
             state.Message = state.FileOperationPending
                 ? "修改已提交，正在等待下载器确认，确认后会自动刷新。"
-                : "修改已提交，文件位置以下载器确认结果为准。";
+                : null;
             StartPendingFileRefresh(taskId, state);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1265,7 +1295,7 @@ public sealed class DownloadTasksPageViewModel(
                 state.Error                       = null;
                 state.SilentRefreshError          = null;
                 foreach (var draft in state.Drafts.Values) draft.InvalidatePreview();
-                state.Message = "文件操作已确认，路径已自动刷新。";
+                state.Message = null;
                 ResultsChanged?.Invoke();
                 return;
             }
@@ -1390,7 +1420,7 @@ public sealed class DownloadTasksPageViewModel(
         }
     }
 
-    /// <summary>确认批量删除：面板在发起前关闭，删除多少个由结果消息汇报。</summary>
+    /// <summary>确认批量删除：面板在发起前关闭，仅在失败时通过页面提示条汇报。</summary>
     public async Task ConfirmBulkDeleteAsync(CancellationToken cancellationToken = default)
     {
         var ids = _bulkConfirmationIds.ToArray();
@@ -1404,10 +1434,8 @@ public sealed class DownloadTasksPageViewModel(
         Message = null;
         try
         {
-            var deleted = await downloadService.DeleteManyAsync(ids, deleteFromDownloader, deleteFiles,
-                                                                cancellationToken);
+            await downloadService.DeleteManyAsync(ids, deleteFromDownloader, deleteFiles, cancellationToken);
             Succeeded = true;
-            Message   = $"已删除 {deleted} 个任务。";
             _selectedIds.Clear();
             foreach (var id in ids)
             {
@@ -1486,15 +1514,16 @@ public sealed class DownloadTasksPageViewModel(
         TorrentInDownloader = null;
     }
 
-    /// <summary>确认删除：按面板勾选项连下载器种子与文件一起处理；面板在发起前关闭，结果走页面提示条。</summary>
+    /// <summary>确认删除：按面板勾选项连下载器种子与文件一起处理；面板在发起前关闭，仅失败时走页面提示条。</summary>
     public async Task DeleteAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
         var deleteFromDownloader = DeleteFromDownloader;
         var deleteFiles          = deleteFromDownloader && DeleteFiles;
         DeleteTarget = null;
-        await RunOperationAsync(taskId, () => downloadService
-                                   .DeleteAsync(taskId, deleteFromDownloader, deleteFiles, cancellationToken),
-                                "任务已删除。", cancellationToken);
+        await RunOperationAsync(taskId,
+                                () => downloadService.DeleteAsync(taskId, deleteFromDownloader, deleteFiles,
+                                                                  cancellationToken),
+                                cancellationToken);
         // 单删成功后同步收敛选择集与文件状态，批量计数不再包含已删任务。
         if (Succeeded)
         {
@@ -1524,7 +1553,7 @@ public sealed class DownloadTasksPageViewModel(
             default :
                 await RunCoreAsync(() => intakeService.CreateFromUploadAsync(buffer.ToArray(), null, UploadSubjectId,
                                                                              cancellationToken),
-                                   "上传种子已登记，等待提交下载器。", cancellationToken,
+                                   cancellationToken,
                                    exception => logger.LogWarning(exception, "上传种子登记失败。"));
                 break;
         }
@@ -1546,47 +1575,32 @@ public sealed class DownloadTasksPageViewModel(
         if (shouldReload) await RefreshFallbackAsync(cancellationToken);
     }
 
-    public async Task PauseAsync(Guid taskId, CancellationToken cancellationToken = default)
-    {
-        await RunOperationAsync(taskId, () => downloadService.PauseAsync(taskId, cancellationToken),
-                                "任务已暂停。", cancellationToken);
-    }
+    public async Task PauseAsync(Guid taskId, CancellationToken cancellationToken = default) =>
+        await RunOperationAsync(taskId, () => downloadService.PauseAsync(taskId, cancellationToken), cancellationToken);
 
-    public async Task ResumeAsync(Guid taskId, CancellationToken cancellationToken = default)
-    {
+    public async Task ResumeAsync(Guid taskId, CancellationToken cancellationToken = default) =>
         await RunOperationAsync(taskId, () => downloadService.ResumeAsync(taskId, cancellationToken),
-                                "任务已恢复。", cancellationToken);
-    }
+                                cancellationToken);
 
-    public async Task RetryAsync(Guid taskId, CancellationToken cancellationToken = default)
-    {
-        await RunOperationAsync(taskId, () => downloadService.RetryAsync(taskId, cancellationToken),
-                                "任务已重新排队，等待提交。", cancellationToken);
-    }
+    public async Task RetryAsync(Guid taskId, CancellationToken cancellationToken = default) =>
+        await RunOperationAsync(taskId, () => downloadService.RetryAsync(taskId, cancellationToken), cancellationToken);
 
     /// <summary>种子丢失后重新下载：沿用原决策与命名快照重新提交，完成记录与逐集归属不变。</summary>
-    public async Task RedownloadAsync(Guid taskId, CancellationToken cancellationToken = default)
-    {
-        await RunOperationAsync(taskId, () => downloadService.RetryAsync(taskId, cancellationToken),
-                                "已重新提交下载，等待下载器确认。", cancellationToken);
-    }
+    public async Task RedownloadAsync(Guid taskId, CancellationToken cancellationToken = default) =>
+        await RunOperationAsync(taskId, () => downloadService.RetryAsync(taskId, cancellationToken), cancellationToken);
 
     /// <summary>重新校验：仅作用于校验未确认的任务；保留候选与文件，只重置本轮证据并重发 recheck。</summary>
-    public async Task ReverifyAsync(Guid taskId, CancellationToken cancellationToken = default)
-    {
+    public async Task ReverifyAsync(Guid taskId, CancellationToken cancellationToken = default) =>
         await RunOperationAsync(taskId, () => downloadService.ReverifyAsync(taskId, cancellationToken),
-                                "已重新发起校验，等待下载器确认。", cancellationToken);
-    }
+                                cancellationToken);
 
     /// <summary>
     ///     人工恢复启动：完整任务恢复做种、部分完成继续下载。响应丢失先观察、有界重试，
     ///     不盲目重发；不重新校验、不隔离、不重新下载。
     /// </summary>
-    public async Task ResumeRunAsync(Guid taskId, CancellationToken cancellationToken = default)
-    {
+    public async Task ResumeRunAsync(Guid taskId, CancellationToken cancellationToken = default) =>
         await RunOperationAsync(taskId, () => downloadService.ResumeRunAsync(taskId, cancellationToken),
-                                "恢复请求已发出，等待下载器确认。", cancellationToken);
-    }
+                                cancellationToken);
 
     /// <summary>重新核对：仅作用于已完成但归档受阻的任务；占用或身份异常仍会被拒绝并提示原因。</summary>
     public async Task RetryArchiveAsync(Guid taskId, CancellationToken cancellationToken = default)
@@ -1598,18 +1612,16 @@ public sealed class DownloadTasksPageViewModel(
         }
 
         await RunOperationAsync(taskId, () => fileService.RetryArchiveAsync(taskId, cancellationToken),
-                                "归档请求已处理，请查看当前归档状态。", cancellationToken);
+                                cancellationToken);
     }
 
     private async Task RunOperationAsync(
-        Guid taskId, Func<Task> operation, string successMessage, CancellationToken cancellationToken)
-    {
-        await RunCoreAsync(operation, successMessage, cancellationToken,
+        Guid taskId, Func<Task> operation, CancellationToken cancellationToken) =>
+        await RunCoreAsync(operation, cancellationToken,
                            exception => logger.LogWarning(exception, "下载任务 {TaskId} 操作失败。", taskId));
-    }
 
     private async Task RunCoreAsync(
-        Func<Task> operation, string successMessage, CancellationToken cancellationToken, Action<Exception> logFailure)
+        Func<Task> operation, CancellationToken cancellationToken, Action<Exception> logFailure)
     {
         Busy    = true;
         Message = null;
@@ -1617,7 +1629,6 @@ public sealed class DownloadTasksPageViewModel(
         {
             await operation();
             Succeeded = true;
-            Message   = successMessage;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
