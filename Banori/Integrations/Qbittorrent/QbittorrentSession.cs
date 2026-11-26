@@ -14,7 +14,8 @@ public sealed class QbittorrentSession(
     QBittorrentClient        client,
     TorrentInfoBodyObserver? bodyObserver    = null,
     HttpClient?              ownedHttpClient = null,
-    string?                  baseUrl         = null) : IQbittorrentSession
+    string?                  baseUrl         = null,
+    string                   serverVersion   = "") : IQbittorrentSession
 {
     private readonly TorrentInfoBodyObserver? _bodyObserver    = bodyObserver;
     private readonly HttpClient?              _ownedHttpClient = ownedHttpClient;
@@ -30,7 +31,7 @@ public sealed class QbittorrentSession(
         get; init;
     }
 
-    public string ServerVersion => client.QbittorrentVersion;
+    public string ServerVersion => serverVersion;
 
     private async Task<List<TorrentInfo>?> FetchInfosAsync(
         IReadOnlyList<string>? hashes, string? tag, CancellationToken cancellationToken)

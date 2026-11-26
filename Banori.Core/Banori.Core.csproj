@@ -5,7 +5,7 @@
 		<Nullable>enable</Nullable>
 	</PropertyGroup>
 	<ItemGroup>
-		<PackageReference Include="Banned.AniParser" Version="0.6.0" />
+		<PackageReference Include="Banned.AniParser" Version="0.7.0" />
 		<PackageReference Include="MonoTorrent" Version="3.0.2" />
 	</ItemGroup>
 </Project>

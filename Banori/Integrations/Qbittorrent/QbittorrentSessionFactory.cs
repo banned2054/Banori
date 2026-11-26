@@ -63,8 +63,19 @@ public sealed class QbittorrentSessionFactory(
             HttpClient = httpClient
         };
 
-        var client = await QBittorrentClient.Create(settings.BaseUrl, settings.Username, effectivePassword,
+        QBittorrentClient? client = null;
+        try
+        {
+            client = await QBittorrentClient.Create(settings.BaseUrl, settings.Username, effectivePassword,
                                                     options, cancellationToken);
-        return new QbittorrentSession(client, bodyObserver, httpClient, settings.BaseUrl);
+            var serverVersion = (await client.Application.GetVersion(cancellationToken)).ToString();
+            return new QbittorrentSession(client, bodyObserver, httpClient, settings.BaseUrl, serverVersion);
+        }
+        catch
+        {
+            client?.Dispose();
+            httpClient.Dispose();
+            throw;
+        }
     }
 }
