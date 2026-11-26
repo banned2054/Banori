@@ -2,6 +2,7 @@
 
 ## 📘 版本目录
 
+- [v0.6.2](#v062)
 - [v0.6.1](#v061)
 - [v0.6.0](#v060)
 - [v0.5.1](#v051)
@@ -19,6 +20,29 @@
 - [v0.1.2](#v012)
 - [v0.1.1](#v011)
 - [v0.1.0](#v010)
+
+## v0.6.2
+
+本补丁新增下载任务列表排序偏好的持久化与刷新恢复，改进手机端下载任务页视口 Flex 布局与表头吸顶，并升级核心 NuGet 依赖（含适配 `Banned.Qbittorrent 2.0.0`）。
+
+### ✨ 新增与改进
+
+- **下载任务列表排序持久化与刷新恢复**：`DownloadTaskFilterStore` 新增排序偏好存储键（`Downloads.Sort`），点击下载任务表头切换排序列或升降序后按调用顺序串行保存，刷新或重新进入页面时自动恢复主排序列与方向；存储缺失、损坏或枚举无效时安全回退默认排序，用户手动切换优先于首次异步读取且定时刷新不回读覆盖。
+- **核心依赖升级与 `Banned.Qbittorrent 2.0` 适配**：升级 `Banned.AniParser` 至 `0.7.0`、`Banned.Qbittorrent` 至 `2.0.0`、`Microting.EntityFrameworkCore.MySql` 至 `11.0.0` 正式版及 `MySqlConnector` 至 `3.0.0`；适配 `Banned.Qbittorrent 2.0.0` 移除 `QBittorrentClient.QbittorrentVersion` 属性的变更，改为建连后通过 `Application.GetVersion` 读取服务端版本，并在建连异常路径补齐客户端与 `HttpClient` 资源释放。
+
+### 🐛 修复
+
+- **手机端下载任务页视口 Flex 布局与独立滚动**：将窄屏/移动端（`max-width: 640.98px`）下的下载任务页改为基于 `100dvh` 与底部安全区的纵向 Flex 视口布局，取代底部详情面板的 `position: fixed`；任务列表区独立滚动并保持表头吸顶，详情面板展开时限高 55% 且不遮挡列表与顶栏。
+
+### 🧪 测试与文档
+
+- 补充下载任务排序偏好读写、无效数据回退、刷新恢复及并发交互保护等回归测试（`DownloadTaskFilterStoreTests`、`DownloadTasksPageViewModelTests`），并将 `README.md` 升级说明与镜像示例同步至 `0.6.2`。
+- 2026-11-26 在 .NET 11 下以 Release 配置复验，1452 项回归测试通过，0 失败、0 跳过；真机 E2E 验收场景本轮未运行。
+
+### ⚠️ 升级说明与已知边界
+
+- 本版无数据库结构迁移；从 0.6.1 升级可直接替换程序，仍建议升级前停止旧实例并备份整个 `config/` 目录，MySQL 部署另需备份数据库，不要让新旧实例同时写入同一数据库。回退时恢复升级前的数据库和配套配置、密钥，不能只切换回旧镜像。
+- 下载列表排序持久化、移动端 Flex 布局以及 `Banned.Qbittorrent 2.0.0` / `MySqlConnector 3.0.0` 等依赖升级已通过单元与桩回归覆盖，浏览器与真机 qBittorrent / MySQL 场景尚待实测验证。发现异常请在 GitHub 反馈。
 
 ## v0.6.1
 
