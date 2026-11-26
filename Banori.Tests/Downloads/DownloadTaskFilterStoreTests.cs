@@ -54,4 +54,49 @@ public sealed class DownloadTaskFilterStoreTests
 
         Assert.True(groups.SetEquals(DownloadStatusFilter.Choices));
     }
+
+    [Fact]
+    public async Task UnstoredSort_ReadsAsDefault()
+    {
+        var store = new DownloadTaskFilterStore(new MemoryApplicationSettingStore());
+
+        var sort = await store.GetSortAsync();
+
+        Assert.Equal(DownloadTaskSortPreference.Default, sort);
+    }
+
+    [Fact]
+    public async Task SortPreference_RoundTripsThroughSettings()
+    {
+        var settings = new MemoryApplicationSettingStore();
+        var store    = new DownloadTaskFilterStore(settings);
+
+        var createdDesc = new DownloadTaskSortPreference(DownloadTaskSortColumn.CreatedAt, true);
+        await store.SaveSortAsync(createdDesc);
+        Assert.Equal(createdDesc, await store.GetSortAsync());
+
+        var episodeAsc = new DownloadTaskSortPreference(DownloadTaskSortColumn.Episode, false);
+        await store.SaveSortAsync(episodeAsc);
+        Assert.Equal(episodeAsc, await store.GetSortAsync());
+    }
+
+    [Theory]
+    [InlineData("不是 JSON")]
+    [InlineData("null")]
+    [InlineData("{\"Column\":\"RemovedColumn\",\"Descending\":true}")]
+    [InlineData("{\"Column\":999,\"Descending\":true}")]
+    public async Task UnreadableStoredSort_FallsBackToDefault(string stored)
+    {
+        var settings = new MemoryApplicationSettingStore
+        {
+            Values =
+            {
+                [DownloadTaskFilterStore.SortKey] = (stored, false)
+            }
+        };
+
+        var sort = await new DownloadTaskFilterStore(settings).GetSortAsync();
+
+        Assert.Equal(DownloadTaskSortPreference.Default, sort);
+    }
 }

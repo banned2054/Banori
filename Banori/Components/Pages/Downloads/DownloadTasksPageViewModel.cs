@@ -46,14 +46,16 @@ public sealed class DownloadTasksPageViewModel(
     private long                     _snapshotVersion;
     private int                      _viewportCount = DefaultViewportCount;
 
-    // 已保存的筛选只在页面首次加载时读取，之后由勾选维护，定时刷新不回读；并发加载共用同一次读取。
-    private Task? _statusFilterLoadTask;
+    // 已保存的筛选与排序只在页面首次加载时读取，之后由用户操作维护，定时刷新不回读；并发加载共用同一次读取。
+    private Task? _preferencesLoadTask;
 
-    // 勾选串行写入同一设置项：保存链条的尾部保证较早的选择不会晚于较新的选择落库。
+    // 勾选与排序各自串行写入同一设置项：保存链条的尾部保证较早的选择不会晚于较新的选择落库。
     private Task _statusFilterSave = Task.CompletedTask;
+    private Task _sortSave         = Task.CompletedTask;
 
-    // 用户在读取已保存筛选期间改过勾选：读取结果作废，不能把新选择覆盖成旧值。
+    // 用户在读取已保存偏好期间改过勾选或排序：对应读取结果作废，不能把新选择覆盖成旧值。
     private bool _statusFilterTouched;
+    private bool _sortTouched;
 
     /// <summary>当前挂载在 DOM 中的可见区与上下缓冲区任务摘要。</summary>
     public IReadOnlyList<DownloadTaskView> Tasks { get; private set; } = [];
@@ -127,9 +129,10 @@ public sealed class DownloadTasksPageViewModel(
     /// <summary>当前主排序列是否降序。</summary>
     public bool SortDescending { get; private set; }
 
-    /// <summary>点击表头排序：切到新列时采用该列默认方向（点击动画名即恢复默认排序），再点同列则反序。</summary>
-    public Task SortByColumnAsync(DownloadTaskSortColumn column)
+    /// <summary>点击表头排序：切到新列时采用该列默认方向（点击动画名即恢复默认排序），再点同列则反序，并持久化供刷新恢复。</summary>
+    public async Task SortByColumnAsync(DownloadTaskSortColumn column)
     {
+        _sortTouched = true;
         if (SortColumn == column)
             SortDescending = !SortDescending;
         else
@@ -138,7 +141,8 @@ public sealed class DownloadTasksPageViewModel(
             SortDescending = DownloadTaskQueries.DefaultSortDescending(column);
         }
 
-        return ReloadFromTopAsync();
+        await SaveSortAsync();
+        await ReloadFromTopAsync();
     }
 
     public int TotalCount => OrderedTaskIds.Count;
@@ -420,7 +424,7 @@ public sealed class DownloadTasksPageViewModel(
         var anchorIds      = preserveAnchor ? VisibleTaskIds.ToArray() : [];
         var prevStartIndex = VisibleStartIndex;
 
-        await EnsureStatusFilterLoadedAsync(cancellationToken);
+        await EnsurePreferencesLoadedAsync(cancellationToken);
         var index = await taskQueries.ListIdsAsync(BuildFilter(), cancellationToken);
         if (requestId != _loadRequestId) return;
 
@@ -637,18 +641,20 @@ public sealed class DownloadTasksPageViewModel(
     };
 
     /// <summary>
-    ///     页面生命周期内只恢复一次已保存的状态筛选：之后由用户勾选维护，
-    ///     15 秒自动刷新不回读，避免中途覆盖当前页面的选择。读取失败按全部勾选继续。
+    ///     页面生命周期内只恢复一次已保存的状态筛选与排序偏好：之后由用户操作维护，
+    ///     15 秒自动刷新不回读，避免中途覆盖当前页面的选择。读取失败按默认值继续。
     /// </summary>
-    private async Task EnsureStatusFilterLoadedAsync(CancellationToken cancellationToken)
+    private async Task EnsurePreferencesLoadedAsync(CancellationToken cancellationToken)
     {
         // 并发加载共用同一次读取：后到的加载不能把“读取已开始”当成“已恢复”，
-        // 否则它会先用默认全选查一遍，恢复后的勾选要等下一次刷新才反映到列表。
-        _statusFilterLoadTask ??= LoadStatusFilterAsync();
-        // 用户已经改过勾选，这次读取的结果注定作废，不必等它结束再查询。
-        if (_statusFilterTouched) return;
-        await _statusFilterLoadTask.WaitAsync(cancellationToken);
+        // 否则它会先用默认全选/默认排序查一遍，恢复后的选择要等下一次刷新才反映到列表。
+        _preferencesLoadTask ??= LoadPreferencesAsync();
+        // 用户已经改过勾选或排序，不阻塞当前交互等待慢读取完成（对应读取结果会按 touched 标记作废）。
+        if (_statusFilterTouched || _sortTouched) return;
+        await _preferencesLoadTask.WaitAsync(cancellationToken);
     }
+
+    private Task LoadPreferencesAsync() => Task.WhenAll(LoadStatusFilterAsync(), LoadSortAsync());
 
     /// <summary>读取已保存筛选并恢复勾选；读取本身不随某次页面加载取消，结果供所有等待者共用。</summary>
     private async Task LoadStatusFilterAsync()
@@ -664,6 +670,44 @@ public sealed class DownloadTasksPageViewModel(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "读取下载任务状态筛选失败，按全部分组显示。");
+        }
+    }
+
+    /// <summary>读取已保存排序并恢复主排序列与方向；读取本身不随某次页面加载取消，结果供所有等待者共用。</summary>
+    private async Task LoadSortAsync()
+    {
+        try
+        {
+            var stored = await filterStore.GetSortAsync();
+            if (_sortTouched) return;
+            SortColumn     = stored.Column;
+            SortDescending = stored.Descending;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "读取下载任务排序失败，按默认排序显示。");
+        }
+    }
+
+    /// <summary>保存排序供刷新后恢复；按调用顺序串行写入，保存失败只记录日志，当前页面仍按所选排序展示。</summary>
+    private async Task SaveSortAsync()
+    {
+        var sort = new DownloadTaskSortPreference(SortColumn, SortDescending);
+        var save = SaveSortCoreAsync(_sortSave, sort);
+        _sortSave = save;
+        await save;
+    }
+
+    private async Task SaveSortCoreAsync(Task previousSave, DownloadTaskSortPreference sort)
+    {
+        await previousSave;
+        try
+        {
+            await filterStore.SaveSortAsync(sort);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "保存下载任务排序失败，本次选择仅在当前页面生效。");
         }
     }
 

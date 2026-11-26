@@ -546,6 +546,112 @@ public sealed class DownloadTasksPageViewModelTests
     }
 
     [Fact]
+    public async Task Sort_PersistsAcrossPageReload()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        await DownloadTaskListTestSeed.SeedAsync(harness, [
+            DownloadTaskListTestSeed.NewTask("Sort - 早", DownloadTaskListTestSeed.At(0)),
+            DownloadTaskListTestSeed.NewTask("Sort - 晚", DownloadTaskListTestSeed.At(1))
+        ]);
+        var first = CreateViewModel(harness);
+        await first.LoadAsync();
+        await first.SortByColumnAsync(DownloadTaskSortColumn.CreatedAt);
+        Assert.Multiple(() => Assert.Equal(DownloadTaskSortColumn.CreatedAt, first.SortColumn),
+                        () => Assert.True(first.SortDescending),
+                        () => Assert.Equal("Sort - 晚", first.Tasks[0].NamingSnapshot));
+
+        // 刷新页面 = 新页面状态重新加载：恢复已保存的排序列与降序方向。
+        var reloaded = CreateViewModel(harness);
+        await reloaded.LoadAsync();
+        Assert.Multiple(() => Assert.Equal(DownloadTaskSortColumn.CreatedAt, reloaded.SortColumn),
+                        () => Assert.True(reloaded.SortDescending),
+                        () => Assert.Equal("Sort - 晚", reloaded.Tasks[0].NamingSnapshot));
+
+        // 再次点击同列切为升序：刷新后同样恢复升序。
+        await reloaded.SortByColumnAsync(DownloadTaskSortColumn.CreatedAt);
+        var ascReloaded = CreateViewModel(harness);
+        await ascReloaded.LoadAsync();
+        Assert.Multiple(() => Assert.Equal(DownloadTaskSortColumn.CreatedAt, ascReloaded.SortColumn),
+                        () => Assert.False(ascReloaded.SortDescending),
+                        () => Assert.Equal("Sort - 早", ascReloaded.Tasks[0].NamingSnapshot));
+    }
+
+    [Fact]
+    public async Task Sort_StoreFailureKeepsCurrentSortAndListing()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        await DownloadTaskListTestSeed.SeedAsync(harness, [
+            DownloadTaskListTestSeed.NewTask("SortFail - 早", DownloadTaskListTestSeed.At(0)),
+            DownloadTaskListTestSeed.NewTask("SortFail - 晚", DownloadTaskListTestSeed.At(1))
+        ]);
+        var settingStore =
+            (MemoryApplicationSettingStore)harness.Provider.GetRequiredService<IApplicationSettingStore>();
+        var vm = CreateViewModel(harness);
+        await vm.LoadAsync();
+        settingStore.ThrowOnSet = new InvalidOperationException("模拟设置存储故障。");
+
+        await vm.SortByColumnAsync(DownloadTaskSortColumn.CreatedAt);
+
+        Assert.Multiple(() => Assert.Equal(DownloadTaskSortColumn.CreatedAt, vm.SortColumn),
+                        () => Assert.True(vm.SortDescending),
+                        () => Assert.Equal("SortFail - 晚", vm.Tasks[0].NamingSnapshot));
+    }
+
+    [Fact]
+    public async Task Sort_ChangeWhileStoredSortInFlight_KeepsUserSelection()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        await DownloadTaskListTestSeed.SeedAsync(harness, [
+            DownloadTaskListTestSeed.NewTask("SortRace - 早", DownloadTaskListTestSeed.At(0)),
+            DownloadTaskListTestSeed.NewTask("SortRace - 晚", DownloadTaskListTestSeed.At(1))
+        ]);
+        var settingStore =
+            (MemoryApplicationSettingStore)harness.Provider.GetRequiredService<IApplicationSettingStore>();
+        await new DownloadTaskFilterStore(settingStore)
+            .SaveSortAsync(new DownloadTaskSortPreference(DownloadTaskSortColumn.Version, true));
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        settingStore.GetGate = gate.Task;
+        var vm        = CreateViewModel(harness);
+        var firstLoad = vm.LoadAsync();
+
+        // 已保存排序读取在途时用户点击了新列：慢请求晚到不得把新选择覆盖回旧值。
+        await vm.SortByColumnAsync(DownloadTaskSortColumn.CreatedAt);
+        gate.SetResult();
+        await firstLoad.WaitAsync(Timeout);
+
+        Assert.Multiple(() => Assert.Equal(DownloadTaskSortColumn.CreatedAt, vm.SortColumn),
+                        () => Assert.True(vm.SortDescending),
+                        () => Assert.Equal("SortRace - 晚", vm.Tasks[0].NamingSnapshot));
+    }
+
+    [Fact]
+    public async Task Sort_ConsecutiveClicks_WritePreferencesInOrder()
+    {
+        using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
+        await DownloadTaskListTestSeed.SeedAsync(harness, [
+            DownloadTaskListTestSeed.NewTask("SortOrder - 早", DownloadTaskListTestSeed.At(0)),
+            DownloadTaskListTestSeed.NewTask("SortOrder - 晚", DownloadTaskListTestSeed.At(1))
+        ]);
+        var settingStore =
+            (MemoryApplicationSettingStore)harness.Provider.GetRequiredService<IApplicationSettingStore>();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        settingStore.SetGates[DownloadTaskFilterStore.SortKey] = (1, release.Task);
+        var vm = CreateViewModel(harness);
+        await vm.LoadAsync();
+
+        var first  = vm.SortByColumnAsync(DownloadTaskSortColumn.CreatedAt);
+        var second = vm.SortByColumnAsync(DownloadTaskSortColumn.Episode);
+        release.SetResult();
+        await Task.WhenAll(first, second).WaitAsync(Timeout);
+
+        var writes = settingStore.SetValues.Where(entry => entry.Key == DownloadTaskFilterStore.SortKey)
+                                 .Select(entry => entry.Value).ToArray();
+        Assert.Multiple(() => Assert.Equal(2, writes.Length),
+                        () => Assert.Contains("CreatedAt", writes[0]),
+                        () => Assert.Contains("Episode", writes[1]));
+    }
+
+    [Fact]
     public async Task MissingTorrentTask_LostFilterIncludesIt_AndNoDuplicateCountWhenCompletedAlsoSelected()
     {
         using var harness = await DownloadServiceTests.CreateHarnessForPageTestsAsync();
